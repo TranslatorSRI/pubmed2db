@@ -1,0 +1,174 @@
+-- pubmed2db DuckDB schema.
+--
+-- Fully normalized, full-version-history. Field names follow PubMed's own
+-- naming (DocumentMetadataAPI names are only applied at JSON export time).
+--
+-- Versioning model: every loaded file contributes rows tagged with their
+-- provenance (`source_file`, `file_order_key`). A PMID may therefore appear
+-- in many files (baseline + multiple updatefiles). The `latest_article` view
+-- selects, per PMID, the row from the highest `file_order_key`, honoring
+-- deletions recorded in `deleted_pmid`.
+--
+-- `file_order_key` encodes PubMed's chronological order: baseline files come
+-- first, then updatefiles in ascending number, and the year prefix increments
+-- across years. It is computed as (year_yy * 1000000 + file_number).
+
+-- Registry of every PubMed XML file we know about. Drives incremental loads.
+CREATE TABLE IF NOT EXISTS source_file (
+    file_name      TEXT PRIMARY KEY,           -- e.g. 'pubmed25n1274.xml.gz'
+    kind           TEXT NOT NULL,              -- 'baseline' | 'update'
+    year_yy        INTEGER NOT NULL,           -- 2-digit release year, e.g. 25
+    file_number    INTEGER NOT NULL,           -- e.g. 1274
+    file_order_key BIGINT  NOT NULL,           -- year_yy * 1000000 + file_number
+    published_md5  TEXT,                       -- checksum from the .md5 sidecar
+    downloaded_at  TIMESTAMP,
+    processed_at   TIMESTAMP,                  -- NULL until loaded into the tables
+    n_articles     INTEGER,
+    n_deletions    INTEGER
+);
+
+-- One row per loaded version of an article. Identity is (pmid, source_file).
+CREATE TABLE IF NOT EXISTS article (
+    pmid           BIGINT  NOT NULL,
+    pmid_version   INTEGER,
+    source_file    TEXT    NOT NULL,
+    file_order_key BIGINT  NOT NULL,
+    article_title  TEXT,
+    nlm_catalog_id TEXT,                        -- joins to journal.nlm_catalog_id
+    issn_linking   TEXT,
+    volume         TEXT,
+    issue          TEXT,
+    pub_year       TEXT,                        -- raw PubDate/Year
+    pub_month      TEXT,                        -- raw PubDate/Month ('Mar', '03', ...)
+    pub_day        TEXT,                        -- raw PubDate/Day
+    medline_date   TEXT,                        -- raw PubDate/MedlineDate (e.g. '1998 Spring')
+    date_completed DATE,
+    date_revised   DATE,
+    loaded_at      TIMESTAMP
+);
+
+-- Journal dimension, sourced from the NLM Catalog (J_Entrez/J_Medline), not
+-- versioned. Joined to articles on nlm_catalog_id.
+CREATE TABLE IF NOT EXISTS journal (
+    nlm_catalog_id       TEXT PRIMARY KEY,
+    title                TEXT,
+    abbreviation_medline TEXT,
+    abbreviation_iso     TEXT,
+    start_year           INTEGER,
+    end_year             INTEGER,
+    active               BOOLEAN
+);
+
+CREATE TABLE IF NOT EXISTS journal_issn (
+    nlm_catalog_id TEXT NOT NULL,
+    issn           TEXT NOT NULL,
+    issn_type      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS abstract_text (
+    pmid         BIGINT NOT NULL,
+    source_file  TEXT   NOT NULL,
+    seq          INTEGER NOT NULL,             -- order of the section within the abstract
+    label        TEXT,
+    nlm_category TEXT,
+    text         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS author (
+    pmid        BIGINT NOT NULL,
+    source_file TEXT   NOT NULL,
+    position    INTEGER NOT NULL,
+    kind        TEXT,                           -- 'author' | 'collective'
+    name        TEXT,
+    orcid       TEXT,
+    valid       BOOLEAN
+);
+
+CREATE TABLE IF NOT EXISTS author_affiliation (
+    pmid        BIGINT NOT NULL,
+    source_file TEXT   NOT NULL,
+    position    INTEGER NOT NULL,              -- author position
+    affiliation TEXT,
+    ror         TEXT                            -- grounded ROR curie, if present
+);
+
+CREATE TABLE IF NOT EXISTS mesh_heading (
+    pmid          BIGINT NOT NULL,
+    source_file   TEXT   NOT NULL,
+    descriptor_ui TEXT,
+    descriptor_name TEXT,
+    major_topic   BOOLEAN
+);
+
+CREATE TABLE IF NOT EXISTS mesh_qualifier (
+    pmid          BIGINT NOT NULL,
+    source_file   TEXT   NOT NULL,
+    descriptor_ui TEXT,
+    qualifier_ui  TEXT,
+    qualifier_name TEXT,
+    major_topic   BOOLEAN
+);
+
+CREATE TABLE IF NOT EXISTS publication_type (
+    pmid        BIGINT NOT NULL,
+    source_file TEXT   NOT NULL,
+    type_ui     TEXT                            -- MeSH LUID of the publication type
+);
+
+CREATE TABLE IF NOT EXISTS grant_ (
+    pmid        BIGINT NOT NULL,
+    source_file TEXT   NOT NULL,
+    grant_id    TEXT,
+    acronym     TEXT,
+    agency      TEXT,
+    country     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS reference_citation (
+    pmid        BIGINT NOT NULL,
+    source_file TEXT   NOT NULL,
+    cited_pmid  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS article_id (
+    pmid        BIGINT NOT NULL,
+    source_file TEXT   NOT NULL,
+    id_type     TEXT,                           -- 'doi', 'pmc', ...
+    id_value    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS history (
+    pmid        BIGINT NOT NULL,
+    source_file TEXT   NOT NULL,
+    pub_status  TEXT,
+    date        DATE
+);
+
+-- PMIDs removed via <DeleteCitation>. file_order_key lets the latest_article
+-- view decide whether a deletion supersedes the latest article version.
+CREATE TABLE IF NOT EXISTS deleted_pmid (
+    pmid           BIGINT NOT NULL,
+    source_file    TEXT   NOT NULL,
+    file_order_key BIGINT NOT NULL
+);
+
+-- Latest non-deleted version of each article.
+CREATE OR REPLACE VIEW latest_article AS
+WITH ranked AS (
+    SELECT
+        a.*,
+        row_number() OVER (PARTITION BY a.pmid ORDER BY a.file_order_key DESC) AS _rn
+    FROM article a
+),
+latest AS (
+    SELECT * EXCLUDE (_rn) FROM ranked WHERE _rn = 1
+),
+last_delete AS (
+    SELECT pmid, max(file_order_key) AS del_order
+    FROM deleted_pmid
+    GROUP BY pmid
+)
+SELECT l.*
+FROM latest l
+LEFT JOIN last_delete d ON l.pmid = d.pmid
+WHERE d.del_order IS NULL OR d.del_order < l.file_order_key;
