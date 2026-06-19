@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE PubmedArticleSet PUBLIC "-//NLM//DTD PubMedArticle, 1st January 2024//EN" "https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_240101.dtd">
+<PubmedArticleSet>
+  <PubmedArticle>
+    <MedlineCitation Status="MEDLINE" Owner="NLM">
+      <PMID Version="1">1001</PMID>
+      <DateCompleted>
+        <Year>2020</Year><Month>04</Month><Day>01</Day>
+      </DateCompleted>
+      <DateRevised>
+        <Year>2020</Year><Month>05</Month><Day>02</Day>
+      </DateRevised>
+      <Article PubModel="Print">
+        <Journal>
+          <ISSN IssnType="Print">0028-0836</ISSN>
+          <JournalIssue CitedMedium="Print">
+            <Volume>581</Volume>
+            <Issue>7807</Issue>
+            <PubDate>
+              <Year>2020</Year>
+              <Month>Mar</Month>
+              <Day>15</Day>
+            </PubDate>
+          </JournalIssue>
+          <Title>Nature</Title>
+          <ISOAbbreviation>Nature</ISOAbbreviation>
+        </Journal>
+        <ArticleTitle>Baseline title for article one.</ArticleTitle>
+        <Abstract>
+          <AbstractText Label="BACKGROUND" NlmCategory="BACKGROUND">First section of the abstract.</AbstractText>
+          <AbstractText Label="RESULTS" NlmCategory="RESULTS">Second section of the abstract.</AbstractText>
+        </Abstract>
+        <AuthorList CompleteYN="Y">
+          <Author ValidYN="Y">
+            <LastName>Smith</LastName>
+            <ForeName>Jane</ForeName>
+            <Initials>J</Initials>
+            <AffiliationInfo>
+              <Affiliation>Department of Testing, Example University.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+        </AuthorList>
+        <PublicationTypeList>
+          <PublicationType UI="D016428">Journal Article</PublicationType>
+        </PublicationTypeList>
+      </Article>
+      <MedlineJournalInfo>
+        <Country>England</Country>
+        <MedlineTA>Nature</MedlineTA>
+        <NlmUniqueID>0410462</NlmUniqueID>
+        <ISSNLinking>0028-0836</ISSNLinking>
+      </MedlineJournalInfo>
+      <MeshHeadingList>
+        <MeshHeading>
+          <DescriptorName UI="D000818" MajorTopicYN="N">Animals</DescriptorName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D006801" MajorTopicYN="Y">Humans</DescriptorName>
+          <QualifierName UI="Q000235" MajorTopicYN="N">genetics</QualifierName>
+        </MeshHeading>
+      </MeshHeadingList>
+    </MedlineCitation>
+    <PubmedData>
+      <History>
+        <PubMedPubDate PubStatus="received">
+          <Year>2019</Year><Month>10</Month><Day>01</Day>
+        </PubMedPubDate>
+        <PubMedPubDate PubStatus="pubmed">
+          <Year>2020</Year><Month>03</Month><Day>15</Day>
+        </PubMedPubDate>
+      </History>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">1001</ArticleId>
+        <ArticleId IdType="doi">10.1038/example1001</ArticleId>
+        <ArticleId IdType="pmc">PMC1234567</ArticleId>
+      </ArticleIdList>
+    </PubmedData>
+  </PubmedArticle>
+
+  <PubmedArticle>
+    <MedlineCitation Status="MEDLINE" Owner="NLM">
+      <PMID Version="1">1002</PMID>
+      <Article PubModel="Print">
+        <Journal>
+          <ISSN IssnType="Electronic">1476-4687</ISSN>
+          <JournalIssue CitedMedium="Internet">
+            <Volume>10</Volume>
+            <Issue>2</Issue>
+            <PubDate>
+              <Year>2019</Year>
+            </PubDate>
+          </JournalIssue>
+          <Title>Journal of Examples</Title>
+          <ISOAbbreviation>J. Examples</ISOAbbreviation>
+        </Journal>
+        <ArticleTitle>Article two with a year-only publication date.</ArticleTitle>
+        <Abstract>
+          <AbstractText>A single unlabeled abstract paragraph.</AbstractText>
+        </Abstract>
+      </Article>
+      <MedlineJournalInfo>
+        <Country>United States</Country>
+        <MedlineTA>J Examples</MedlineTA>
+        <NlmUniqueID>9999991</NlmUniqueID>
+        <ISSNLinking>1476-4687</ISSNLinking>
+      </MedlineJournalInfo>
+    </MedlineCitation>
+    <PubmedData>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">1002</ArticleId>
+      </ArticleIdList>
+    </PubmedData>
+  </PubmedArticle>
+
+  <PubmedArticle>
+    <MedlineCitation Status="MEDLINE" Owner="NLM">
+      <PMID Version="1">1003</PMID>
+      <Article PubModel="Print">
+        <Journal>
+          <ISSN IssnType="Print">0000-0000</ISSN>
+          <JournalIssue CitedMedium="Print">
+            <Volume>3</Volume>
+            <PubDate>
+              <MedlineDate>1998 Spring</MedlineDate>
+            </PubDate>
+          </JournalIssue>
+          <Title>Journal of Examples</Title>
+          <ISOAbbreviation>J. Examples</ISOAbbreviation>
+        </Journal>
+        <ArticleTitle>Article three with a MedlineDate range.</ArticleTitle>
+      </Article>
+      <MedlineJournalInfo>
+        <Country>United States</Country>
+        <MedlineTA>J Examples</MedlineTA>
+        <NlmUniqueID>9999991</NlmUniqueID>
+        <ISSNLinking>1476-4687</ISSNLinking>
+      </MedlineJournalInfo>
+    </MedlineCitation>
+    <PubmedData>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">1003</ArticleId>
+      </ArticleIdList>
+    </PubmedData>
+  </PubmedArticle>
+</PubmedArticleSet>

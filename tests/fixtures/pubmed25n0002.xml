@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE PubmedArticleSet PUBLIC "-//NLM//DTD PubMedArticle, 1st January 2024//EN" "https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_240101.dtd">
+<PubmedArticleSet>
+  <PubmedArticle>
+    <MedlineCitation Status="MEDLINE" Owner="NLM">
+      <PMID Version="2">1001</PMID>
+      <DateCompleted>
+        <Year>2020</Year><Month>04</Month><Day>01</Day>
+      </DateCompleted>
+      <DateRevised>
+        <Year>2021</Year><Month>06</Month><Day>10</Day>
+      </DateRevised>
+      <Article PubModel="Print">
+        <Journal>
+          <ISSN IssnType="Print">0028-0836</ISSN>
+          <JournalIssue CitedMedium="Print">
+            <Volume>581</Volume>
+            <Issue>7807</Issue>
+            <PubDate>
+              <Year>2020</Year>
+              <Month>Mar</Month>
+              <Day>16</Day>
+            </PubDate>
+          </JournalIssue>
+          <Title>Nature</Title>
+          <ISOAbbreviation>Nature</ISOAbbreviation>
+        </Journal>
+        <ArticleTitle>Revised title for article one.</ArticleTitle>
+        <Abstract>
+          <AbstractText>The revised abstract for article one.</AbstractText>
+        </Abstract>
+        <AuthorList CompleteYN="Y">
+          <Author ValidYN="Y">
+            <LastName>Smith</LastName>
+            <ForeName>Jane</ForeName>
+            <Initials>J</Initials>
+          </Author>
+        </AuthorList>
+        <PublicationTypeList>
+          <PublicationType UI="D016428">Journal Article</PublicationType>
+        </PublicationTypeList>
+      </Article>
+      <MedlineJournalInfo>
+        <Country>England</Country>
+        <MedlineTA>Nature</MedlineTA>
+        <NlmUniqueID>0410462</NlmUniqueID>
+        <ISSNLinking>0028-0836</ISSNLinking>
+      </MedlineJournalInfo>
+    </MedlineCitation>
+    <PubmedData>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">1001</ArticleId>
+        <ArticleId IdType="doi">10.1038/example1001</ArticleId>
+      </ArticleIdList>
+    </PubmedData>
+  </PubmedArticle>
+
+  <DeleteCitation>
+    <PMID Version="1">1002</PMID>
+  </DeleteCitation>
+</PubmedArticleSet>
