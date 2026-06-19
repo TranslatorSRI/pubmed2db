@@ -1,0 +1,69 @@
+# CLAUDE.md — orientation for this repo
+
+pubmed2db downloads PubMed abstracts, loads them into a DuckDB database keeping
+**full version history**, and exports the **latest** version of every abstract to
+JSON (DocumentMetadataAPI field names, for Node Annotator / ElasticSearch) and to
+Parquet (PubMed field names, for downloadable queries).
+
+**Project goal:** once mature, replace the PubMed download in Babel
+(`createcompendia/publications.py` in NCATSTranslator/Babel) with this tool.
+
+## Architecture / data flow
+
+`download → load → export`, wired through a `click` CLI.
+
+| File | Responsibility |
+| --- | --- |
+| `src/pubmed2db/db.py` | DuckDB connection, schema init, `source_file` registry, `parse_file_name` (filename → chronological `file_order_key`). |
+| `src/pubmed2db/schema.sql` | Normalized tables (PubMed field names) + `latest_article` view. |
+| `src/pubmed2db/download.py` | Reuses `pubmed_downloader` to fetch baseline/update files; adds `.md5` sidecar tracking. |
+| `src/pubmed2db/parse.py` | Self-driven XML iteration: calls cthoyt's `_extract_article` per record, plus raw `PubDate` + `DeleteCitation`. |
+| `src/pubmed2db/load.py` | Loads parsed files (full history, provenance-tagged), `latest`/delete logic, journal dimension. |
+| `src/pubmed2db/export.py` | JSON (spec fields, empty-string-not-null) + Parquet export. |
+| `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`. |
+
+## Key design decisions (and why)
+
+- **Reuse [`cthoyt/pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader) as-is, no upstream changes.**
+  It handles bulk download + the rich `Article` data model. We do not use its
+  `iterate_process_*`/JSONL cache — DuckDB is our store.
+- **We drive the XML iteration ourselves** (`parse.py`) rather than using cthoyt's
+  process pipeline, because we need two things it drops: the **raw `PubDate`
+  components** (so `MedlineDate`-only/partial dates keep full fidelity instead of
+  being collapsed to a `datetime.date`) and **`<DeleteCitation>`** PMIDs (needed
+  for latest-version selection).
+- **DB uses PubMed's own field names**; the DocumentMetadataAPI names
+  (`journal_name`, `journal_abbrev`, `pub_month` as 3-letter abbrev, …) are
+  applied **only** in the JSON export, with empty strings for missing values.
+- **Full version history**, not upsert: every file's rows are tagged with
+  `source_file` + `file_order_key`; `latest_article` selects the newest
+  non-deleted version per PMID. `file_order_key = year_yy * 1_000_000 + file_number`
+  reproduces PubMed's chronological ordering (baseline before updates; year prefix
+  dominates).
+- **MD5 is low-priority** (HTTP downloads are reliable and PubMed files are
+  immutable): we store the published checksum and reload a file only if it is new
+  or its checksum changed (`load.needs_load` compares `downloaded_at > processed_at`).
+- **Journal names** come from the NLM Catalog journal-overview file, joined on
+  `nlm_catalog_id` — see the known-issue below.
+
+## Known upstream issue — journal parsing
+
+`pubmed_downloader.catalog.process_journal_overview()` (≤ 0.0.14) **raises** on the
+real `J_Entrez.txt` data: its `Journal` model requires `start_year`/`end_year`,
+which that file does not provide. We therefore **parse the overview file ourselves**
+in `load._parse_journal_overview` (reusing only `ensure_journal_overview()` for the
+download). Revisit if a newer `pubmed-downloader` makes those fields optional. See
+`FUTURE.md`.
+
+## Development
+
+```bash
+uv sync --extra dev
+uv run pytest          # 34 tests, no network
+```
+
+Tests gzip the readable XML fixtures under `tests/fixtures/` into temp
+`pubmedNNnNNNN.xml.gz` files. Scratch downloads/databases go under `./data`
+(gitignored); set `PYSTOW_HOME=$(pwd)/data/pystow` to keep `pubmed_downloader`'s
+cache there too. Use `--limit N` on `download`/`update` to fetch only the newest N
+files when testing against the live server.
