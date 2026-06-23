@@ -272,21 +272,12 @@ def _parse_journal_overview(path: Path):
     record: dict[str, str] = {}
     issns: list[tuple[str, str]] = []
 
-    def _flush():
-        nonlocal record, issns
-        if record.get("nlm_catalog_id"):
-            yield_value = (record, issns)
-        else:
-            yield_value = None
-        record, issns = {}, []
-        return yield_value
-
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             if line.startswith("---"):
-                flushed = _flush()
-                if flushed:
-                    yield flushed
+                if record.get("nlm_catalog_id"):
+                    yield record, issns
+                record, issns = {}, []
                 continue
             key, sep, value = (part.strip() for part in line.partition(":"))
             if not sep or not value:
@@ -297,9 +288,8 @@ def _parse_journal_overview(path: Path):
                 issns.append((value, "Electronic"))
             elif key in _JOURNAL_KEYS:
                 record[_JOURNAL_KEYS[key]] = value
-    flushed = _flush()
-    if flushed:
-        yield flushed
+    if record.get("nlm_catalog_id"):
+        yield record, issns
 
 
 def load_journals(con: duckdb.DuckDBPyConnection, *, force: bool = False) -> int:
