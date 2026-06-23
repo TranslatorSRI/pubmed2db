@@ -35,29 +35,34 @@ uv sync --extra dev
 
 ## Usage
 
+All commands share `--data-dir` (default `data/pubmed`), which controls where
+downloaded files and the database live. Override once on the group to redirect
+everything:
+
 ```bash
-# Download the baseline + update files (MD5-checked, incremental).
-pubmed2db --db pubmed.duckdb download
+# Download the baseline + update files to data/pubmed/ (MD5-checked, incremental).
+pubmed2db --data-dir data/pubmed download
 
 # Refresh the journal dimension from the NLM Catalog.
-pubmed2db --db pubmed.duckdb journals
+pubmed2db --data-dir data/pubmed journals
 
 # Parse downloaded files into the database (full history).
-pubmed2db --db pubmed.duckdb load
+pubmed2db --data-dir data/pubmed load
 
 # Export the latest abstract of every PMID as sharded NDJSON (DocumentMetadataAPI fields).
-pubmed2db --db pubmed.duckdb export --format json --out ./json_out --shards 16
+pubmed2db --data-dir data/pubmed export --format json --out data/pubmed/json --shards 16
 
 # Export the database to Parquet (latest version per table, or --all for full history).
-pubmed2db --db pubmed.duckdb export --format parquet --out ./parquet_out
+pubmed2db --data-dir data/pubmed export --format parquet --out data/pubmed/parquet
 
 # Download + journals + load in one step (for scheduled runs).
-pubmed2db --db pubmed.duckdb update
+pubmed2db --data-dir data/pubmed update
 ```
 
-Downloaded files are cached by `pubmed-downloader` via [pystow](https://github.com/cthoyt/pystow);
-set `PYSTOW_HOME` to control where (and to share the cache with a Babel run). Use
-`--limit N` on `download`/`update` to fetch only the newest N files when testing.
+`--data-dir data/pubmed` is the default, so omitting it gives the same result.
+The DuckDB database is stored as `<data-dir>/pubmed.duckdb`; override with `--db`.
+
+Use `--limit N` on `download`/`update` to fetch only the newest N files when testing.
 
 ## Notes
 

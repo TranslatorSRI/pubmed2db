@@ -11,7 +11,7 @@ import click
 from . import __version__
 from .db import connect
 
-DEFAULT_DB = os.environ.get("PUBMED2DB_DB", "pubmed.duckdb")
+DEFAULT_DATA_DIR = os.environ.get("PUBMED2DB_DATA_DIR", "data/pubmed")
 
 
 def _local_files() -> list[tuple[Path, str]]:
@@ -26,17 +26,33 @@ def _local_files() -> list[tuple[Path, str]]:
 
 @click.group()
 @click.version_option(__version__)
-@click.option("--db", default=DEFAULT_DB, show_default=True, help="Path to the DuckDB database.")
+@click.option(
+    "--data-dir",
+    default=DEFAULT_DATA_DIR,
+    show_default=True,
+    help="Root directory for downloaded PubMed files and the database.",
+)
+@click.option(
+    "--db",
+    default=None,
+    show_default=False,
+    help="Path to the DuckDB database (default: <data-dir>/pubmed.duckdb).",
+)
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging.")
 @click.pass_context
-def main(ctx: click.Context, db: str, verbose: bool) -> None:
+def main(ctx: click.Context, data_dir: str, db: str | None, verbose: bool) -> None:
     """Download, store, and export PubMed abstracts."""
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Set PYSTOW_HOME before any pubmed_downloader import so its module paths
+    # resolve under data_dir rather than ~/.data.
+    os.environ["PYSTOW_HOME"] = str(Path(data_dir).resolve())
     ctx.ensure_object(dict)
-    ctx.obj["db"] = db
+    ctx.obj["db"] = db or os.environ.get(
+        "PUBMED2DB_DB", str(Path(data_dir) / "pubmed.duckdb")
+    )
 
 
 @main.command()
