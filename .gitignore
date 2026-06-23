@@ -1,5 +1,6 @@
-# Ignore root /data file.
-/data/
+# Ignore downloaded data but track the directory skeleton.
+/data/*
+!/data/.gitkeep
 
 # JetBrains IDE files
 .idea/
