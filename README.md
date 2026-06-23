@@ -35,34 +35,38 @@ uv sync --extra dev
 
 ## Usage
 
-All commands share `--data-dir` (default `data/pubmed`), which controls where
-downloaded files and the database live. Override once on the group to redirect
-everything:
+All commands share `--data-dir` (default `data/`), which sets the root for
+downloaded PubMed files and the database. `pubmed-downloader` creates its own
+`pubmed_downloader/` subdirectory inside it, so the layout under `data/` is
+managed automatically.
 
 ```bash
-# Download the baseline + update files to data/pubmed/ (MD5-checked, incremental).
-pubmed2db --data-dir data/pubmed download
+# Download the baseline + update files to data/ (MD5-checked, incremental).
+pubmed2db --data-dir data download
 
 # Refresh the journal dimension from the NLM Catalog.
-pubmed2db --data-dir data/pubmed journals
+pubmed2db --data-dir data journals
 
 # Parse downloaded files into the database (full history).
-pubmed2db --data-dir data/pubmed load
+pubmed2db --data-dir data load
 
 # Export the latest abstract of every PMID as sharded NDJSON (DocumentMetadataAPI fields).
-pubmed2db --data-dir data/pubmed export --format json --out data/pubmed/json --shards 16
+pubmed2db --data-dir data export --format json --out data/json --shards 16
 
 # Export the database to Parquet (latest version per table, or --all for full history).
-pubmed2db --data-dir data/pubmed export --format parquet --out data/pubmed/parquet
+pubmed2db --data-dir data export --format parquet --out data/parquet
 
 # Download + journals + load in one step (for scheduled runs).
-pubmed2db --data-dir data/pubmed update
+pubmed2db --data-dir data update
 ```
 
-`--data-dir data/pubmed` is the default, so omitting it gives the same result.
+`--data-dir data` is the default, so omitting it gives the same result.
 The DuckDB database is stored as `<data-dir>/pubmed.duckdb`; override with `--db`.
 
 Use `--limit N` on `download`/`update` to fetch only the newest N files when testing.
+
+> **Note:** The file layout under `data/` differs from Babel's PubMed download,
+> so the two cannot share a download cache at this time.
 
 ## Notes
 

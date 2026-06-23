@@ -11,7 +11,7 @@ import click
 from . import __version__
 from .db import connect
 
-DEFAULT_DATA_DIR = os.environ.get("PUBMED2DB_DATA_DIR", "data/pubmed")
+DEFAULT_DATA_DIR = os.environ.get("PUBMED2DB_DATA_DIR", "data")
 
 
 def _local_files() -> list[tuple[Path, str]]:

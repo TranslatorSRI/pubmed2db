@@ -63,7 +63,8 @@ uv run pytest          # 34 tests, no network
 ```
 
 Tests gzip the readable XML fixtures under `tests/fixtures/` into temp
-`pubmedNNnNNNN.xml.gz` files. Scratch downloads/databases go under `./data`
-(gitignored); set `PYSTOW_HOME=$(pwd)/data/pystow` to keep `pubmed_downloader`'s
-cache there too. Use `--limit N` on `download`/`update` to fetch only the newest N
-files when testing against the live server.
+`pubmedNNnNNNN.xml.gz` files. Scratch downloads and databases go under `./data`
+(gitignored). The CLI sets `PYSTOW_HOME` to `--data-dir` (default `data/`), so
+`pubmed_downloader` keeps its cache under `data/pubmed_downloader/`. Use
+`--limit N` on `download`/`update` to fetch only the newest N files when testing
+against the live server.
