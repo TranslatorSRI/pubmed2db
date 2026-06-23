@@ -51,24 +51,13 @@ def parse_md5_text(text: str) -> str | None:
     return match.group(1).lower() if match else None
 
 
-def file_md5(path: Path, *, chunk_size: int = 1 << 20) -> str:
+def file_md5(path: Path) -> str:
     """Compute the MD5 hex digest of a local file."""
-    digest = hashlib.md5()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(chunk_size), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def fetch_published_md5(file_url: str, *, timeout: int = 60) -> str | None:
-    """Fetch and parse the ``.md5`` sidecar for a data file URL."""
-    response = requests.get(file_url + ".md5", timeout=timeout)
-    response.raise_for_status()
-    return parse_md5_text(response.text)
+    with path.open("rb") as fh:
+        return hashlib.file_digest(fh, "md5").hexdigest()
 
 
 def _save_md5_sidecar(file_name: str, text: str) -> None:
-    MD5_DIR.mkdir(parents=True, exist_ok=True)
     (MD5_DIR / f"{file_name}.md5").write_text(text)
 
 
@@ -88,6 +77,7 @@ def _sync_kind(
     if limit is not None:
         urls = urls[:limit]
 
+    MD5_DIR.mkdir(parents=True, exist_ok=True)
     results: list[tuple[Path, str]] = []
     for url in tqdm(urls, desc=f"Syncing PubMed {kind}", unit="file"):
         file_name = url.rsplit("/", 1)[-1]
@@ -101,7 +91,7 @@ def _sync_kind(
             published_md5 = None
 
         prior = registry.get(file_name)
-        changed = prior is None or prior.get("published_md5") != published_md5
+        changed = prior is None or prior != published_md5
 
         path = Path(ensure_module.ensure(url=url))
 
@@ -146,13 +136,8 @@ def sync(
     can be passed straight to :func:`pubmed2db.load.load_files`.
     """
     registry = {
-        name: row
-        for name, row in (
-            (r[0], {"published_md5": r[1]})
-            for r in con.execute(
-                "SELECT file_name, published_md5 FROM source_file"
-            ).fetchall()
-        )
+        r[0]: r[1]
+        for r in con.execute("SELECT file_name, published_md5 FROM source_file").fetchall()
     }
 
     results: list[tuple[Path, str]] = []
