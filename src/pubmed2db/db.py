@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
 
@@ -59,17 +60,18 @@ def register_source_file(
     ``processed_at``/``n_articles`` from any prior load.
     """
     year_yy, file_number, order_key = parse_file_name(file_name)
+    ts = datetime.now(timezone.utc) if downloaded_at else None
     con.execute(
         """
         INSERT INTO source_file
             (file_name, kind, year_yy, file_number, file_order_key,
              published_md5, downloaded_at)
-        VALUES (?, ?, ?, ?, ?, ?, CASE WHEN ? THEN now() ELSE NULL END)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (file_name) DO UPDATE SET
             published_md5 = excluded.published_md5,
             downloaded_at = COALESCE(excluded.downloaded_at, source_file.downloaded_at)
         """,
-        [file_name, kind, year_yy, file_number, order_key, published_md5, downloaded_at],
+        [file_name, kind, year_yy, file_number, order_key, published_md5, ts],
     )
 
 
