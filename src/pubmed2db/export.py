@@ -10,15 +10,11 @@ from __future__ import annotations
 import calendar
 import json
 import logging
-import math
 from pathlib import Path
 
 import duckdb
 
 logger = logging.getLogger(__name__)
-
-#: Valid capitalized three-letter month abbreviations, e.g. {"Jan", ..., "Dec"}.
-_MONTH_ABBRS = {abbr for abbr in calendar.month_abbr if abbr}
 
 #: Child tables whose rows belong to a specific article version (pmid, source_file).
 _VERSIONED_CHILDREN = (
@@ -51,7 +47,7 @@ def month_to_abbrev(raw: str | None) -> str:
         month = int(raw)
         return calendar.month_abbr[month] if 1 <= month <= 12 else ""
     key = raw[:3].capitalize()
-    return key if key in _MONTH_ABBRS else ""
+    return key if key in calendar.month_abbr else ""
 
 
 def _s(value: object) -> str:
@@ -116,9 +112,6 @@ def export_json(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    total = con.execute("SELECT count(*) FROM latest_article").fetchone()[0]
-    shard_size = max(1, math.ceil(total / shards)) if total else 1
-
     paths = [out_dir / f"pubmed_metadata_{i:05d}.ndjson" for i in range(shards)]
     handles = [path.open("w", encoding="utf-8") for path in paths]
     try:
@@ -129,8 +122,7 @@ def export_json(
             if not rows:
                 break
             for row in rows:
-                shard = min(index // shard_size, shards - 1)
-                handles[shard].write(
+                handles[index % shards].write(
                     json.dumps(_document(row), ensure_ascii=False) + "\n"
                 )
                 index += 1
@@ -139,7 +131,7 @@ def export_json(
             handle.close()
 
     written = [p for p in paths if p.stat().st_size > 0] or paths[:1]
-    logger.info("exported %d documents to %d shard(s) in %s", total, len(written), out_dir)
+    logger.info("exported %d documents to %d shard(s) in %s", index, len(written), out_dir)
     return written
 
 
