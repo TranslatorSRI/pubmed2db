@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 
 import duckdb
+import pyarrow as pa
 from pubmed_downloader.utils import Collective
 
 from .db import get_registry, parse_file_name
@@ -115,20 +116,42 @@ def _article_rows(pa: ParsedArticle, source_file: str, order_key: int) -> dict[s
     return rows
 
 
-_INSERTS: dict[str, str] = {
-    "article": "INSERT INTO article VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, now())",
-    "abstract_text": "INSERT INTO abstract_text VALUES (?,?,?,?,?,?)",
-    "author": "INSERT INTO author VALUES (?,?,?,?,?,?,?)",
-    "author_affiliation": "INSERT INTO author_affiliation VALUES (?,?,?,?,?)",
-    "mesh_heading": "INSERT INTO mesh_heading VALUES (?,?,?,?,?)",
-    "mesh_qualifier": "INSERT INTO mesh_qualifier VALUES (?,?,?,?,?,?)",
-    "publication_type": "INSERT INTO publication_type VALUES (?,?,?)",
-    "grant_": "INSERT INTO grant_ VALUES (?,?,?,?,?,?)",
-    "reference_citation": "INSERT INTO reference_citation VALUES (?,?,?)",
-    "article_id": "INSERT INTO article_id VALUES (?,?,?,?)",
-    "history": "INSERT INTO history VALUES (?,?,?,?)",
-    "deleted_pmid": "INSERT INTO deleted_pmid VALUES (?,?,?)",
+#: Name under which a per-table batch is registered for the bulk insert below.
+_BATCH = "_load_batch"
+
+#: Bulk-insert SQL per table. Each row batch is registered as an Arrow table and
+#: inserted columnar via ``INSERT ... SELECT``, which is ~25x faster than
+#: row-by-row ``executemany`` on the large per-version tables (parse stays ~2s
+#: while insert drops from ~75s to ~4s per file — see scripts/benchmark_load.py).
+#: ``article`` appends ``now()`` for its server-side ``loaded_at`` column.
+_INSERT_SELECT: dict[str, str] = {
+    table: f"INSERT INTO {table} BY POSITION SELECT * FROM {_BATCH}"
+    for table in (
+        "abstract_text",
+        "author",
+        "author_affiliation",
+        "mesh_heading",
+        "mesh_qualifier",
+        "publication_type",
+        "grant_",
+        "reference_citation",
+        "article_id",
+        "history",
+        "deleted_pmid",
+    )
 }
+_INSERT_SELECT["article"] = f"INSERT INTO article BY POSITION SELECT *, now() FROM {_BATCH}"
+
+
+def _insert_batch(con: duckdb.DuckDBPyConnection, table: str, rows: list[tuple]) -> None:
+    """Columnar bulk-insert of ``rows`` (positional tuples) into ``table``."""
+    columns = zip(*rows)  # transpose row tuples -> per-column sequences
+    batch = pa.table({str(i): pa.array(col) for i, col in enumerate(columns)})
+    con.register(_BATCH, batch)
+    try:
+        con.execute(_INSERT_SELECT[table])
+    finally:
+        con.unregister(_BATCH)
 
 
 def delete_file_rows(con: duckdb.DuckDBPyConnection, source_file: str) -> None:
@@ -151,16 +174,16 @@ def load_parsed(
     try:
         delete_file_rows(con, source_file)
 
-        batches: dict[str, list[tuple]] = {t: [] for t in _INSERTS}
-        for pa in parsed.articles:
-            for table, table_rows in _article_rows(pa, source_file, order_key).items():
+        batches: dict[str, list[tuple]] = {t: [] for t in _INSERT_SELECT}
+        for article in parsed.articles:
+            for table, table_rows in _article_rows(article, source_file, order_key).items():
                 batches[table].extend(table_rows)
         for pmid in parsed.deleted_pmids:
             batches["deleted_pmid"].append((pmid, source_file, order_key))
 
         for table, rows in batches.items():
             if rows:
-                con.executemany(_INSERTS[table], rows)
+                _insert_batch(con, table, rows)
 
         con.execute(
             """

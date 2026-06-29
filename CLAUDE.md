@@ -45,6 +45,11 @@ Parquet (PubMed field names, for downloadable queries).
   or its checksum changed (`load.needs_load` compares `downloaded_at > processed_at`).
 - **Journal names** come from the NLM Catalog journal-overview file, joined on
   `nlm_catalog_id` — see the known-issue below.
+- **Columnar bulk load.** `load._insert_batch` registers each file's rows as an
+  Arrow table and inserts them via `INSERT ... SELECT`, not row-by-row
+  `executemany` (which ran at ~2.5k rows/s and made load ~20 min/file). This is
+  ~25–90× faster (~5–6 s/file). The load logs peak RSS per file for Slurm sizing;
+  see `slurm/README.md` and `scripts/benchmark_load.py`.
 
 ## Known upstream issue — journal parsing
 

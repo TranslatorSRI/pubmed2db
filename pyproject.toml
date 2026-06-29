@@ -9,6 +9,7 @@ authors = [{ name = "Gaurav Vaidya", email = "gaurav@ggvaidya.com" }]
 dependencies = [
     "pubmed-downloader>=0.0.14",
     "duckdb>=1.1",
+    "pyarrow>=14",
     "click>=8.1",
     "pydantic>=2",
     "requests>=2.31",
