@@ -89,23 +89,24 @@ def journals(ctx: click.Context) -> None:
 
 @main.command()
 @click.option("--force", is_flag=True, help="Reload files even if already up to date.")
-@click.option("--skip-journals", is_flag=True, help="Do not refresh the journal dimension.")
 @click.pass_context
-def load(ctx: click.Context, force: bool, skip_journals: bool) -> None:
-    """Parse downloaded files into the database (full history)."""
-    from .load import load_files, load_journals
+def load(ctx: click.Context, force: bool) -> None:
+    """Parse downloaded files into the database (full history).
+
+    Loads article data only. Run `pubmed2db journals` to (re)load the journal
+    dimension used at export time, or `pubmed2db update` to do everything.
+    """
+    from .load import load_files
 
     con = connect(ctx.obj["db"])
     try:
         files = _local_files()
         if not files:
-            click.echo("No downloaded files found; run `pubmed2db download` first.")
-            return
+            raise click.ClickException(
+                "No downloaded files found; run `pubmed2db download` first."
+            )
         loaded = load_files(con, files, force=force)
         click.echo(f"Loaded {loaded} of {len(files)} file(s).")
-        if not skip_journals:
-            n = load_journals(con)
-            click.echo(f"Loaded {n} journals.")
     finally:
         con.close()
 
@@ -129,9 +130,27 @@ def load(ctx: click.Context, force: bool, skip_journals: bool) -> None:
 def export(ctx: click.Context, fmt: str, out: str, shards: int, latest: bool) -> None:
     """Export the latest abstracts to JSON, or the database to Parquet."""
     from .export import export_json, export_parquet
+    from .status import articles_loaded, journals_loaded, pending_file_count
 
     con = connect(ctx.obj["db"])
     try:
+        if not articles_loaded(con):
+            raise click.ClickException(
+                "No articles loaded; run `pubmed2db load` first."
+            )
+        pending = pending_file_count(con)
+        if pending:
+            click.echo(
+                f"Warning: {pending} downloaded file(s) not yet loaded; "
+                "run `pubmed2db load` to include them in the export.",
+                err=True,
+            )
+        if not journals_loaded(con):
+            click.echo(
+                "Warning: journal table is empty, so journal names will be blank; "
+                "run `pubmed2db journals` to populate them.",
+                err=True,
+            )
         if fmt == "json":
             paths = export_json(con, out, shards=shards)
         else:

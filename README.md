@@ -63,6 +63,14 @@ pubmed2db --data-dir data update
 `--data-dir data` is the default, so omitting it gives the same result.
 The DuckDB database is stored as `<data-dir>/pubmed.duckdb`; override with `--db`.
 
+The steps are independent and incremental (re-running `download` revalidates
+existing files rather than refetching them), and each checks its prerequisites
+against the database's own state: `load` errors if nothing has been downloaded,
+and `export` errors if nothing has been loaded, warns if some downloaded files
+have not been loaded yet, and warns if the journal dimension is empty (journal
+names would be blank). When in doubt, `pubmed2db update` runs the whole pipeline
+(`download → journals → load`) in order.
+
 Use `--limit N` on `download`/`update` to fetch only the newest N files when testing.
 
 > **Note:** The file layout under `data/` differs from Babel's PubMed download,

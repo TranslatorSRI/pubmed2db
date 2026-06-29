@@ -20,6 +20,7 @@ Parquet (PubMed field names, for downloadable queries).
 | `src/pubmed2db/parse.py` | Self-driven XML iteration: calls cthoyt's `_extract_article` per record, plus raw `PubDate` + `DeleteCitation`. |
 | `src/pubmed2db/load.py` | Loads parsed files (full history, provenance-tagged), `latest`/delete logic, journal dimension. |
 | `src/pubmed2db/export.py` | JSON (spec fields, empty-string-not-null) + Parquet export. |
+| `src/pubmed2db/status.py` | Pipeline-readiness checks derived from DB state (drives the CLI's prerequisite errors/warnings). |
 | `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`. |
 
 ## Key design decisions (and why)
@@ -45,6 +46,14 @@ Parquet (PubMed field names, for downloadable queries).
   or its checksum changed (`load.needs_load` compares `downloaded_at > processed_at`).
 - **Journal names** come from the NLM Catalog journal-overview file, joined on
   `nlm_catalog_id` — see the known-issue below.
+- **Step ordering is enforced from DB state, not a run-flag.** The steps are
+  independent CLI commands; their ordering is guarded by checks derived from
+  ground truth (`status.py`): `load` errors if nothing is downloaded, and `export`
+  errors if no articles are loaded, warns if files are downloaded-but-unloaded,
+  and warns if the `journal` table is empty (names would be blank). Deriving from
+  the `source_file` watermarks + table contents means a check can't disagree with
+  the data. `load` does **not** load journals — `journals` is its own step;
+  `update` chains `download → journals → load` for the happy path.
 - **Columnar bulk load.** `load._insert_batch` registers each file's rows as an
   Arrow table and inserts them via `INSERT ... SELECT`, not row-by-row
   `executemany` (which ran at ~2.5k rows/s and made load ~20 min/file). This is
