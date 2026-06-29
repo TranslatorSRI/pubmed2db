@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import resource
 import sys
+import time
 from pathlib import Path
 
 import duckdb
@@ -269,6 +270,18 @@ def needs_load(con: duckdb.DuckDBPyConnection, source_file: str, *, force: bool 
     return downloaded_at is not None and downloaded_at > processed_at
 
 
+def _fmt_duration(seconds: float) -> str:
+    """Format a duration in seconds as a human-readable string."""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, secs = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {secs:02d}s"
+    hours, mins = divmod(minutes, 60)
+    return f"{hours}h {mins:02d}m"
+
+
 def load_files(
     con: duckdb.DuckDBPyConnection,
     files: list[tuple[Path, str]],
@@ -278,14 +291,25 @@ def load_files(
     """Load a list of ``(path, kind)`` files in chronological order, skipping
     ones already up to date. Returns the number of files loaded."""
     ordered = sorted(files, key=lambda pk: parse_file_name(pk[0].name)[2])
-    loaded = 0
-    for path, kind in ordered:
-        if not needs_load(con, path.name, force=force):
-            logger.debug("skipping up-to-date %s", path.name)
-            continue
+    to_load = [(p, k) for p, k in ordered if needs_load(con, p.name, force=force)]
+    total = len(to_load)
+    if total == 0:
+        return 0
+
+    run_start = time.monotonic()
+    for i, (path, kind) in enumerate(to_load):
         load_file(con, path, kind=kind)
-        loaded += 1
-    return loaded
+        done = i + 1
+        remaining = total - done
+        elapsed = time.monotonic() - run_start
+        avg = elapsed / done
+        eta = _fmt_duration(avg * remaining) if remaining else "done"
+        logger.info(
+            "progress: %d/%d files this run, %d remaining, ~%s to go",
+            done, total, remaining, eta,
+        )
+
+    return total
 
 
 #: Maps keys in NLM's J_Entrez/J_Medline overview file to our journal columns.
