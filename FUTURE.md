@@ -26,10 +26,17 @@ below are deliberately deferred.
 
 ## Scale & performance (full PubMed is ~38M articles, ~1500+ files)
 
-- **Loader memory/throughput.** `load.load_parsed` builds all of a file's rows in
-  memory, then inserts them in one transaction via `executemany`. Fine per file
-  (~17k articles), but for a full baseline consider the DuckDB Appender API and/or
-  multiprocessing across files (cthoyt's `iterate_process_*` shows the pattern).
+- **Loader throughput — done (serial).** `load.load_parsed` now inserts each
+  file's rows columnar via Arrow `INSERT ... SELECT` (~200k rows/s) instead of
+  row-by-row `executemany` (~2.5k rows/s), cutting per-file load from ~20 min to
+  ~5–6 s. Peak RSS is logged per file (~0.8 GiB for a 5k-article file); see
+  `slurm/README.md` and `scripts/benchmark_load.py`.
+- **Loader parallelism — deferred.** Serial load of a full baseline is now ~2–3 h,
+  likely fine. To go faster, parallelize across files: since DuckDB is
+  single-writer, have parallel Slurm tasks each parse one XML → write per-file
+  **Parquet shards** (no shared writer), then a single step does
+  `INSERT INTO t SELECT * FROM read_parquet('shards/*')`. Bigger rearchitecture;
+  do it only if 2–3 h serial becomes a bottleneck.
 - **`latest_article` view** runs a window over the entire `article` table on every
   read. At full scale, consider an index on `article(pmid, file_order_key)` or
   materializing the latest set into a table before export.
