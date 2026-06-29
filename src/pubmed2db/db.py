@@ -75,6 +75,22 @@ def register_source_file(
     )
 
 
+def record_run(con: duckdb.DuckDBPyConnection, step: str) -> None:
+    """Stamp ``pipeline_run`` with the current time for ``step``.
+
+    Used for steps whose recency is not otherwise recoverable from the data
+    (currently just ``journals``); download/load recency comes from
+    ``source_file`` timestamps instead.
+    """
+    con.execute(
+        """
+        INSERT INTO pipeline_run (step, last_run_at) VALUES (?, now())
+        ON CONFLICT (step) DO UPDATE SET last_run_at = excluded.last_run_at
+        """,
+        [step],
+    )
+
+
 def get_registry(con: duckdb.DuckDBPyConnection) -> dict[str, dict]:
     """Return the ``source_file`` registry keyed by file name."""
     cols = [

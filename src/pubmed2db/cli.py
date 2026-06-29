@@ -160,6 +160,65 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int, latest: bool) ->
         con.close()
 
 
+def _fmt_ts(ts: object) -> str:
+    """Render a timestamp for the status report, or 'never' if missing."""
+    return ts.strftime("%Y-%m-%d %H:%M") if ts is not None else "never"
+
+
+@main.command()
+@click.pass_context
+def status(ctx: click.Context) -> None:
+    """Report what's been downloaded, loaded, and is ready to export."""
+    from .status import summarize
+
+    con = connect(ctx.obj["db"])
+    try:
+        s = summarize(con)
+        pct = (
+            f"{100 * s['loaded_files'] / s['downloaded_files']:.1f}%"
+            if s["downloaded_files"]
+            else "n/a"
+        )
+
+        click.echo(f"Database:  {ctx.obj['db']}")
+        click.echo(
+            f"Download:  {s['downloaded_files']} of {s['known_files']} known file(s) "
+            f"downloaded ({s['baseline_files']} baseline, {s['update_files']} update)"
+        )
+        click.echo(f"           last download: {_fmt_ts(s['last_download'])}")
+        click.echo(
+            f"Journals:  {s['journals']} loaded; "
+            f"last refresh: {_fmt_ts(s['journals_refreshed'])}"
+        )
+        click.echo(
+            f"Load:      {s['loaded_files']} of {s['downloaded_files']} downloaded "
+            f"file(s) loaded ({pct})"
+        )
+        if s["pending_files"]:
+            click.echo(
+                f"           {s['pending_files']} file(s) downloaded but not loaded "
+                "→ run `pubmed2db load`"
+            )
+        click.echo(f"           last load: {_fmt_ts(s['last_load'])}")
+        click.echo(
+            f"           {s['article_versions']} article version(s); "
+            f"{s['latest_documents']} latest document(s)"
+        )
+
+        # Mirror the export command's prerequisites as an at-a-glance verdict.
+        if not s["articles_loaded"]:
+            click.echo("Export:    blocked — no articles loaded; run `pubmed2db load`")
+        elif not s["journals_loaded"]:
+            click.echo("Export:    ready, but journal names will be blank "
+                       "(run `pubmed2db journals`)")
+        elif s["pending_files"]:
+            click.echo("Export:    ready, but would miss the unloaded file(s) above")
+        else:
+            click.echo("Export:    ready")
+    finally:
+        con.close()
+
+
 @main.command()
 @click.option("--limit", type=int, default=None, help="Only sync the first N files (testing).")
 @click.option("--force", is_flag=True, help="Reload files even if already up to date.")

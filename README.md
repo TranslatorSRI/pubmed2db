@@ -58,6 +58,9 @@ pubmed2db --data-dir data export --format parquet --out data/parquet
 
 # Download + journals + load in one step (for scheduled runs).
 pubmed2db --data-dir data update
+
+# Report what's been downloaded, loaded, and is ready to export (read-only).
+pubmed2db --data-dir data status
 ```
 
 `--data-dir data` is the default, so omitting it gives the same result.

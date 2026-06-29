@@ -27,6 +27,14 @@ CREATE TABLE IF NOT EXISTS source_file (
     n_deletions    INTEGER
 );
 
+-- Records when steps that leave no other timestamp were last run (currently just
+-- `journals`, whose tables are replaced wholesale). Download/load recency is
+-- derived from source_file instead, so it can never disagree with the data.
+CREATE TABLE IF NOT EXISTS pipeline_run (
+    step        TEXT PRIMARY KEY,                 -- e.g. 'journals'
+    last_run_at TIMESTAMP
+);
+
 -- One row per loaded version of an article. Identity is (pmid, source_file).
 CREATE TABLE IF NOT EXISTS article (
     pmid           BIGINT  NOT NULL,

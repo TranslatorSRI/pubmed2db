@@ -85,6 +85,38 @@ def test_cli_export_without_load_errors(tmp_path):
     assert "load" in result.output.lower()
 
 
+def test_cli_status_reports_pipeline_state(tmp_path, gz_fixture):
+    """`status` runs read-only and reports each step's state."""
+    from pubmed2db.db import connect
+
+    db_path = tmp_path / "cli.duckdb"
+    con = connect(db_path)
+    _build_db(con, gz_fixture)
+    con.close()
+
+    result = CliRunner().invoke(main, ["--db", str(db_path), "status"])
+    assert result.exit_code == 0, result.output
+    assert "Download:" in result.output
+    assert "Load:" in result.output
+    assert "latest document(s)" in result.output
+    assert "Export:    ready" in result.output
+
+
+def test_record_run_roundtrip(tmp_path):
+    """`record_run` stamps a step and `last_run` reads it back."""
+    from pubmed2db.db import connect, record_run
+    from pubmed2db.status import last_run
+
+    con = connect(tmp_path / "rr.duckdb")
+    assert last_run(con, "journals") is None
+    record_run(con, "journals")
+    first = last_run(con, "journals")
+    assert first is not None
+    record_run(con, "journals")  # upsert, not duplicate
+    assert last_run(con, "journals") >= first
+    assert con.execute("SELECT count(*) FROM pipeline_run").fetchone()[0] == 1
+
+
 def test_cli_export_warns_when_journals_missing(tmp_path, gz_fixture):
     """`export` proceeds but warns when the journal dimension is empty."""
     from pubmed2db.db import connect

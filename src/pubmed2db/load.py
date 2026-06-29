@@ -17,7 +17,7 @@ import duckdb
 import pyarrow as pa
 from pubmed_downloader.utils import Collective
 
-from .db import get_registry, parse_file_name
+from .db import get_registry, parse_file_name, record_run
 from .parse import ParsedArticle, ParsedFile, parse_file
 
 logger = logging.getLogger(__name__)
@@ -367,4 +367,5 @@ def load_journals(con: duckdb.DuckDBPyConnection, *, force: bool = False) -> int
         ],
     )
     con.executemany("INSERT INTO journal_issn VALUES (?,?,?)", issn_rows)
+    record_run(con, "journals")
     return len(journals)

@@ -21,7 +21,7 @@ Parquet (PubMed field names, for downloadable queries).
 | `src/pubmed2db/load.py` | Loads parsed files (full history, provenance-tagged), `latest`/delete logic, journal dimension. |
 | `src/pubmed2db/export.py` | JSON (spec fields, empty-string-not-null) + Parquet export. |
 | `src/pubmed2db/status.py` | Pipeline-readiness checks derived from DB state (drives the CLI's prerequisite errors/warnings). |
-| `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`. |
+| `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`, `status`. |
 
 ## Key design decisions (and why)
 
@@ -53,7 +53,10 @@ Parquet (PubMed field names, for downloadable queries).
   and warns if the `journal` table is empty (names would be blank). Deriving from
   the `source_file` watermarks + table contents means a check can't disagree with
   the data. `load` does **not** load journals — `journals` is its own step;
-  `update` chains `download → journals → load` for the happy path.
+  `update` chains `download → journals → load` for the happy path. The read-only
+  `status` command reports the same signals (`status.summarize`); the only
+  recorded timestamp is `journals`' last refresh (`pipeline_run`), since it leaves
+  no other trace — download/load recency stays derived from `source_file`.
 - **Columnar bulk load.** `load._insert_batch` registers each file's rows as an
   Arrow table and inserts them via `INSERT ... SELECT`, not row-by-row
   `executemany` (which ran at ~2.5k rows/s and made load ~20 min/file). This is
