@@ -9,6 +9,8 @@ first — which is also how an MD5 change triggers a refresh.
 from __future__ import annotations
 
 import logging
+import resource
+import sys
 from pathlib import Path
 
 import duckdb
@@ -154,6 +156,16 @@ def _insert_batch(con: duckdb.DuckDBPyConnection, table: str, rows: list[tuple])
         con.unregister(_BATCH)
 
 
+def _peak_rss_gib() -> float:
+    """Peak resident set size of this process so far, in GiB.
+
+    ``ru_maxrss`` is a high-water mark in bytes on macOS and KiB on Linux; we log
+    it per file so a Slurm run reveals how much ``--mem`` the loader really needs.
+    """
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return rss / 1024**3 if sys.platform == "darwin" else rss / 1024**2
+
+
 def delete_file_rows(con: duckdb.DuckDBPyConnection, source_file: str) -> None:
     """Remove every row previously loaded from ``source_file``."""
     for table in _VERSIONED_TABLES:
@@ -229,10 +241,11 @@ def load_file(
     parsed = parse_file(path)
     load_parsed(con, parsed, source_file, kind=kind)
     logger.info(
-        "loaded %s: %d articles, %d deletions",
+        "loaded %s: %d articles, %d deletions (peak RSS %.1f GiB)",
         source_file,
         len(parsed.articles),
         len(parsed.deleted_pmids),
+        _peak_rss_gib(),
     )
     return parsed
 
