@@ -10,11 +10,17 @@ from __future__ import annotations
 import calendar
 import json
 import logging
+import time
 from pathlib import Path
 
 import duckdb
 
+from .util import fmt_duration, peak_rss_gib
+
 logger = logging.getLogger(__name__)
+
+#: Minimum gap between progress log lines, so large exports don't spam the log.
+_PROGRESS_INTERVAL_S = 10.0
 
 #: Child tables whose rows belong to a specific article version (pmid, source_file).
 _VERSIONED_CHILDREN = (
@@ -112,8 +118,13 @@ def export_json(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    total = con.execute("SELECT count(*) FROM latest_article").fetchone()[0]
+    logger.info("starting JSON export: %d document(s) to %d shard(s) in %s", total, shards, out_dir)
+
     paths = [out_dir / f"pubmed_metadata_{i:05d}.ndjson" for i in range(shards)]
     handles = [path.open("w", encoding="utf-8") for path in paths]
+    run_start = time.monotonic()
+    last_log = run_start
     try:
         cur = con.execute(_LATEST_METADATA_SQL)
         index = 0
@@ -126,12 +137,26 @@ def export_json(
                     json.dumps(_document(row), ensure_ascii=False) + "\n"
                 )
                 index += 1
+
+            now = time.monotonic()
+            if now - last_log >= _PROGRESS_INTERVAL_S and total:
+                elapsed = now - run_start
+                remaining = total - index
+                eta = fmt_duration(elapsed / index * remaining) if index else "?"
+                logger.info(
+                    "progress: %d/%d documents (%.1f%%), ~%s remaining",
+                    index, total, 100 * index / total, eta,
+                )
+                last_log = now
     finally:
         for handle in handles:
             handle.close()
 
     written = [p for p in paths if p.stat().st_size > 0] or paths[:1]
-    logger.info("exported %d documents to %d shard(s) in %s", index, len(written), out_dir)
+    logger.info(
+        "exported %d documents to %d shard(s) in %s (peak RSS %.1f GiB)",
+        index, len(written), out_dir, peak_rss_gib(),
+    )
     return written
 
 
@@ -155,6 +180,19 @@ def export_parquet(
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
 
+    tables = 1 + len(_VERSIONED_CHILDREN) + len(_OTHER_TABLES)
+    logger.info(
+        "starting Parquet export: %d table(s) (%s) to %s",
+        tables, "latest version" if latest else "full history", out_dir,
+    )
+    run_start = time.monotonic()
+
+    def _progress(done: int) -> None:
+        remaining = tables - done
+        elapsed = time.monotonic() - run_start
+        eta = fmt_duration(elapsed / done * remaining) if remaining else "done"
+        logger.info("progress: %d/%d tables, ~%s remaining", done, tables, eta)
+
     if latest:
         article_query = "SELECT * FROM latest_article"
     else:
@@ -162,6 +200,7 @@ def export_parquet(
     article_path = out_dir / "article.parquet"
     _copy_parquet(con, article_query, article_path)
     written.append(article_path)
+    _progress(len(written))
 
     for table in _VERSIONED_CHILDREN:
         if latest:
@@ -175,12 +214,17 @@ def export_parquet(
         path = out_dir / f"{table}.parquet"
         _copy_parquet(con, query, path)
         written.append(path)
+        _progress(len(written))
 
     # Dimension / bookkeeping tables are exported in full regardless of `latest`.
     for table in _OTHER_TABLES:
         path = out_dir / f"{table}.parquet"
         _copy_parquet(con, f"SELECT * FROM {table}", path)
         written.append(path)
+        _progress(len(written))
 
-    logger.info("exported %d Parquet file(s) to %s", len(written), out_dir)
+    logger.info(
+        "exported %d Parquet file(s) to %s (peak RSS %.1f GiB)",
+        len(written), out_dir, peak_rss_gib(),
+    )
     return written

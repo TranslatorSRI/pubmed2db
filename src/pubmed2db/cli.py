@@ -53,6 +53,7 @@ def main(ctx: click.Context, data_dir: str, db: str | None, verbose: bool) -> No
     ctx.obj["db"] = db or os.environ.get(
         "PUBMED2DB_DB", str(Path(data_dir) / "pubmed.duckdb")
     )
+    ctx.obj["verbose"] = verbose
 
 
 @main.command()
@@ -131,6 +132,7 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int, latest: bool) ->
     """Export the latest abstracts to JSON, or the database to Parquet."""
     from .export import export_json, export_parquet
     from .status import articles_loaded, journals_loaded, pending_file_count
+    from .util import peak_rss_gib
 
     con = connect(ctx.obj["db"])
     try:
@@ -151,11 +153,19 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int, latest: bool) ->
                 "run `pubmed2db journals` to populate them.",
                 err=True,
             )
+        if ctx.obj.get("verbose"):
+            # Surfaces DuckDB's own progress bar for the long COPY queries below,
+            # giving feedback even within a single large table's export.
+            con.execute("PRAGMA enable_progress_bar")
+
+        click.echo(f"Starting {fmt} export to {out}...")
         if fmt == "json":
             paths = export_json(con, out, shards=shards)
         else:
             paths = export_parquet(con, out, latest=latest)
-        click.echo(f"Wrote {len(paths)} file(s) to {out}.")
+        click.echo(
+            f"Wrote {len(paths)} file(s) to {out} (peak RSS {peak_rss_gib():.1f} GiB)."
+        )
     finally:
         con.close()
 
