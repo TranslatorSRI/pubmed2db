@@ -9,8 +9,6 @@ first — which is also how an MD5 change triggers a refresh.
 from __future__ import annotations
 
 import logging
-import resource
-import sys
 import time
 from pathlib import Path
 
@@ -20,6 +18,7 @@ from pubmed_downloader.utils import Collective
 
 from .db import get_registry, parse_file_name, record_run
 from .parse import ParsedArticle, ParsedFile, parse_file
+from .util import fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
 
@@ -157,16 +156,6 @@ def _insert_batch(con: duckdb.DuckDBPyConnection, table: str, rows: list[tuple])
         con.unregister(_BATCH)
 
 
-def _peak_rss_gib() -> float:
-    """Peak resident set size of this process so far, in GiB.
-
-    ``ru_maxrss`` is a high-water mark in bytes on macOS and KiB on Linux; we log
-    it per file so a Slurm run reveals how much ``--mem`` the loader really needs.
-    """
-    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return rss / 1024**3 if sys.platform == "darwin" else rss / 1024**2
-
-
 def delete_file_rows(con: duckdb.DuckDBPyConnection, source_file: str) -> None:
     """Remove every row previously loaded from ``source_file``."""
     for table in _VERSIONED_TABLES:
@@ -246,7 +235,7 @@ def load_file(
         source_file,
         len(parsed.articles),
         len(parsed.deleted_pmids),
-        _peak_rss_gib(),
+        peak_rss_gib(),
     )
     return parsed
 
@@ -270,18 +259,6 @@ def needs_load(con: duckdb.DuckDBPyConnection, source_file: str, *, force: bool 
     return downloaded_at is not None and downloaded_at > processed_at
 
 
-def _fmt_duration(seconds: float) -> str:
-    """Format a duration in seconds as a human-readable string."""
-    seconds = int(seconds)
-    if seconds < 60:
-        return f"{seconds}s"
-    minutes, secs = divmod(seconds, 60)
-    if minutes < 60:
-        return f"{minutes}m {secs:02d}s"
-    hours, mins = divmod(minutes, 60)
-    return f"{hours}h {mins:02d}m"
-
-
 def load_files(
     con: duckdb.DuckDBPyConnection,
     files: list[tuple[Path, str]],
@@ -303,7 +280,7 @@ def load_files(
         remaining = total - done
         elapsed = time.monotonic() - run_start
         avg = elapsed / done
-        eta = _fmt_duration(avg * remaining) if remaining else "done"
+        eta = fmt_duration(avg * remaining) if remaining else "done"
         logger.info(
             "progress: %d/%d files this run, %d remaining, ~%s to go",
             done, total, remaining, eta,
