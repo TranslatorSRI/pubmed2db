@@ -91,6 +91,14 @@ Use `--limit N` on `download`/`update` to fetch only the newest N files when tes
 See [`CLAUDE.md`](./CLAUDE.md) for architecture and design decisions, and
 [`FUTURE.md`](./FUTURE.md) for known limitations and planned work.
 
+## Information on running this pipeline
+
+- `pubmed2db load` takes a long time to run, and it might be beneficial to parallelize this: transform each PubMed
+  file into a separate DuckDB file, then use a query that spans multiple files to either load everything into one
+  file or to simply export it from the multiple files (using PMIDs to group related queries might not take very long?).
+  Running it with 64G of memory seems sufficient.
+- `pubmed2db export` takes a few hours to run; when run with --mem 256G, its peak RSS was 199.6 GiB.
+
 ## Development
 
 ```bash
