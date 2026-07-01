@@ -14,6 +14,22 @@ below are deliberately deferred.
   Verify this matches what Node Annotator's ElasticSearch ingest expects (id
   field, shard sizing, gzip?).
 
+## Validation (`validate`)
+
+- **Previous-report drop detection.** `validate` compares coverage
+  counts/percentages to a `--previous-report`, but does not diff the full PMID
+  set between exports (we deliberately don't store millions of PMIDs in the
+  report). If we want to confirm *which* PMIDs disappeared between two exports,
+  add an optional sidecar PMID manifest (e.g. a sorted `pmids.txt.gz`) the
+  deletion check can diff against.
+- **Richer deletion status.** Deletion confirmation currently treats "efetch
+  returns nothing" as deleted. Entrez `esummary` distinguishes deleted vs.
+  merged/moved records; use it to label merges explicitly rather than surfacing
+  them as "still live → review manually".
+- **Semantic field tolerance.** Journal name/abbrev come from the NLM Catalog
+  dimension, not the article XML, so they are compared as *soft* (warning-only)
+  fields; revisit if a stricter journal cross-check is wanted.
+
 ## Upstream dependency (`cthoyt/pubmed-downloader`)
 
 - **Revert the custom journal parser** in `load._parse_journal_overview` once

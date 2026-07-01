@@ -61,6 +61,10 @@ pubmed2db --data-dir data update
 
 # Report what's been downloaded, loaded, and is ready to export (read-only).
 pubmed2db --data-dir data status
+
+# Sanity-check a finished export and write validation_report.json alongside it.
+# (Uses the DB when present; --offline skips the Entrez API cross-checks.)
+pubmed2db --data-dir data validate data/json --email you@example.com
 ```
 
 `--data-dir data` is the default, so omitting it gives the same result.
@@ -73,6 +77,17 @@ and `export` errors if nothing has been loaded, warns if some downloaded files
 have not been loaded yet, and warns if the journal dimension is empty (journal
 names would be blank). When in doubt, `pubmed2db update` runs the whole pipeline
 (`download → journals → load`) in order.
+
+`pubmed2db validate <dir>` inspects a finished JSON export and writes a
+`validation_report.json` (pretty-printed, archivable) whose leading
+`errors`/`warnings` arrays are empty when the export looks good. It confirms
+every record parses and has the expected fields, compares the exported count to
+both the live PubMed total and the local database, re-fetches a random sample
+from NCBI Entrez to confirm field values match, and confirms a sample of dropped
+PMIDs are genuinely gone. It exits non-zero on errors (`--fail-on-warn` also
+fails on warnings) so it can gate an HPC run; pass `--offline` to skip the
+network checks. Set `--email` (or `NCBI_EMAIL`) and optionally `--api-key` (or
+`NCBI_API_KEY`, which raises the rate limit) for the API checks.
 
 Use `--limit N` on `download`/`update` to fetch only the newest N files when testing.
 

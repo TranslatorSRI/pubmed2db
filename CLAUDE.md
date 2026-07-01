@@ -20,8 +20,9 @@ Parquet (PubMed field names, for downloadable queries).
 | `src/pubmed2db/parse.py` | Self-driven XML iteration: calls cthoyt's `_extract_article` per record, plus raw `PubDate` + `DeleteCitation`. |
 | `src/pubmed2db/load.py` | Loads parsed files (full history, provenance-tagged), `latest`/delete logic, journal dimension. |
 | `src/pubmed2db/export.py` | JSON (spec fields, empty-string-not-null) + Parquet export. |
+| `src/pubmed2db/validate.py` | Post-export sanity checks over a NDJSON directory: structure, coverage (Entrez + DB denominators), sampled Entrez field comparison, deletion confirmation; emits a gated JSON report. |
 | `src/pubmed2db/status.py` | Pipeline-readiness checks derived from DB state (drives the CLI's prerequisite errors/warnings). |
-| `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`, `status`. |
+| `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`, `status`, `validate`. |
 
 ## Key design decisions (and why)
 
@@ -62,6 +63,16 @@ Parquet (PubMed field names, for downloadable queries).
   `executemany` (which ran at ~2.5k rows/s and made load ~20 min/file). This is
   ~25–90× faster (~5–6 s/file). The load logs peak RSS per file for Slurm sizing;
   see `slurm/README.md` and `scripts/benchmark_load.py`.
+- **`validate` reads the export, not the DB, as its ground truth.** It takes a
+  directory of NDJSON shards (what actually shipped) and cross-checks them; the
+  DuckDB database and a previous report are *optional* inputs that sharpen the
+  coverage/deletion checks and are left blank in the report when absent. Every
+  network call funnels through `validate._eutils` (one monkeypatchable seam, so
+  tests stay offline). The report leads with `errors`/`warnings` arrays that are
+  empty on a clean run; the process exits non-zero on errors so it can gate an
+  HPC pipeline. Structural checks and the API field comparison deliberately
+  reuse `export._document`/`month_to_abbrev` so "expected" is defined the same
+  way the exporter defines it.
 
 ## Known upstream issue — journal parsing
 
