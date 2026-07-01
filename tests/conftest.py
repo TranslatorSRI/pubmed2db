@@ -55,3 +55,29 @@ def loaded_con(con, gz_fixture):
     load_file(con, gz_fixture("pubmed25n0002"), kind="update")
     con.executemany("INSERT INTO journal VALUES (?,?,?,?,?,?,?)", SAMPLE_JOURNALS)
     return con
+
+
+@pytest.fixture
+def staged_download(tmp_path):
+    """A ``--data-dir`` with fixtures staged as if `pubmed2db download` ran.
+
+    Lays fixture files out under ``<data-dir>/pubmed/{baseline,updates}`` (the
+    pystow layout `pubmed_downloader` uses), so CLI tests can exercise `load`'s
+    real directory scan (`_local_files`) instead of loading files directly.
+    Returns the data-dir path.
+    """
+    data_dir = tmp_path / "data"
+    baseline_dir = data_dir / "pubmed" / "baseline"
+    updates_dir = data_dir / "pubmed" / "updates"
+    baseline_dir.mkdir(parents=True)
+    updates_dir.mkdir(parents=True)
+
+    def _stage(stem: str, dst_dir: Path) -> None:
+        with (FIXTURES / f"{stem}.xml").open("rb") as fin, gzip.open(
+            dst_dir / f"{stem}.xml.gz", "wb"
+        ) as fout:
+            shutil.copyfileobj(fin, fout)
+
+    _stage("pubmed25n0001", baseline_dir)
+    _stage("pubmed25n0002", updates_dir)
+    return data_dir
