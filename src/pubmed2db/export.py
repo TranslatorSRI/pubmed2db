@@ -8,6 +8,7 @@ nulls, for absent values. Parquet export keeps PubMed's own field names.
 from __future__ import annotations
 
 import calendar
+import gzip
 import json
 import logging
 import time
@@ -107,11 +108,15 @@ def export_json(
     *,
     shards: int = 1,
     batch_size: int = 5000,
+    gzip_output: bool = False,
 ) -> list[Path]:
     """Export the latest version of every abstract as sharded NDJSON.
 
     Each line is one document keyed by ``PMID:<id>`` using DocumentMetadataAPI
-    field names. Returns the list of files written.
+    field names. With ``gzip_output=True`` each shard is compressed as it is
+    written (one pass, no separate re-read of the finished file), and the
+    output is still line-readable via ``zcat``. Returns the list of files
+    written.
     """
     if shards < 1:
         raise ValueError("shards must be >= 1")
@@ -119,10 +124,17 @@ def export_json(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     total = con.execute("SELECT count(*) FROM latest_article").fetchone()[0]
-    logger.info("starting JSON export: %d document(s) to %d shard(s) in %s", total, shards, out_dir)
+    logger.info(
+        "starting JSON export: %d document(s) to %d shard(s) in %s%s",
+        total, shards, out_dir, " (gzip)" if gzip_output else "",
+    )
 
-    paths = [out_dir / f"pubmed_metadata_{i:05d}.ndjson" for i in range(shards)]
-    handles = [path.open("w", encoding="utf-8") for path in paths]
+    suffix = ".ndjson.gz" if gzip_output else ".ndjson"
+    paths = [out_dir / f"pubmed_metadata_{i:05d}{suffix}" for i in range(shards)]
+    opener = (lambda p: gzip.open(p, "wt", encoding="utf-8")) if gzip_output else (
+        lambda p: p.open("w", encoding="utf-8")
+    )
+    handles = [opener(path) for path in paths]
     run_start = time.monotonic()
     last_log = run_start
     try:

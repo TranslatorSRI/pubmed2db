@@ -122,13 +122,14 @@ def load(ctx: click.Context, force: bool) -> None:
 )
 @click.option("--out", required=True, type=click.Path(file_okay=False), help="Output directory.")
 @click.option("--shards", type=int, default=1, show_default=True, help="JSON: number of NDJSON shards.")
+@click.option("--gzip/--no-gzip", "gzip_output", default=False, help="JSON: gzip each shard as it's written.")
 @click.option(
     "--latest/--all",
     default=True,
     help="Parquet: export only the latest version (default) or full history.",
 )
 @click.pass_context
-def export(ctx: click.Context, fmt: str, out: str, shards: int, latest: bool) -> None:
+def export(ctx: click.Context, fmt: str, out: str, shards: int, gzip_output: bool, latest: bool) -> None:
     """Export the latest abstracts to JSON, or the database to Parquet."""
     from .export import export_json, export_parquet
     from .status import articles_loaded, journals_loaded, pending_file_count
@@ -160,7 +161,7 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int, latest: bool) ->
 
         click.echo(f"Starting {fmt} export to {out}...")
         if fmt == "json":
-            paths = export_json(con, out, shards=shards)
+            paths = export_json(con, out, shards=shards, gzip_output=gzip_output)
         else:
             paths = export_parquet(con, out, latest=latest)
         click.echo(
