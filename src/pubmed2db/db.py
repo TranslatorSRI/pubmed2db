@@ -89,18 +89,3 @@ def record_run(con: duckdb.DuckDBPyConnection, step: str) -> None:
         """,
         [step],
     )
-
-
-def get_registry(con: duckdb.DuckDBPyConnection) -> dict[str, dict]:
-    """Return the ``source_file`` registry keyed by file name."""
-    cols = [
-        "file_name",
-        "kind",
-        "file_order_key",
-        "published_md5",
-        "processed_at",
-        "n_articles",
-        "n_deletions",
-    ]
-    rows = con.execute(f"SELECT {', '.join(cols)} FROM source_file").fetchall()
-    return {row[0]: dict(zip(cols, row)) for row in rows}
