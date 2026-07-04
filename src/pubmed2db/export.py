@@ -133,8 +133,12 @@ def export_json(
         total, shards, out_dir, " (gzip)" if gzip_output else "",
     )
 
+    # Only open as many shard files as there are documents to distribute, so a
+    # dataset smaller than `shards` doesn't leave extra empty files on disk that
+    # this function's own return value never mentions.
+    active_shards = min(shards, total) if total else 1
     suffix = ".ndjson.gz" if gzip_output else ".ndjson"
-    paths = [out_dir / f"pubmed_metadata_{i:05d}{suffix}" for i in range(shards)]
+    paths = [out_dir / f"pubmed_metadata_{i:05d}{suffix}" for i in range(active_shards)]
     opener = (lambda p: gzip.open(p, "wt", encoding="utf-8")) if gzip_output else (
         lambda p: p.open("w", encoding="utf-8")
     )
@@ -149,7 +153,7 @@ def export_json(
             if not rows:
                 break
             for row in rows:
-                handles[index % shards].write(
+                handles[index % active_shards].write(
                     json.dumps(_document(row), ensure_ascii=False) + "\n"
                 )
                 index += 1
@@ -168,19 +172,18 @@ def export_json(
         for handle in handles:
             handle.close()
 
-    # Documents are distributed round-robin (`handles[index % shards]`), so the
-    # shards actually written are exactly the first `min(index, shards)` paths;
-    # fall back to one empty file when there was nothing to export.
-    written = paths[: min(index, shards)] if index else paths[:1]
     logger.info(
         "exported %d documents to %d shard(s) in %s (peak RSS %.1f GiB)",
-        index, len(written), out_dir, peak_rss_gib(),
+        index, len(paths), out_dir, peak_rss_gib(),
     )
-    return written
+    return paths
 
 
 def _copy_parquet(con: duckdb.DuckDBPyConnection, query: str, path: Path) -> None:
-    con.execute(f"COPY ({query}) TO '{path.as_posix()}' (FORMAT PARQUET)")
+    # Escape single quotes so a path containing one (e.g. an apostrophe in a
+    # directory name) doesn't break out of the quoted string literal.
+    escaped_path = path.as_posix().replace("'", "''")
+    con.execute(f"COPY ({query}) TO '{escaped_path}' (FORMAT PARQUET)")
 
 
 def export_parquet(
