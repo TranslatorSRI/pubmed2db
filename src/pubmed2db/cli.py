@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import closing
 from pathlib import Path
 
 import click
@@ -66,12 +67,9 @@ def download(ctx: click.Context, baseline: bool, updates: bool, limit: int | Non
     """Download baseline/update files and record MD5 checksums."""
     from .download import sync
 
-    con = connect(ctx.obj["db"])
-    try:
+    with closing(connect(ctx.obj["db"])) as con:
         results = sync(con, baseline=baseline, updates=updates, limit=limit, verify=verify)
         click.echo(f"Synced {len(results)} file(s).")
-    finally:
-        con.close()
 
 
 @main.command()
@@ -80,12 +78,9 @@ def journals(ctx: click.Context) -> None:
     """Refresh the journal dimension from the NLM Catalog."""
     from .load import load_journals
 
-    con = connect(ctx.obj["db"])
-    try:
+    with closing(connect(ctx.obj["db"])) as con:
         n = load_journals(con)
         click.echo(f"Loaded {n} journals.")
-    finally:
-        con.close()
 
 
 @main.command()
@@ -99,8 +94,7 @@ def load(ctx: click.Context, force: bool) -> None:
     """
     from .load import load_files
 
-    con = connect(ctx.obj["db"])
-    try:
+    with closing(connect(ctx.obj["db"])) as con:
         files = _local_files()
         if not files:
             raise click.ClickException(
@@ -108,8 +102,6 @@ def load(ctx: click.Context, force: bool) -> None:
             )
         loaded = load_files(con, files, force=force)
         click.echo(f"Loaded {loaded} of {len(files)} file(s).")
-    finally:
-        con.close()
 
 
 @main.command()
@@ -132,28 +124,16 @@ def load(ctx: click.Context, force: bool) -> None:
 def export(ctx: click.Context, fmt: str, out: str, shards: int, gzip_output: bool, latest: bool) -> None:
     """Export the latest abstracts to JSON, or the database to Parquet."""
     from .export import export_json, export_parquet
-    from .status import articles_loaded, journals_loaded, pending_file_count
+    from .status import export_readiness
     from .util import peak_rss_gib
 
-    con = connect(ctx.obj["db"])
-    try:
-        if not articles_loaded(con):
-            raise click.ClickException(
-                "No articles loaded; run `pubmed2db load` first."
-            )
-        pending = pending_file_count(con)
-        if pending:
-            click.echo(
-                f"Warning: {pending} downloaded file(s) not yet loaded; "
-                "run `pubmed2db load` to include them in the export.",
-                err=True,
-            )
-        if not journals_loaded(con):
-            click.echo(
-                "Warning: journal table is empty, so journal names will be blank; "
-                "run `pubmed2db journals` to populate them.",
-                err=True,
-            )
+    with closing(connect(ctx.obj["db"])) as con:
+        readiness = export_readiness(con)
+        if readiness["blocked"]:
+            raise click.ClickException(readiness["warnings"][0])
+        for warning in readiness["warnings"]:
+            click.echo(f"Warning: {warning}", err=True)
+
         if ctx.obj.get("verbose"):
             # Surfaces DuckDB's own progress bar for the long COPY queries below,
             # giving feedback even within a single large table's export.
@@ -167,8 +147,6 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int, gzip_output: boo
         click.echo(
             f"Wrote {len(paths)} file(s) to {out} (peak RSS {peak_rss_gib():.1f} GiB)."
         )
-    finally:
-        con.close()
 
 
 def _fmt_ts(ts: object) -> str:
@@ -180,10 +158,9 @@ def _fmt_ts(ts: object) -> str:
 @click.pass_context
 def status(ctx: click.Context) -> None:
     """Report what's been downloaded, loaded, and is ready to export."""
-    from .status import summarize
+    from .status import export_readiness, summarize
 
-    con = connect(ctx.obj["db"])
-    try:
+    with closing(connect(ctx.obj["db"])) as con:
         s = summarize(con)
         pct = (
             f"{100 * s['loaded_files'] / s['downloaded_files']:.1f}%"
@@ -216,18 +193,13 @@ def status(ctx: click.Context) -> None:
             f"{s['latest_documents']} latest document(s)"
         )
 
-        # Mirror the export command's prerequisites as an at-a-glance verdict.
-        if not s["articles_loaded"]:
-            click.echo("Export:    blocked — no articles loaded; run `pubmed2db load`")
-        elif not s["journals_loaded"]:
-            click.echo("Export:    ready, but journal names will be blank "
-                       "(run `pubmed2db journals`)")
-        elif s["pending_files"]:
-            click.echo("Export:    ready, but would miss the unloaded file(s) above")
+        readiness = export_readiness(con)
+        if readiness["blocked"]:
+            click.echo(f"Export:    blocked — {readiness['warnings'][0]}")
+        elif readiness["warnings"]:
+            click.echo(f"Export:    ready, but: {'; '.join(readiness['warnings'])}")
         else:
             click.echo("Export:    ready")
-    finally:
-        con.close()
 
 
 @main.command()
@@ -239,16 +211,13 @@ def update(ctx: click.Context, limit: int | None, force: bool) -> None:
     from .download import sync
     from .load import load_files, load_journals
 
-    con = connect(ctx.obj["db"])
-    try:
+    with closing(connect(ctx.obj["db"])) as con:
         results = sync(con, limit=limit)
         click.echo(f"Synced {len(results)} file(s).")
         n = load_journals(con)
         click.echo(f"Loaded {n} journals.")
         loaded = load_files(con, results, force=force)
         click.echo(f"Loaded {loaded} file(s).")
-    finally:
-        con.close()
 
 
 if __name__ == "__main__":

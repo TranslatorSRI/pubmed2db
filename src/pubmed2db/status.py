@@ -34,9 +34,11 @@ def pending_file_count(con: duckdb.DuckDBPyConnection) -> int:
     """
     return con.execute(
         """
-        SELECT count(*) FROM source_file
-        WHERE downloaded_at IS NOT NULL
-          AND (processed_at IS NULL OR downloaded_at > processed_at)
+        SELECT count(*) FILTER (
+            WHERE downloaded_at IS NOT NULL
+              AND (processed_at IS NULL OR downloaded_at > processed_at)
+        )
+        FROM source_file
         """
     ).fetchone()[0]
 
@@ -47,6 +49,30 @@ def last_run(con: duckdb.DuckDBPyConnection, step: str) -> datetime | None:
         "SELECT last_run_at FROM pipeline_run WHERE step = ?", [step]
     ).fetchone()
     return row[0] if row else None
+
+
+def export_readiness(con: duckdb.DuckDBPyConnection) -> dict:
+    """Whether ``export`` can run, and any warnings — shared by the ``export``
+    and ``status`` commands so their verdicts can't drift apart.
+    """
+    if not articles_loaded(con):
+        return {
+            "blocked": True,
+            "warnings": ["No articles loaded; run `pubmed2db load` first."],
+        }
+    warnings = []
+    pending = pending_file_count(con)
+    if pending:
+        warnings.append(
+            f"{pending} downloaded file(s) not yet loaded; "
+            "run `pubmed2db load` to include them in the export."
+        )
+    if not journals_loaded(con):
+        warnings.append(
+            "journal table is empty, so journal names will be blank; "
+            "run `pubmed2db journals` to populate them."
+        )
+    return {"blocked": False, "warnings": warnings}
 
 
 def summarize(con: duckdb.DuckDBPyConnection) -> dict:
@@ -63,6 +89,7 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         last_download,
         loaded_files,
         last_load,
+        pending_files,
     ) = con.execute(
         """
         SELECT
@@ -72,8 +99,21 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
             count(*) FILTER (WHERE kind = 'update'),
             max(downloaded_at),
             count(*) FILTER (WHERE processed_at IS NOT NULL),
-            max(processed_at)
+            max(processed_at),
+            count(*) FILTER (
+                WHERE downloaded_at IS NOT NULL
+                  AND (processed_at IS NULL OR downloaded_at > processed_at)
+            )
         FROM source_file
+        """
+    ).fetchone()
+
+    article_versions, latest_documents, journals = con.execute(
+        """
+        SELECT
+            (SELECT count(*) FROM article),
+            (SELECT count(*) FROM latest_article),
+            (SELECT count(*) FROM journal)
         """
     ).fetchone()
 
@@ -84,11 +124,11 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         "update_files": update,
         "last_download": last_download,
         "loaded_files": loaded_files,
-        "pending_files": pending_file_count(con),
+        "pending_files": pending_files,
         "last_load": last_load,
-        "article_versions": con.execute("SELECT count(*) FROM article").fetchone()[0],
-        "latest_documents": con.execute("SELECT count(*) FROM latest_article").fetchone()[0],
-        "journals": con.execute("SELECT count(*) FROM journal").fetchone()[0],
+        "article_versions": article_versions,
+        "latest_documents": latest_documents,
+        "journals": journals,
         "journals_refreshed": last_run(con, "journals"),
         "articles_loaded": articles_loaded(con),
         "journals_loaded": journals_loaded(con),
