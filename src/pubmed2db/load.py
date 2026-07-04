@@ -18,7 +18,7 @@ from pubmed_downloader.utils import Collective
 
 from .db import get_registry, parse_file_name, record_run
 from .parse import ParsedArticle, ParsedFile, parse_file
-from .util import fmt_duration, peak_rss_gib
+from .util import eta_str, peak_rss_gib
 
 logger = logging.getLogger(__name__)
 
@@ -127,22 +127,13 @@ _BATCH = "_load_batch"
 #: while insert drops from ~75s to ~4s per file — see scripts/benchmark_load.py).
 #: ``article`` appends ``now()`` for its server-side ``loaded_at`` column.
 _INSERT_SELECT: dict[str, str] = {
-    table: f"INSERT INTO {table} BY POSITION SELECT * FROM {_BATCH}"
-    for table in (
-        "abstract_text",
-        "author",
-        "author_affiliation",
-        "mesh_heading",
-        "mesh_qualifier",
-        "publication_type",
-        "grant_",
-        "reference_citation",
-        "article_id",
-        "history",
-        "deleted_pmid",
+    table: (
+        f"INSERT INTO {table} BY POSITION SELECT *, now() FROM {_BATCH}"
+        if table == "article"
+        else f"INSERT INTO {table} BY POSITION SELECT * FROM {_BATCH}"
     )
+    for table in _VERSIONED_TABLES
 }
-_INSERT_SELECT["article"] = f"INSERT INTO article BY POSITION SELECT *, now() FROM {_BATCH}"
 
 
 def _insert_batch(con: duckdb.DuckDBPyConnection, table: str, rows: list[tuple]) -> None:
@@ -279,8 +270,7 @@ def load_files(
         done = i + 1
         remaining = total - done
         elapsed = time.monotonic() - run_start
-        avg = elapsed / done
-        eta = fmt_duration(avg * remaining) if remaining else "done"
+        eta = eta_str(elapsed, done, remaining)
         logger.info(
             "progress: %d/%d files this run, %d remaining, ~%s to go",
             done, total, remaining, eta,

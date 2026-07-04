@@ -27,3 +27,12 @@ def fmt_duration(seconds: float) -> str:
         return f"{minutes}m {secs:02d}s"
     hours, mins = divmod(minutes, 60)
     return f"{hours}h {mins:02d}m"
+
+
+def eta_str(elapsed: float, done: int, remaining: int) -> str:
+    """Estimate time remaining from progress so far, for a progress log line."""
+    if remaining <= 0:
+        return "done"
+    if done <= 0:
+        return "?"
+    return fmt_duration(elapsed / done * remaining)

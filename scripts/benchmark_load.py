@@ -16,16 +16,8 @@ from __future__ import annotations
 
 import argparse
 import os
-import resource
-import sys
 import time
 from pathlib import Path
-
-
-def _peak_rss_gib() -> float:
-    """Process peak RSS in GiB (``ru_maxrss`` is bytes on macOS, KiB on Linux)."""
-    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return rss / 1024**3 if sys.platform == "darwin" else rss / 1024**2
 
 
 def main() -> None:
@@ -51,6 +43,7 @@ def main() -> None:
     from pubmed2db.db import init_schema, parse_file_name
     from pubmed2db.load import _article_rows, load_parsed
     from pubmed2db.parse import parse_file
+    from pubmed2db.util import peak_rss_gib
 
     header = f"{'file':28} {'articles':>8} {'parse_s':>8} {'load_s':>8} {'rows':>9} {'rows/s':>9} {'peakRSS':>8}"
     print(header)
@@ -80,7 +73,7 @@ def main() -> None:
         rows_per_s = n_rows / t_load if t_load else 0
         print(
             f"{source_file:28} {len(parsed.articles):8d} {t_parse:8.2f} {t_load:8.2f} "
-            f"{n_rows:9d} {rows_per_s:9.0f} {_peak_rss_gib():7.1f}G"
+            f"{n_rows:9d} {rows_per_s:9.0f} {peak_rss_gib():7.1f}G"
         )
 
 
