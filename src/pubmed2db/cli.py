@@ -203,21 +203,35 @@ def status(ctx: click.Context) -> None:
 
 
 @main.command()
+@click.option("--baseline/--no-baseline", default=True, help="Sync baseline files.")
+@click.option("--updates/--no-updates", default=True, help="Sync update files.")
 @click.option("--limit", type=int, default=None, help="Only sync the first N files (testing).")
+@click.option("--verify/--no-verify", default=True, help="Verify downloaded files against MD5.")
 @click.option("--force", is_flag=True, help="Reload files even if already up to date.")
 @click.pass_context
-def update(ctx: click.Context, limit: int | None, force: bool) -> None:
+def update(
+    ctx: click.Context,
+    baseline: bool,
+    updates: bool,
+    limit: int | None,
+    verify: bool,
+    force: bool,
+) -> None:
     """Download, refresh journals, and load — for scheduled runs."""
     from .download import sync
     from .load import load_files, load_journals
 
     with closing(connect(ctx.obj["db"])) as con:
-        results = sync(con, limit=limit)
+        results = sync(con, baseline=baseline, updates=updates, limit=limit, verify=verify)
         click.echo(f"Synced {len(results)} file(s).")
         n = load_journals(con)
         click.echo(f"Loaded {n} journals.")
-        loaded = load_files(con, results, force=force)
-        click.echo(f"Loaded {loaded} file(s).")
+        # Scan the full local directory (like `load`), not just the files this
+        # run's sync() happened to return, so previously-downloaded-but-not-yet
+        # loaded files aren't silently skipped.
+        files = _local_files()
+        loaded = load_files(con, files, force=force)
+        click.echo(f"Loaded {loaded} of {len(files)} file(s).")
 
 
 if __name__ == "__main__":
