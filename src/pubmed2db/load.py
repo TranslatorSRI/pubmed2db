@@ -347,23 +347,29 @@ def load_journals(con: duckdb.DuckDBPyConnection, *, force: bool = False) -> int
         for value, issn_type in issns:
             issn_rows.append((nlm_id, value, issn_type))
 
-    con.execute("DELETE FROM journal")
-    con.execute("DELETE FROM journal_issn")
-    con.executemany(
-        "INSERT INTO journal VALUES (?,?,?,?,?,?,?)",
-        [
-            (
-                nlm_id,
-                rec.get("title"),
-                rec.get("abbreviation_medline"),
-                rec.get("abbreviation_iso"),
-                None,  # start_year: not present in the overview file
-                None,  # end_year: not present in the overview file
-                None,  # active: unknown from the overview file
-            )
-            for nlm_id, rec in journals.items()
-        ],
-    )
-    con.executemany("INSERT INTO journal_issn VALUES (?,?,?)", issn_rows)
-    record_run(con, "journals")
+    con.execute("BEGIN TRANSACTION")
+    try:
+        con.execute("DELETE FROM journal")
+        con.execute("DELETE FROM journal_issn")
+        con.executemany(
+            "INSERT INTO journal VALUES (?,?,?,?,?,?,?)",
+            [
+                (
+                    nlm_id,
+                    rec.get("title"),
+                    rec.get("abbreviation_medline"),
+                    rec.get("abbreviation_iso"),
+                    None,  # start_year: not present in the overview file
+                    None,  # end_year: not present in the overview file
+                    None,  # active: unknown from the overview file
+                )
+                for nlm_id, rec in journals.items()
+            ],
+        )
+        con.executemany("INSERT INTO journal_issn VALUES (?,?,?)", issn_rows)
+        record_run(con, "journals")
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
     return len(journals)
