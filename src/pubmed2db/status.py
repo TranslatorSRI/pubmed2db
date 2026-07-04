@@ -14,6 +14,15 @@ from datetime import datetime
 
 import duckdb
 
+#: Shared "downloaded but not (re)loaded" predicate: a file is pending if it was
+#: downloaded but never processed, or downloaded again since its last load (a
+#: changed published MD5). Used by both this module's pending_file_count() and
+#: summarize(), and by :func:`pubmed2db.load.needs_load`'s single-file check, so
+#: the rule can't drift apart between its callers.
+NEEDS_LOAD_SQL = (
+    "downloaded_at IS NOT NULL AND (processed_at IS NULL OR downloaded_at > processed_at)"
+)
+
 
 def articles_loaded(con: duckdb.DuckDBPyConnection) -> bool:
     """Whether any article version has been loaded (i.e. ``load`` has run)."""
@@ -33,13 +42,7 @@ def pending_file_count(con: duckdb.DuckDBPyConnection) -> int:
     its last load (a changed published MD5).
     """
     return con.execute(
-        """
-        SELECT count(*) FILTER (
-            WHERE downloaded_at IS NOT NULL
-              AND (processed_at IS NULL OR downloaded_at > processed_at)
-        )
-        FROM source_file
-        """
+        f"SELECT count(*) FILTER (WHERE {NEEDS_LOAD_SQL}) FROM source_file"
     ).fetchone()[0]
 
 
@@ -89,7 +92,6 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         last_download,
         loaded_files,
         last_load,
-        pending_files,
     ) = con.execute(
         """
         SELECT
@@ -99,14 +101,11 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
             count(*) FILTER (WHERE kind = 'update'),
             max(downloaded_at),
             count(*) FILTER (WHERE processed_at IS NOT NULL),
-            max(processed_at),
-            count(*) FILTER (
-                WHERE downloaded_at IS NOT NULL
-                  AND (processed_at IS NULL OR downloaded_at > processed_at)
-            )
+            max(processed_at)
         FROM source_file
         """
     ).fetchone()
+    pending_files = pending_file_count(con)
 
     article_versions, latest_documents, journals = con.execute(
         """
