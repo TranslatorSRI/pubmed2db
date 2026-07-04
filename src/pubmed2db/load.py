@@ -167,8 +167,16 @@ def load_parsed(
     try:
         delete_file_rows(con, source_file)
 
-        batches: dict[str, list[tuple]] = {t: [] for t in _INSERT_SELECT}
+        # A PMID can appear more than once within a single file (e.g. citation
+        # correction artifacts); keep only the last occurrence so `article`'s
+        # documented (pmid, source_file) identity actually holds and
+        # `latest_article`'s per-file ranking never needs a tiebreaker.
+        deduped: dict[int, ParsedArticle] = {}
         for article in parsed.articles:
+            deduped[article.pubmed] = article
+
+        batches: dict[str, list[tuple]] = {t: [] for t in _INSERT_SELECT}
+        for article in deduped.values():
             for table, table_rows in _article_rows(article, source_file, order_key).items():
                 batches[table].extend(table_rows)
         for pmid in parsed.deleted_pmids:
@@ -199,7 +207,7 @@ def load_parsed(
                 year_yy,
                 file_number,
                 order_key,
-                len(parsed.articles),
+                len(deduped),
                 len(parsed.deleted_pmids),
             ],
         )
