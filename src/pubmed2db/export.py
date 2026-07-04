@@ -16,7 +16,7 @@ from pathlib import Path
 
 import duckdb
 
-from .util import fmt_duration, peak_rss_gib
+from .util import eta_str, peak_rss_gib
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ SELECT
     la.pub_month,
     la.pub_day,
     abs.abstract
-FROM latest_article la
+FROM _latest_snapshot la
 LEFT JOIN journal j ON la.nlm_catalog_id = j.nlm_catalog_id
 LEFT JOIN abs ON abs.pmid = la.pmid AND abs.source_file = la.source_file
 ORDER BY la.pmid
@@ -123,7 +123,11 @@ def export_json(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    total = con.execute("SELECT count(*) FROM latest_article").fetchone()[0]
+    # Materialize the latest-version snapshot once: `latest_article` is a window
+    # function over the full `article` table, and both the count and the export
+    # query below would otherwise recompute it.
+    con.execute("CREATE OR REPLACE TEMP TABLE _latest_snapshot AS SELECT * FROM latest_article")
+    total = con.execute("SELECT count(*) FROM _latest_snapshot").fetchone()[0]
     logger.info(
         "starting JSON export: %d document(s) to %d shard(s) in %s%s",
         total, shards, out_dir, " (gzip)" if gzip_output else "",
@@ -154,7 +158,7 @@ def export_json(
             if now - last_log >= _PROGRESS_INTERVAL_S and total:
                 elapsed = now - run_start
                 remaining = total - index
-                eta = fmt_duration(elapsed / index * remaining) if index else "?"
+                eta = eta_str(elapsed, index, remaining)
                 logger.info(
                     "progress: %d/%d documents (%.1f%%), ~%s remaining",
                     index, total, 100 * index / total, eta,
@@ -164,7 +168,10 @@ def export_json(
         for handle in handles:
             handle.close()
 
-    written = [p for p in paths if p.stat().st_size > 0] or paths[:1]
+    # Documents are distributed round-robin (`handles[index % shards]`), so the
+    # shards actually written are exactly the first `min(index, shards)` paths;
+    # fall back to one empty file when there was nothing to export.
+    written = paths[: min(index, shards)] if index else paths[:1]
     logger.info(
         "exported %d documents to %d shard(s) in %s (peak RSS %.1f GiB)",
         index, len(written), out_dir, peak_rss_gib(),
@@ -202,11 +209,15 @@ def export_parquet(
     def _progress(done: int) -> None:
         remaining = tables - done
         elapsed = time.monotonic() - run_start
-        eta = fmt_duration(elapsed / done * remaining) if remaining else "done"
+        eta = eta_str(elapsed, done, remaining)
         logger.info("progress: %d/%d tables, ~%s remaining", done, tables, eta)
 
     if latest:
-        article_query = "SELECT * FROM latest_article"
+        # Materialize once: `latest_article` is a window function over the full
+        # `article` table, and it would otherwise be recomputed for the article
+        # export itself plus once per child table's EXISTS below.
+        con.execute("CREATE OR REPLACE TEMP TABLE _latest_snapshot AS SELECT * FROM latest_article")
+        article_query = "SELECT * FROM _latest_snapshot"
     else:
         article_query = "SELECT * FROM article"
     article_path = out_dir / "article.parquet"
@@ -218,7 +229,7 @@ def export_parquet(
         if latest:
             query = (
                 f"SELECT c.* FROM {table} c "
-                "WHERE EXISTS (SELECT 1 FROM latest_article la "
+                "WHERE EXISTS (SELECT 1 FROM _latest_snapshot la "
                 "WHERE la.pmid = c.pmid AND la.source_file = c.source_file)"
             )
         else:
