@@ -25,6 +25,16 @@ def _local_files() -> list[tuple[Path, str]]:
     return files
 
 
+def _sync_options(f):
+    """Shared ``--baseline/--updates/--limit/--verify`` options for ``download``
+    and ``update``, which both call :func:`pubmed2db.download.sync`."""
+    f = click.option("--verify/--no-verify", default=True, help="Verify downloaded files against MD5.")(f)
+    f = click.option("--limit", type=int, default=None, help="Only sync the first N files (testing).")(f)
+    f = click.option("--updates/--no-updates", default=True, help="Sync update files.")(f)
+    f = click.option("--baseline/--no-baseline", default=True, help="Sync baseline files.")(f)
+    return f
+
+
 @click.group()
 @click.version_option(__version__)
 @click.option(
@@ -58,10 +68,7 @@ def main(ctx: click.Context, data_dir: str, db: str | None, verbose: bool) -> No
 
 
 @main.command()
-@click.option("--baseline/--no-baseline", default=True, help="Sync baseline files.")
-@click.option("--updates/--no-updates", default=True, help="Sync update files.")
-@click.option("--limit", type=int, default=None, help="Only sync the first N files (testing).")
-@click.option("--verify/--no-verify", default=True, help="Verify downloaded files against MD5.")
+@_sync_options
 @click.pass_context
 def download(ctx: click.Context, baseline: bool, updates: bool, limit: int | None, verify: bool) -> None:
     """Download baseline/update files and record MD5 checksums."""
@@ -203,10 +210,7 @@ def status(ctx: click.Context) -> None:
 
 
 @main.command()
-@click.option("--baseline/--no-baseline", default=True, help="Sync baseline files.")
-@click.option("--updates/--no-updates", default=True, help="Sync update files.")
-@click.option("--limit", type=int, default=None, help="Only sync the first N files (testing).")
-@click.option("--verify/--no-verify", default=True, help="Verify downloaded files against MD5.")
+@_sync_options
 @click.option("--force", is_flag=True, help="Reload files even if already up to date.")
 @click.pass_context
 def update(
