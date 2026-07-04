@@ -231,10 +231,11 @@ def load_file(
     parsed = parse_file(path)
     load_parsed(con, parsed, source_file, kind=kind)
     logger.info(
-        "loaded %s: %d articles, %d deletions (peak RSS %.1f GiB)",
+        "loaded %s: %d articles, %d deletions, %d failed to parse (peak RSS %.1f GiB)",
         source_file,
         len(parsed.articles),
         len(parsed.deleted_pmids),
+        parsed.n_failed,
         peak_rss_gib(),
     )
     return parsed
