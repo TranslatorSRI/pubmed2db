@@ -18,8 +18,8 @@ srun --mem=16G --time=06:00:00 uv run pubmed2db load
 the load — see [Running `export`](#running-export) below:
 
 ```bash
-srun --mem=256G --time=08:00:00 \
-  uv run pubmed2db export --format json --out data/json --shards 16
+srun --mem=256G --cpus-per-task=8 --time=08:00:00 \
+  uv run pubmed2db --threads 8 export --format json --out data/json --shards 16
 ```
 
 ## Running `load`: how much memory? (`--mem`)
@@ -80,7 +80,8 @@ srun --mem=16G /usr/bin/time -v uv run pubmed2db load
 
 ## Running `export`
 
-**Short answer: `--mem=256G --time=08:00:00`, and run it as its own job.**
+**Short answer: `--mem=256G --cpus-per-task=8 --time=08:00:00` with a matching
+`--threads 8`, and run it as its own job.**
 
 Unlike the load, export is a *whole-corpus* operation, so its memory scales with
 the size of the database rather than with the largest input file:
@@ -106,11 +107,19 @@ INFO pubmed2db.export: exported 38000000 documents to 16 shard(s) in data/json (
 
 Notes on the knobs:
 
-- **`--shards N` does not reduce memory.** All shards are written in a single
-  streaming pass over one query; sharding is for the convenience of whatever
-  ingests the NDJSON, not for splitting the job. Same for `--gzip`, which
-  compresses each shard as it is written (no separate re-read pass) and costs CPU
-  rather than memory.
+- **`--shards N` does not reduce memory, and does not want a CPU each.** All
+  shards are written by a single Python loop over one query, round-robining
+  lines across open file handles; there is no thread or process per shard, so
+  `--cpus-per-task=16` for `--shards 16` would leave 15 cores idle on that step.
+  Sharding is for the convenience of whatever ingests the NDJSON. Same for
+  `--gzip`, which compresses each shard as it is written (no separate re-read
+  pass) and costs CPU rather than memory.
+- **CPUs help the query, not the writer.** DuckDB parallelizes the snapshot,
+  the `string_agg` and the sort across cores, while the per-row JSON
+  serialization stays single-threaded. `--cpus-per-task=8` is a reasonable ask;
+  pair it with `--threads` (below) or DuckDB will ignore the allocation. If
+  `seff` reports low CPU efficiency afterwards, the writer is the bottleneck and
+  more cores won't help.
 - **Parquet is the lighter of the two.** `export_parquet` builds the same
   `_latest_snapshot`, but each table is written by a DuckDB `COPY ... TO`, so no
   full result set is pulled through Python. It has not been measured at full
@@ -122,20 +131,33 @@ Notes on the knobs:
   mid-job; an under-requested export gets OOM-killed hours in, after the snapshot
   and sort have already been paid for.
 
-## DuckDB temp / spill directory
+## DuckDB tuning: `--threads` and `--temp-dir`
 
-DuckDB spills to disk when a query exceeds its memory budget. The loader inserts
-file-by-file so it should never need to, but the `export` queries above are
-exactly the case that can, so if you are memory-constrained point DuckDB's temp
-dir at fast local scratch rather than the database directory:
+Both are **group-level** options, so they go before the subcommand, and both
+also read an environment variable — usually the easier form in a batch script:
 
-```sql
-PRAGMA temp_directory='/local/scratch/duckdb_tmp';
+```bash
+export PUBMED2DB_THREADS="${SLURM_CPUS_PER_TASK:-4}"
+export PUBMED2DB_DUCKDB_TEMP_DIR=/local/scratch/duckdb_tmp
+
+srun --mem=256G --cpus-per-task=8 --time=08:00:00 \
+  uv run pubmed2db export --format json --out data/json --shards 16
+
+# Equivalently, explicit flags (note: before the subcommand):
+uv run pubmed2db --threads 8 --temp-dir /local/scratch/duckdb_tmp export ...
 ```
 
-(Babel exposes this as `BABEL_DUCKDB_TEMP_DIR`; pubmed2db has no such env var or
-CLI flag yet, and no place to pass the pragma through — spilling instead of
-scaling `--mem` currently needs a code change. Open an issue if you need it.)
+**`--threads`** caps DuckDB's thread pool. Left alone, DuckDB sizes the pool
+from the *machine's* core count, not your allocation — on a 64-core node with
+`--cpus-per-task=8` it will try to run 64 threads inside a cgroup that permits
+8, which costs time to contention and memory to per-thread operator state (not
+free at a 200 GiB peak). Set it to match `--cpus-per-task`.
+
+**`--temp-dir`** is where DuckDB spills when a query exceeds its memory budget.
+The loader inserts file-by-file so it should never need to, but the `export`
+queries above are exactly the case that can. Point it at fast local scratch
+rather than the (probably networked) database directory. (Babel exposes the same
+knob as `BABEL_DUCKDB_TEMP_DIR`.)
 
 ## Performance note
 

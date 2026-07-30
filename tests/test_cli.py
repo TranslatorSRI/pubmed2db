@@ -135,6 +135,36 @@ def test_record_run_roundtrip(tmp_path):
     assert con.execute("SELECT count(*) FROM pipeline_run").fetchone()[0] == 1
 
 
+def test_connect_applies_duckdb_tuning(tmp_path):
+    """`connect` passes `threads`/`temp_directory` through to DuckDB."""
+    from pubmed2db.db import connect
+
+    spill = tmp_path / "spill"
+    con = connect(tmp_path / "tuned.duckdb", threads=2, temp_directory=spill)
+    try:
+        assert con.execute("SELECT current_setting('threads')").fetchone()[0] == 2
+        assert con.execute("SELECT current_setting('temp_directory')").fetchone()[0] == str(spill)
+    finally:
+        con.close()
+
+
+def test_cli_threads_and_temp_dir_options(tmp_path, gz_fixture):
+    """The group-level `--threads`/`--temp-dir` options reach the connection."""
+    from pubmed2db.db import connect
+
+    db_path = tmp_path / "cli.duckdb"
+    con = connect(db_path)
+    _build_db(con, gz_fixture)
+    con.close()
+
+    result = CliRunner().invoke(
+        main,
+        ["--db", str(db_path), "--threads", "2", "--temp-dir", str(tmp_path / "spill"), "status"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Export:    ready" in result.output
+
+
 def test_cli_load_scans_download_directory(staged_download):
     """`load` with no explicit files finds them via its pystow directory scan."""
     db_path = staged_download / "cli.duckdb"

@@ -21,7 +21,7 @@ Parquet (PubMed field names, for downloadable queries).
 | `src/pubmed2db/load.py` | Loads parsed files (full history, provenance-tagged), `latest`/delete logic, journal dimension. |
 | `src/pubmed2db/export.py` | JSON (spec fields, empty-string-not-null) + Parquet export. |
 | `src/pubmed2db/status.py` | Pipeline-readiness checks derived from DB state (drives the CLI's prerequisite errors/warnings). |
-| `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`, `status`. |
+| `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`, `status`; group-level `--threads`/`--temp-dir` are applied by `_connect`. |
 
 ## Key design decisions (and why)
 

@@ -80,6 +80,12 @@ uv run pubmed2db --data-dir data status
 `--data-dir data` is the default, so omitting it gives the same result.
 The DuckDB database is stored as `<data-dir>/pubmed.duckdb`; override with `--db`.
 
+Two more group-level options tune DuckDB itself, mainly for large exports on a
+cluster: `--threads N` (`PUBMED2DB_THREADS`) caps the thread pool, which
+otherwise sizes itself from the machine's core count and so oversubscribes a
+smaller allocation, and `--temp-dir PATH` (`PUBMED2DB_DUCKDB_TEMP_DIR`) sets
+where DuckDB spills when a query exceeds memory. Both go before the subcommand.
+
 The steps are independent and incremental (re-running `download` revalidates
 existing files rather than refetching them), and each checks its prerequisites
 against the database's own state: `load` errors if nothing has been downloaded,
