@@ -146,6 +146,8 @@ See [`CLAUDE.md`](./CLAUDE.md) for architecture and design decisions, and
   file or to simply export it from the multiple files (using PMIDs to group related queries might not take very long?).
   Running it with 64G of memory seems sufficient.
 - `uv run pubmed2db export` takes a few hours to run; when run with --mem 256G, its peak RSS was 199.6 GiB.
+  Unlike `load`, its memory scales with the whole database rather than the largest input file — see
+  [`slurm/README.md`](./slurm/README.md#running-export) for why, and for what to request on a cluster.
 
 ## Development
 

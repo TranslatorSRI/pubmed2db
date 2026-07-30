@@ -1,6 +1,6 @@
 # Running pubmed2db on Slurm
 
-Notes for running the loader on the shared cluster (the same one Babel uses; see
+Notes for running the loader and the export on the shared cluster (the same one Babel uses; see
 [Babel's slurm/README](https://github.com/NCATSTranslator/Babel/blob/main/slurm/README.md)).
 
 ## TL;DR
@@ -14,9 +14,15 @@ srun --mem=16G --time=06:00:00 uv run pubmed2db load
 ```
 
 `download → journals → load` can each be a separate `srun`, or use
-`uv run pubmed2db update` to do all three.
+`uv run pubmed2db update` to do all three. `export` is a **much** bigger job than
+the load — see [Running `export`](#running-export) below:
 
-## How much memory? (`--mem`)
+```bash
+srun --mem=256G --time=08:00:00 \
+  uv run pubmed2db export --format json --out data/json --shards 16
+```
+
+## Running `load`: how much memory? (`--mem`)
 
 **Short answer: 16 GB is plenty; 100 GB was ~10–50× too much.**
 
@@ -36,7 +42,7 @@ Observed: a ~5k-article baseline file peaks at ~0.8 GiB; a full ~30k-article fil
 should stay comfortably under ~8 GiB. Start at `--mem=16G`, watch the logged peak
 on a real run, and trim from there.
 
-## How long? (`--time`)
+## Running `load`: how long? (`--time`)
 
 After the Arrow bulk-insert change the load is ~5–6 s/file (≈2 s parse + ≈4 s
 insert), so ~1,500 files is **2–3 hours** single-threaded. Request a few hours of
@@ -72,19 +78,64 @@ You can also wrap the command in `/usr/bin/time -v` (what Babel does) to capture
 srun --mem=16G /usr/bin/time -v uv run pubmed2db load
 ```
 
+## Running `export`
+
+**Short answer: `--mem=256G --time=08:00:00`, and run it as its own job.**
+
+Unlike the load, export is a *whole-corpus* operation, so its memory scales with
+the size of the database rather than with the largest input file:
+
+- `export_json` first materializes `latest_article` into a temp table
+  (`_latest_snapshot`) — a window function over the entire `article` table.
+- The export query then joins that against a `string_agg` of every abstract and
+  sorts the whole result by PMID (`ORDER BY la.pmid`).
+
+Neither step can be done a file at a time, which is why the numbers are an order
+of magnitude above the loader's.
+
+**Observed on a full run:** peak RSS **199.6 GiB** with `--mem=256G`, wall time a
+few hours. Treat 256 GB as the working figure; do not copy the loader's 16 GB.
+Both `export_json` and `export_parquet` log peak RSS on completion, and JSON
+logs progress with an ETA every 10 s, so a real run tells you what to request
+next time (shape of the lines, counts illustrative):
+
+```
+INFO pubmed2db.export: progress: 12500000/38000000 documents (32.9%), ~2h14m remaining
+INFO pubmed2db.export: exported 38000000 documents to 16 shard(s) in data/json (peak RSS 199.6 GiB)
+```
+
+Notes on the knobs:
+
+- **`--shards N` does not reduce memory.** All shards are written in a single
+  streaming pass over one query; sharding is for the convenience of whatever
+  ingests the NDJSON, not for splitting the job. Same for `--gzip`, which
+  compresses each shard as it is written (no separate re-read pass) and costs CPU
+  rather than memory.
+- **Parquet is the lighter of the two.** `export_parquet` builds the same
+  `_latest_snapshot`, but each table is written by a DuckDB `COPY ... TO`, so no
+  full result set is pulled through Python. It has not been measured at full
+  scale — request the same 256 GB the first time and check `seff`.
+- **Run `export` in a separate `srun` from `load`.** `update` deliberately does
+  not chain into it, and sizing one job for both means paying the export's memory
+  for the load's several hours.
+- **Grab the memory before the run, not during.** Slurm will not grow `--mem`
+  mid-job; an under-requested export gets OOM-killed hours in, after the snapshot
+  and sort have already been paid for.
+
 ## DuckDB temp / spill directory
 
 DuckDB spills to disk when a query exceeds its memory budget. The loader inserts
-file-by-file so it should never need to, but if you run large `export` /
-`latest_article` queries and hit memory pressure, point DuckDB's temp dir at fast
-local scratch rather than the database directory:
+file-by-file so it should never need to, but the `export` queries above are
+exactly the case that can, so if you are memory-constrained point DuckDB's temp
+dir at fast local scratch rather than the database directory:
 
 ```sql
 PRAGMA temp_directory='/local/scratch/duckdb_tmp';
 ```
 
-(Babel exposes this as `BABEL_DUCKDB_TEMP_DIR`; pubmed2db has no such env var yet
-— set the pragma manually if needed, or open an issue.)
+(Babel exposes this as `BABEL_DUCKDB_TEMP_DIR`; pubmed2db has no such env var or
+CLI flag yet, and no place to pass the pragma through — spilling instead of
+scaling `--mem` currently needs a code change. Open an issue if you need it.)
 
 ## Performance note
 
