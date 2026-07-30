@@ -97,7 +97,15 @@ of magnitude above the loader's.
 | Run | Documents | Peak RSS | Wall time |
 | --- | --- | --- | --- |
 | Earlier | — | 199.6 GiB | "a few hours" (before progress logging; never timed) |
-| 2026-07-30 | 40,901,984 | 201.1 GiB | **~23 min**, ≈30k documents/s |
+| 2026-07-30 | 40,901,984 | 201.1 GiB | **23m13s**, ≈30k documents/s |
+
+The 2026-07-30 run, on `ht1`, was exactly:
+
+```bash
+srun --mem=256G --time=08:00:00 --cpus-per-task 8 \
+  uv run pubmed2db export --format json --out data/json --shards 16
+# 01:25:01 started, 01:48:14 finished
+```
 
 Treat **256 GB** as the working memory figure — it has been stable across runs
 and is why this needs a big node; do not copy the loader's 16 GB. Time is the
@@ -123,20 +131,21 @@ Notes on the knobs:
   pass) and costs CPU rather than memory.
 - **CPUs help the query, not the writer.** DuckDB parallelizes the snapshot,
   the `string_agg` and the sort across cores, while the per-row JSON
-  serialization stays single-threaded. `--cpus-per-task=8` is a reasonable ask;
-  pair it with `--threads` (below) or DuckDB will ignore the allocation. If
-  `seff` reports low CPU efficiency afterwards, the writer is the bottleneck and
-  more cores won't help.
+  serialization stays single-threaded. `--cpus-per-task 8` is what the measured
+  run used and is a sensible default. Note it did *not* pass `--threads`, so
+  DuckDB sized its own pool from the node's cores, and the run was still fast —
+  so treat `--threads` as insurance against contention on a busy node, not as
+  something the export needs.
 - **Parquet is the lighter of the two.** `export_parquet` builds the same
   `_latest_snapshot`, but each table is written by a DuckDB `COPY ... TO`, so no
   full result set is pulled through Python. It has not been measured at full
-  scale — request the same 256 GB the first time and check `seff`.
+  scale — request the same 256 GB the first time and read the logged peak RSS.
 - **Run `export` in a separate `srun` from `load`.** `update` deliberately does
   not chain into it, and sizing one job for both means paying the export's memory
   for the load's several hours.
 - **Grab the memory before the run, not during.** Slurm will not grow `--mem`
-  mid-job; an under-requested export gets OOM-killed hours in, after the snapshot
-  and sort have already been paid for.
+  mid-job, so an under-requested export gets OOM-killed partway through with
+  nothing to show for it.
 
 ## DuckDB tuning: `--threads` and `--temp-dir`
 
@@ -155,10 +164,11 @@ uv run pubmed2db --threads 8 --temp-dir /local/scratch/duckdb_tmp export ...
 ```
 
 **`--threads`** caps DuckDB's thread pool. Left alone, DuckDB sizes the pool
-from the *machine's* core count, not your allocation — on a 64-core node with
-`--cpus-per-task=8` it will try to run 64 threads inside a cgroup that permits
-8, which costs time to contention and memory to per-thread operator state (not
-free at a 200 GiB peak). Set it to match `--cpus-per-task`.
+from the *machine's* core count rather than your allocation, so on a 64-core
+node with `--cpus-per-task=8` it may run 64 threads inside a cgroup that permits
+8 — contention, plus per-thread operator state that isn't free at a 200 GiB
+peak. In practice the measured export ran fine without it, so reach for this
+only if a run is slower than the numbers above or the node is busy.
 
 **`--temp-dir`** is where DuckDB spills when a query exceeds its memory budget.
 The loader inserts file-by-file so it should never need to, but the `export`
