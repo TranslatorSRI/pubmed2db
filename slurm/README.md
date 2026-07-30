@@ -53,35 +53,33 @@ margin, e.g. `--time=06:00:00`. (Before the change it was ~20 min/file — see t
 
 Three independent ways, in rough order of convenience:
 
-1. **The per-file log line above** — the simplest in-process signal, no Slurm
-   tooling needed.
+1. **The progress log lines** — per file for `load`, every 10 s with an ETA for
+   the JSON export, plus peak RSS on completion. The simplest in-process signal,
+   no Slurm tooling needed, and the only one of the three available on `ht1`.
 
-2. **`seff` after the job finishes** — peak memory and CPU efficiency:
-
-   ```bash
-   seff <jobid>
-   #   Memory Utilized: 5.20 GB
-   #   Memory Efficiency: 32.50% of 16.00 GB
-   ```
-
-3. **`sstat` while it runs** / **`sacct` after** — live or historical MaxRSS:
+2. **`sstat` while it runs** / **`sacct` after** — live or historical MaxRSS:
 
    ```bash
    sstat -j <jobid> --format=JobID,MaxRSS,MaxVMSize        # running job
    sacct -j <jobid> --format=JobID,JobName,MaxRSS,Elapsed,State,ReqMem  # finished
    ```
 
-You can also wrap the command in `/usr/bin/time -v` (what Babel does) to capture
-`Maximum resident set size` and wall time to stderr:
+3. **`/usr/bin/time -v`** (what Babel does) — captures `Maximum resident set
+   size` and wall time to stderr, independent of Slurm accounting:
 
-```bash
-srun --mem=16G /usr/bin/time -v uv run pubmed2db load
-```
+   ```bash
+   srun --mem=16G /usr/bin/time -v uv run pubmed2db load
+   ```
+
+> **Note:** `seff` is **not installed on `ht1.renci.org`** — use `sacct` or the
+> logged peak RSS instead. Long interactive runs are easiest inside `screen`
+> with a log: `screen -L -Logfile data/logs/$(date +%Y%b%d).log`.
 
 ## Running `export`
 
-**Short answer: `--mem=256G --cpus-per-task=8 --time=08:00:00` with a matching
-`--threads 8`, and run it as its own job.**
+**Short answer: `--mem=256G --cpus-per-task=8 --time=02:00:00` with a matching
+`--threads 8`, and run it as its own job. Memory is the constraint here, not
+time — the JSON export is fast.**
 
 Unlike the load, export is a *whole-corpus* operation, so its memory scales with
 the size of the database rather than with the largest input file:
@@ -94,15 +92,24 @@ the size of the database rather than with the largest input file:
 Neither step can be done a file at a time, which is why the numbers are an order
 of magnitude above the loader's.
 
-**Observed on a full run:** peak RSS **199.6 GiB** with `--mem=256G`, wall time a
-few hours. Treat 256 GB as the working figure; do not copy the loader's 16 GB.
+**Observed on full JSON exports of the whole corpus (`--shards 16`):**
+
+| Run | Documents | Peak RSS | Wall time |
+| --- | --- | --- | --- |
+| Earlier | — | 199.6 GiB | "a few hours" (before progress logging; never timed) |
+| 2026-07-30 | 40,901,984 | 201.1 GiB | **~23 min**, ≈30k documents/s |
+
+Treat **256 GB** as the working memory figure — it has been stable across runs
+and is why this needs a big node; do not copy the loader's 16 GB. Time is the
+cheap dimension: two hours is generous margin on 23 minutes.
+
 Both `export_json` and `export_parquet` log peak RSS on completion, and JSON
 logs progress with an ETA every 10 s, so a real run tells you what to request
-next time (shape of the lines, counts illustrative):
+next time:
 
 ```
-INFO pubmed2db.export: progress: 12500000/38000000 documents (32.9%), ~2h14m remaining
-INFO pubmed2db.export: exported 38000000 documents to 16 shard(s) in data/json (peak RSS 199.6 GiB)
+INFO pubmed2db.export: progress: 33385000/40901984 documents (81.6%), ~4m 14s remaining
+INFO pubmed2db.export: exported 40901984 documents to 16 shard(s) in data/json (peak RSS 201.1 GiB)
 ```
 
 Notes on the knobs:
