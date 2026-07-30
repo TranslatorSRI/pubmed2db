@@ -23,13 +23,16 @@ def test_parse_file_name_rejects_bad_names():
 
 
 def test_register_source_file_upserts(con):
-    from pubmed2db.db import get_registry, register_source_file
+    from pubmed2db.db import register_source_file
 
     register_source_file(con, "pubmed25n0001.xml.gz", kind="baseline", published_md5="aaa")
     register_source_file(con, "pubmed25n0001.xml.gz", kind="baseline", published_md5="bbb")
-    registry = get_registry(con)
-    assert registry["pubmed25n0001.xml.gz"]["published_md5"] == "bbb"
-    assert registry["pubmed25n0001.xml.gz"]["file_order_key"] == 25_000_001
+    published_md5, file_order_key = con.execute(
+        "SELECT published_md5, file_order_key FROM source_file WHERE file_name = ?",
+        ["pubmed25n0001.xml.gz"],
+    ).fetchone()
+    assert published_md5 == "bbb"
+    assert file_order_key == 25_000_001
 
 
 @pytest.mark.parametrize(

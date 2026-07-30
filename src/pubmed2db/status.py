@@ -14,6 +14,15 @@ from datetime import datetime
 
 import duckdb
 
+#: Shared "downloaded but not (re)loaded" predicate: a file is pending if it was
+#: downloaded but never processed, or downloaded again since its last load (a
+#: changed published MD5). Used by both this module's pending_file_count() and
+#: summarize(), and by :func:`pubmed2db.load.needs_load`'s single-file check, so
+#: the rule can't drift apart between its callers.
+NEEDS_LOAD_SQL = (
+    "downloaded_at IS NOT NULL AND (processed_at IS NULL OR downloaded_at > processed_at)"
+)
+
 
 def articles_loaded(con: duckdb.DuckDBPyConnection) -> bool:
     """Whether any article version has been loaded (i.e. ``load`` has run)."""
@@ -33,11 +42,7 @@ def pending_file_count(con: duckdb.DuckDBPyConnection) -> int:
     its last load (a changed published MD5).
     """
     return con.execute(
-        """
-        SELECT count(*) FROM source_file
-        WHERE downloaded_at IS NOT NULL
-          AND (processed_at IS NULL OR downloaded_at > processed_at)
-        """
+        f"SELECT count(*) FILTER (WHERE {NEEDS_LOAD_SQL}) FROM source_file"
     ).fetchone()[0]
 
 
@@ -47,6 +52,30 @@ def last_run(con: duckdb.DuckDBPyConnection, step: str) -> datetime | None:
         "SELECT last_run_at FROM pipeline_run WHERE step = ?", [step]
     ).fetchone()
     return row[0] if row else None
+
+
+def export_readiness(con: duckdb.DuckDBPyConnection) -> dict:
+    """Whether ``export`` can run, and any warnings — shared by the ``export``
+    and ``status`` commands so their verdicts can't drift apart.
+    """
+    if not articles_loaded(con):
+        return {
+            "blocked": True,
+            "warnings": ["No articles loaded; run `pubmed2db load` first."],
+        }
+    warnings = []
+    pending = pending_file_count(con)
+    if pending:
+        warnings.append(
+            f"{pending} downloaded file(s) not yet loaded; "
+            "run `pubmed2db load` to include them in the export."
+        )
+    if not journals_loaded(con):
+        warnings.append(
+            "journal table is empty, so journal names will be blank; "
+            "run `pubmed2db journals` to populate them."
+        )
+    return {"blocked": False, "warnings": warnings}
 
 
 def summarize(con: duckdb.DuckDBPyConnection) -> dict:
@@ -76,6 +105,16 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         FROM source_file
         """
     ).fetchone()
+    pending_files = pending_file_count(con)
+
+    article_versions, latest_documents, journals = con.execute(
+        """
+        SELECT
+            (SELECT count(*) FROM article),
+            (SELECT count(*) FROM latest_article),
+            (SELECT count(*) FROM journal)
+        """
+    ).fetchone()
 
     return {
         "known_files": known,
@@ -84,11 +123,11 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         "update_files": update,
         "last_download": last_download,
         "loaded_files": loaded_files,
-        "pending_files": pending_file_count(con),
+        "pending_files": pending_files,
         "last_load": last_load,
-        "article_versions": con.execute("SELECT count(*) FROM article").fetchone()[0],
-        "latest_documents": con.execute("SELECT count(*) FROM latest_article").fetchone()[0],
-        "journals": con.execute("SELECT count(*) FROM journal").fetchone()[0],
+        "article_versions": article_versions,
+        "latest_documents": latest_documents,
+        "journals": journals,
         "journals_refreshed": last_run(con, "journals"),
         "articles_loaded": articles_loaded(con),
         "journals_loaded": journals_loaded(con),

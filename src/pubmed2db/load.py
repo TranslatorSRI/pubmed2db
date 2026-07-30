@@ -16,9 +16,10 @@ import duckdb
 import pyarrow as pa
 from pubmed_downloader.utils import Collective
 
-from .db import get_registry, parse_file_name, record_run
+from .db import parse_file_name, record_run
 from .parse import ParsedArticle, ParsedFile, parse_file
-from .util import fmt_duration, peak_rss_gib
+from .status import NEEDS_LOAD_SQL
+from .util import eta_str, peak_rss_gib
 
 logger = logging.getLogger(__name__)
 
@@ -127,22 +128,13 @@ _BATCH = "_load_batch"
 #: while insert drops from ~75s to ~4s per file — see scripts/benchmark_load.py).
 #: ``article`` appends ``now()`` for its server-side ``loaded_at`` column.
 _INSERT_SELECT: dict[str, str] = {
-    table: f"INSERT INTO {table} BY POSITION SELECT * FROM {_BATCH}"
-    for table in (
-        "abstract_text",
-        "author",
-        "author_affiliation",
-        "mesh_heading",
-        "mesh_qualifier",
-        "publication_type",
-        "grant_",
-        "reference_citation",
-        "article_id",
-        "history",
-        "deleted_pmid",
+    table: (
+        f"INSERT INTO {table} BY POSITION SELECT *, now() FROM {_BATCH}"
+        if table == "article"
+        else f"INSERT INTO {table} BY POSITION SELECT * FROM {_BATCH}"
     )
+    for table in _VERSIONED_TABLES
 }
-_INSERT_SELECT["article"] = f"INSERT INTO article BY POSITION SELECT *, now() FROM {_BATCH}"
 
 
 def _insert_batch(con: duckdb.DuckDBPyConnection, table: str, rows: list[tuple]) -> None:
@@ -176,8 +168,16 @@ def load_parsed(
     try:
         delete_file_rows(con, source_file)
 
-        batches: dict[str, list[tuple]] = {t: [] for t in _INSERT_SELECT}
+        # A PMID can appear more than once within a single file (e.g. citation
+        # correction artifacts); keep only the last occurrence so `article`'s
+        # documented (pmid, source_file) identity actually holds and
+        # `latest_article`'s per-file ranking never needs a tiebreaker.
+        deduped: dict[int, ParsedArticle] = {}
         for article in parsed.articles:
+            deduped[article.pubmed] = article
+
+        batches: dict[str, list[tuple]] = {t: [] for t in _INSERT_SELECT}
+        for article in deduped.values():
             for table, table_rows in _article_rows(article, source_file, order_key).items():
                 batches[table].extend(table_rows)
         for pmid in parsed.deleted_pmids:
@@ -208,7 +208,7 @@ def load_parsed(
                 year_yy,
                 file_number,
                 order_key,
-                len(parsed.articles),
+                len(deduped),
                 len(parsed.deleted_pmids),
             ],
         )
@@ -231,10 +231,11 @@ def load_file(
     parsed = parse_file(path)
     load_parsed(con, parsed, source_file, kind=kind)
     logger.info(
-        "loaded %s: %d articles, %d deletions (peak RSS %.1f GiB)",
+        "loaded %s: %d articles, %d deletions, %d failed to parse (peak RSS %.1f GiB)",
         source_file,
         len(parsed.articles),
         len(parsed.deleted_pmids),
+        parsed.n_failed,
         peak_rss_gib(),
     )
     return parsed
@@ -243,20 +244,17 @@ def load_file(
 def needs_load(con: duckdb.DuckDBPyConnection, source_file: str, *, force: bool = False) -> bool:
     """Whether a file should be (re)loaded.
 
-    Loads when never processed, when re-downloaded since the last load
-    (``downloaded_at > processed_at``, i.e. the published MD5 changed), or when
-    ``force`` is set.
+    Single-file form of :data:`pubmed2db.status.NEEDS_LOAD_SQL` (the same rule
+    :func:`pubmed2db.status.pending_file_count` applies registry-wide), plus a
+    never-registered file and ``force`` both counting as needing a load.
     """
     if force:
         return True
     row = con.execute(
-        "SELECT processed_at, downloaded_at FROM source_file WHERE file_name = ?",
+        f"SELECT ({NEEDS_LOAD_SQL}) FROM source_file WHERE file_name = ?",
         [source_file],
     ).fetchone()
-    if row is None or row[0] is None:
-        return True
-    processed_at, downloaded_at = row
-    return downloaded_at is not None and downloaded_at > processed_at
+    return row is None or bool(row[0])
 
 
 def load_files(
@@ -279,8 +277,7 @@ def load_files(
         done = i + 1
         remaining = total - done
         elapsed = time.monotonic() - run_start
-        avg = elapsed / done
-        eta = fmt_duration(avg * remaining) if remaining else "done"
+        eta = eta_str(elapsed, done, remaining)
         logger.info(
             "progress: %d/%d files this run, %d remaining, ~%s to go",
             done, total, remaining, eta,
@@ -350,23 +347,29 @@ def load_journals(con: duckdb.DuckDBPyConnection, *, force: bool = False) -> int
         for value, issn_type in issns:
             issn_rows.append((nlm_id, value, issn_type))
 
-    con.execute("DELETE FROM journal")
-    con.execute("DELETE FROM journal_issn")
-    con.executemany(
-        "INSERT INTO journal VALUES (?,?,?,?,?,?,?)",
-        [
-            (
-                nlm_id,
-                rec.get("title"),
-                rec.get("abbreviation_medline"),
-                rec.get("abbreviation_iso"),
-                None,  # start_year: not present in the overview file
-                None,  # end_year: not present in the overview file
-                None,  # active: unknown from the overview file
-            )
-            for nlm_id, rec in journals.items()
-        ],
-    )
-    con.executemany("INSERT INTO journal_issn VALUES (?,?,?)", issn_rows)
-    record_run(con, "journals")
+    con.execute("BEGIN TRANSACTION")
+    try:
+        con.execute("DELETE FROM journal")
+        con.execute("DELETE FROM journal_issn")
+        con.executemany(
+            "INSERT INTO journal VALUES (?,?,?,?,?,?,?)",
+            [
+                (
+                    nlm_id,
+                    rec.get("title"),
+                    rec.get("abbreviation_medline"),
+                    rec.get("abbreviation_iso"),
+                    None,  # start_year: not present in the overview file
+                    None,  # end_year: not present in the overview file
+                    None,  # active: unknown from the overview file
+                )
+                for nlm_id, rec in journals.items()
+            ],
+        )
+        con.executemany("INSERT INTO journal_issn VALUES (?,?,?)", issn_rows)
+        record_run(con, "journals")
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
     return len(journals)

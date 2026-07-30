@@ -81,16 +81,20 @@ def _sync_kind(
     results: list[tuple[Path, str]] = []
     for url in tqdm(urls, desc=f"Syncing PubMed {kind}", unit="file"):
         file_name = url.rsplit("/", 1)[-1]
+        prior = registry.get(file_name)
         try:
             response = requests.get(url + ".md5", timeout=60)
             response.raise_for_status()
             published_md5 = parse_md5_text(response.text)
             _save_md5_sidecar(file_name, response.text)
         except requests.RequestException as exc:
-            logger.warning("could not fetch md5 for %s: %s", file_name, exc)
-            published_md5 = None
+            # Keep the last-known checksum on a transient fetch failure, so it
+            # isn't wiped and the file isn't spuriously flagged as changed.
+            logger.warning(
+                "could not fetch md5 for %s: %s; keeping prior checksum", file_name, exc
+            )
+            published_md5 = prior
 
-        prior = registry.get(file_name)
         changed = prior is None or prior != published_md5
 
         path = Path(ensure_module.ensure(url=url))

@@ -25,12 +25,26 @@ data model). On top of it, pubmed2db adds:
 - **Faithful publication dates** — raw `PubDate` components (`Year`/`Month`/`Day`/
   `MedlineDate`) are preserved rather than collapsed to a single date.
 - **Journal names** — the journal title and abbreviations come from the NLM Catalog
-  (`pubmed2db journals`) and are joined on `nlm_catalog_id`.
+  (`uv run pubmed2db journals`) and are joined on `nlm_catalog_id`.
 
-## Install
+## Setup
+
+Clone the repository and let [uv](https://docs.astral.sh/uv/) build the
+environment; there is no need to install pubmed2db itself — every command below
+is run from the repo root with `uv run`, which syncs dependencies on demand.
 
 ```bash
-uv sync --extra dev
+git clone https://github.com/TranslatorSRI/pubmed2db.git
+cd pubmed2db
+uv sync
+```
+
+If uv's default cache directory (`~/.cache/uv`) is not writable or is on a small
+quota — common on HPC login nodes — point it somewhere else once per shell (or
+in your `~/.bashrc` / job script):
+
+```bash
+export UV_CACHE_DIR=/path/to/writable/uv-cache
 ```
 
 ## Usage
@@ -42,29 +56,29 @@ managed automatically.
 
 ```bash
 # Download the baseline + update files to data/ (MD5-checked, incremental).
-pubmed2db --data-dir data download
+uv run pubmed2db --data-dir data download
 
 # Refresh the journal dimension from the NLM Catalog.
-pubmed2db --data-dir data journals
+uv run pubmed2db --data-dir data journals
 
 # Parse downloaded files into the database (full history).
-pubmed2db --data-dir data load
+uv run pubmed2db --data-dir data load
 
 # Export the latest abstract of every PMID as sharded NDJSON (DocumentMetadataAPI fields).
-pubmed2db --data-dir data export --format json --out data/json --shards 16
+uv run pubmed2db --data-dir data export --format json --out data/json --shards 16
 
 # Export the database to Parquet (latest version per table, or --all for full history).
-pubmed2db --data-dir data export --format parquet --out data/parquet
+uv run pubmed2db --data-dir data export --format parquet --out data/parquet
 
 # Download + journals + load in one step (for scheduled runs).
-pubmed2db --data-dir data update
+uv run pubmed2db --data-dir data update
 
 # Report what's been downloaded, loaded, and is ready to export (read-only).
-pubmed2db --data-dir data status
+uv run pubmed2db --data-dir data status
 
 # Sanity-check a finished export and write validation_report.json alongside it.
 # (Uses the DB when present; --offline skips the Entrez API cross-checks.)
-pubmed2db --data-dir data validate data/json --email you@example.com
+uv run pubmed2db --data-dir data validate data/json --email you@example.com
 ```
 
 `--data-dir data` is the default, so omitting it gives the same result.
@@ -75,10 +89,10 @@ existing files rather than refetching them), and each checks its prerequisites
 against the database's own state: `load` errors if nothing has been downloaded,
 and `export` errors if nothing has been loaded, warns if some downloaded files
 have not been loaded yet, and warns if the journal dimension is empty (journal
-names would be blank). When in doubt, `pubmed2db update` runs the whole pipeline
+names would be blank). When in doubt, `uv run pubmed2db update` runs the whole pipeline
 (`download → journals → load`) in order.
 
-`pubmed2db validate <dir>` inspects a finished JSON export and writes a
+`uv run pubmed2db validate <dir>` inspects a finished JSON export and writes a
 `validation_report.json` (pretty-printed, archivable) whose leading
 `errors`/`warnings` arrays are empty when the export looks good. It confirms
 every record parses and has the expected fields, compares the exported count to
@@ -94,6 +108,40 @@ Use `--limit N` on `download`/`update` to fetch only the newest N files when tes
 > **Note:** The file layout under `data/` differs from Babel's PubMed download,
 > so the two cannot share a download cache at this time.
 
+### Re-running after a gap
+
+Running `download` and then `load` again is safe: `load` picks up only the files
+that are new or changed, and it cannot introduce duplicate data.
+
+- **Only new/changed files are loaded.** `download` bumps a file's
+  `downloaded_at` only when its published MD5 is new or differs from the stored
+  one, and `load` skips every file whose `processed_at` is at or after its
+  `downloaded_at`. Unchanged files are no-ops.
+- **Reloading a file replaces it.** Before inserting, `load` deletes all rows
+  previously loaded from that `source_file`, in the same transaction, so even a
+  forced reload (`load --force`) is idempotent.
+- **Several versions of a PMID are the design, not duplication.** A row's
+  identity is `(pmid, source_file)`; the `latest_article` view returns the
+  version with the highest `file_order_key` per PMID, and drops the PMID if a
+  later file recorded a `<DeleteCitation>` for it. Exports therefore see one row
+  per PMID no matter how many versions are stored.
+
+**Watch for a new baseline year.** Each December PubMed publishes a fresh
+baseline (`pubmed26n*.xml.gz` after `pubmed25n*.xml.gz`), which is a complete
+re-issue of the corpus, not an increment. Downloading it makes ~1,300 files new
+at once, so the following `load` re-parses everything and the `article` table
+ends up holding a second full copy of every PMID. The result is still correct —
+`file_order_key` puts the newer year first, so `latest_article` resolves to it —
+but the database roughly doubles in size and the load takes as long as the
+original one. Check with `status` before starting: if `pending_files` is in the
+thousands rather than the dozens, a new baseline has landed, and building a
+fresh database from it is cheaper than growing the old one.
+
+`download --no-verify` skips re-hashing already-downloaded files. Verification
+is on by default and MD5s every local `.xml.gz` on every run, which is the main
+cost of re-running `download` over a complete baseline; `--no-verify` still
+fetches the `.md5` sidecars, so a changed published checksum is still detected.
+
 ## Notes
 
 - We reuse `pubmed-downloader` **as-is** for downloading and XML parsing, but parse
@@ -108,11 +156,11 @@ See [`CLAUDE.md`](./CLAUDE.md) for architecture and design decisions, and
 
 ## Information on running this pipeline
 
-- `pubmed2db load` takes a long time to run, and it might be beneficial to parallelize this: transform each PubMed
+- `uv run pubmed2db load` takes a long time to run, and it might be beneficial to parallelize this: transform each PubMed
   file into a separate DuckDB file, then use a query that spans multiple files to either load everything into one
   file or to simply export it from the multiple files (using PMIDs to group related queries might not take very long?).
   Running it with 64G of memory seems sufficient.
-- `pubmed2db export` takes a few hours to run; when run with --mem 256G, its peak RSS was 199.6 GiB.
+- `uv run pubmed2db export` takes a few hours to run; when run with --mem 256G, its peak RSS was 199.6 GiB.
 
 ## Development
 

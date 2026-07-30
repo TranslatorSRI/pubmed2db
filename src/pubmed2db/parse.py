@@ -50,6 +50,7 @@ class ParsedFile:
 
     articles: list[ParsedArticle] = field(default_factory=list)
     deleted_pmids: list[int] = field(default_factory=list)
+    n_failed: int = 0
 
 
 _PUBDATE_PATH = "MedlineCitation/Article/Journal/JournalIssue/PubDate"
@@ -95,6 +96,7 @@ def parse_file(path: str | Path) -> ParsedFile:
             )
         except (ValueError, KeyError) as exc:
             logger.warning("skipping article in %s: %s", path, exc)
+            result.n_failed += 1
             continue
         if article is None:
             continue
@@ -113,5 +115,10 @@ def parse_file(path: str | Path) -> ParsedFile:
     for pmid_tag in root.findall("DeleteCitation/PMID"):
         if pmid_tag.text and pmid_tag.text.strip().isdigit():
             result.deleted_pmids.append(int(pmid_tag.text.strip()))
+
+    if result.n_failed:
+        logger.warning(
+            "%s: %d article(s) failed to parse and were skipped", path, result.n_failed
+        )
 
     return result

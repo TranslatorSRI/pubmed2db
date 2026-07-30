@@ -6,14 +6,15 @@ Notes for running the loader on the shared cluster (the same one Babel uses; see
 ## TL;DR
 
 ```bash
+# Put uv's package cache somewhere writable (~/.cache/uv may not be).
+export UV_CACHE_DIR="$PWD/../uv-cache"
+
 # Don't run on the login node. Request a job with a sane memory cap and time limit:
-srun --mem=16G --time=06:00:00 \
-  bash -c 'uv --cache-dir ../../uv-cache run pubmed2db load'
+srun --mem=16G --time=06:00:00 uv run pubmed2db load
 ```
 
 `download → journals → load` can each be a separate `srun`, or use
-`pubmed2db update` to do all three. Pass `--cache-dir` to `uv` so the package
-cache lands on a writable path (as in the command above).
+`uv run pubmed2db update` to do all three.
 
 ## How much memory? (`--mem`)
 
