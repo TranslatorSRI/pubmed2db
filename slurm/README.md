@@ -18,8 +18,8 @@ srun --mem=16G --time=06:00:00 uv run pubmed2db load
 the load — see [Running `export`](#running-export) below:
 
 ```bash
-srun --mem=256G --cpus-per-task=8 --time=08:00:00 \
-  uv run pubmed2db --threads 8 export --format json --out data/json --shards 16
+srun --mem=256G --cpus-per-task=8 --time=02:00:00 \
+  uv run pubmed2db export --format json --out data/json --shards 16
 ```
 
 ## Running `load`: how much memory? (`--mem`)
@@ -77,9 +77,8 @@ Three independent ways, in rough order of convenience:
 
 ## Running `export`
 
-**Short answer: `--mem=256G --cpus-per-task=8 --time=02:00:00` with a matching
-`--threads 8`, and run it as its own job. Memory is the constraint here, not
-time — the JSON export is fast.**
+**Short answer: `--mem=256G --cpus-per-task=8 --time=02:00:00`, run as its own
+job. Memory is the constraint here, not time — the JSON export is fast.**
 
 Unlike the load, export is a *whole-corpus* operation, so its memory scales with
 the size of the database rather than with the largest input file:
