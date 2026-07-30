@@ -25,12 +25,26 @@ data model). On top of it, pubmed2db adds:
 - **Faithful publication dates** — raw `PubDate` components (`Year`/`Month`/`Day`/
   `MedlineDate`) are preserved rather than collapsed to a single date.
 - **Journal names** — the journal title and abbreviations come from the NLM Catalog
-  (`pubmed2db journals`) and are joined on `nlm_catalog_id`.
+  (`uv run pubmed2db journals`) and are joined on `nlm_catalog_id`.
 
-## Install
+## Setup
+
+Clone the repository and let [uv](https://docs.astral.sh/uv/) build the
+environment; there is no need to install pubmed2db itself — every command below
+is run from the repo root with `uv run`, which syncs dependencies on demand.
 
 ```bash
-uv sync --extra dev
+git clone https://github.com/TranslatorSRI/pubmed2db.git
+cd pubmed2db
+uv sync
+```
+
+If uv's default cache directory (`~/.cache/uv`) is not writable or is on a small
+quota — common on HPC login nodes — point it somewhere else once per shell (or
+in your `~/.bashrc` / job script):
+
+```bash
+export UV_CACHE_DIR=/path/to/writable/uv-cache
 ```
 
 ## Usage
@@ -42,25 +56,25 @@ managed automatically.
 
 ```bash
 # Download the baseline + update files to data/ (MD5-checked, incremental).
-pubmed2db --data-dir data download
+uv run pubmed2db --data-dir data download
 
 # Refresh the journal dimension from the NLM Catalog.
-pubmed2db --data-dir data journals
+uv run pubmed2db --data-dir data journals
 
 # Parse downloaded files into the database (full history).
-pubmed2db --data-dir data load
+uv run pubmed2db --data-dir data load
 
 # Export the latest abstract of every PMID as sharded NDJSON (DocumentMetadataAPI fields).
-pubmed2db --data-dir data export --format json --out data/json --shards 16
+uv run pubmed2db --data-dir data export --format json --out data/json --shards 16
 
 # Export the database to Parquet (latest version per table, or --all for full history).
-pubmed2db --data-dir data export --format parquet --out data/parquet
+uv run pubmed2db --data-dir data export --format parquet --out data/parquet
 
 # Download + journals + load in one step (for scheduled runs).
-pubmed2db --data-dir data update
+uv run pubmed2db --data-dir data update
 
 # Report what's been downloaded, loaded, and is ready to export (read-only).
-pubmed2db --data-dir data status
+uv run pubmed2db --data-dir data status
 ```
 
 `--data-dir data` is the default, so omitting it gives the same result.
@@ -71,7 +85,7 @@ existing files rather than refetching them), and each checks its prerequisites
 against the database's own state: `load` errors if nothing has been downloaded,
 and `export` errors if nothing has been loaded, warns if some downloaded files
 have not been loaded yet, and warns if the journal dimension is empty (journal
-names would be blank). When in doubt, `pubmed2db update` runs the whole pipeline
+names would be blank). When in doubt, `uv run pubmed2db update` runs the whole pipeline
 (`download → journals → load`) in order.
 
 Use `--limit N` on `download`/`update` to fetch only the newest N files when testing.
@@ -93,11 +107,11 @@ See [`CLAUDE.md`](./CLAUDE.md) for architecture and design decisions, and
 
 ## Information on running this pipeline
 
-- `pubmed2db load` takes a long time to run, and it might be beneficial to parallelize this: transform each PubMed
+- `uv run pubmed2db load` takes a long time to run, and it might be beneficial to parallelize this: transform each PubMed
   file into a separate DuckDB file, then use a query that spans multiple files to either load everything into one
   file or to simply export it from the multiple files (using PMIDs to group related queries might not take very long?).
   Running it with 64G of memory seems sufficient.
-- `pubmed2db export` takes a few hours to run; when run with --mem 256G, its peak RSS was 199.6 GiB.
+- `uv run pubmed2db export` takes a few hours to run; when run with --mem 256G, its peak RSS was 199.6 GiB.
 
 ## Development
 
