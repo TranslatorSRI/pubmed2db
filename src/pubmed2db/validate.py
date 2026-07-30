@@ -41,7 +41,7 @@ import duckdb
 import requests
 from lxml import etree
 
-from .export import month_to_abbrev
+from .export import _document, month_to_abbrev
 from .util import fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
@@ -49,21 +49,10 @@ logger = logging.getLogger(__name__)
 #: NCBI E-utilities base URL.
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 
-#: Exactly the keys :func:`pubmed2db.export._document` emits.
-EXPECTED_FIELDS = frozenset(
-    {
-        "id",
-        "journal_name",
-        "journal_abbrev",
-        "article_title",
-        "volume",
-        "issue",
-        "pub_year",
-        "pub_month",
-        "pub_day",
-        "abstract",
-    }
-)
+#: Exactly the keys :func:`pubmed2db.export._document` emits, derived from the
+#: exporter itself so the two cannot drift apart. The placeholder row only has
+#: to be the right arity — ``_document`` names the keys, not the values.
+EXPECTED_FIELDS = frozenset(_document((0,) + (None,) * 9))
 
 #: Fields compared strictly against Entrez; a high mismatch rate here is an error.
 CORE_FIELDS = ("article_title", "volume", "issue", "pub_year", "pub_month", "pub_day")

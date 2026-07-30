@@ -180,9 +180,22 @@ def test_cli_validate_fails_on_error(export_dir):
     assert "Validation FAIL" in result.output
 
 
-def test_expected_fields_matches_exporter():
-    """EXPECTED_FIELDS is hand-maintained; fail loudly if the exporter drifts."""
-    from pubmed2db.export import _document
+def test_expected_fields_matches_spec():
+    """EXPECTED_FIELDS derives from the exporter; lock it to the shipped spec.
 
-    row = (1001, "Nature", "Nature", "A title", "581", "7807", 2020, "Mar", 16, "An abstract.")
-    assert set(_document(row)) == set(validate.EXPECTED_FIELDS)
+    The 10 DocumentMetadataAPI field names are an external contract (Node
+    Annotator / ElasticSearch consume them), so changing the export shape should
+    trip a test rather than silently re-define what validate accepts.
+    """
+    assert set(validate.EXPECTED_FIELDS) == {
+        "id",
+        "journal_name",
+        "journal_abbrev",
+        "article_title",
+        "volume",
+        "issue",
+        "pub_year",
+        "pub_month",
+        "pub_day",
+        "abstract",
+    }
