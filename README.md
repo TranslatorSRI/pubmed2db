@@ -93,6 +93,40 @@ Use `--limit N` on `download`/`update` to fetch only the newest N files when tes
 > **Note:** The file layout under `data/` differs from Babel's PubMed download,
 > so the two cannot share a download cache at this time.
 
+### Re-running after a gap
+
+Running `download` and then `load` again is safe: `load` picks up only the files
+that are new or changed, and it cannot introduce duplicate data.
+
+- **Only new/changed files are loaded.** `download` bumps a file's
+  `downloaded_at` only when its published MD5 is new or differs from the stored
+  one, and `load` skips every file whose `processed_at` is at or after its
+  `downloaded_at`. Unchanged files are no-ops.
+- **Reloading a file replaces it.** Before inserting, `load` deletes all rows
+  previously loaded from that `source_file`, in the same transaction, so even a
+  forced reload (`load --force`) is idempotent.
+- **Several versions of a PMID are the design, not duplication.** A row's
+  identity is `(pmid, source_file)`; the `latest_article` view returns the
+  version with the highest `file_order_key` per PMID, and drops the PMID if a
+  later file recorded a `<DeleteCitation>` for it. Exports therefore see one row
+  per PMID no matter how many versions are stored.
+
+**Watch for a new baseline year.** Each December PubMed publishes a fresh
+baseline (`pubmed26n*.xml.gz` after `pubmed25n*.xml.gz`), which is a complete
+re-issue of the corpus, not an increment. Downloading it makes ~1,300 files new
+at once, so the following `load` re-parses everything and the `article` table
+ends up holding a second full copy of every PMID. The result is still correct —
+`file_order_key` puts the newer year first, so `latest_article` resolves to it —
+but the database roughly doubles in size and the load takes as long as the
+original one. Check with `status` before starting: if `pending_files` is in the
+thousands rather than the dozens, a new baseline has landed, and building a
+fresh database from it is cheaper than growing the old one.
+
+`download --no-verify` skips re-hashing already-downloaded files. Verification
+is on by default and MD5s every local `.xml.gz` on every run, which is the main
+cost of re-running `download` over a complete baseline; `--no-verify` still
+fetches the `.md5` sidecars, so a changed published checksum is still detected.
+
 ## Notes
 
 - We reuse `pubmed-downloader` **as-is** for downloading and XML parsing, but parse

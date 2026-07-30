@@ -44,6 +44,9 @@ Parquet (PubMed field names, for downloadable queries).
 - **MD5 is low-priority** (HTTP downloads are reliable and PubMed files are
   immutable): we store the published checksum and reload a file only if it is new
   or its checksum changed (`load.needs_load` compares `downloaded_at > processed_at`).
+  A new baseline year is therefore ~1,300 "new" files: a full re-parse that stores
+  a second version of every PMID (correct, since `file_order_key` prefers the newer
+  year, but it roughly doubles the DB) — see the README's "Re-running after a gap".
 - **Journal names** come from the NLM Catalog journal-overview file, joined on
   `nlm_catalog_id` — see the known-issue below.
 - **Step ordering is enforced from DB state, not a run-flag.** The steps are
