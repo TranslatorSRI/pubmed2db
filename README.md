@@ -110,6 +110,11 @@ fails on warnings) so it can gate an HPC run; pass `--offline` to skip the
 network checks. Set `--email` (or `NCBI_EMAIL`) and optionally `--api-key` (or
 `NCBI_API_KEY`, which raises the rate limit) for the API checks.
 
+The coverage check expects the export to be within ±5% of the live PubMed total
+(the 2026-07-30 full run came in at 99.90% of it). A **partial** export — from a
+`--limit` test download — is legitimately far below that, so pass something like
+`--entrez-low 0.001` when validating one, or `--offline` to skip the comparison.
+
 Use `--limit N` on `download`/`update` to fetch only the newest N files when testing.
 
 > **Note:** The file layout under `data/` differs from Babel's PubMed download,

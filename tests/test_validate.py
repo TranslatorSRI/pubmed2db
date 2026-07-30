@@ -108,6 +108,20 @@ def test_coverage_uses_entrez_and_db(export_dir, loaded_con, monkeypatch):
     assert cov["pct_of_db"] == pytest.approx(1.0)
 
 
+def test_coverage_warns_outside_default_band(export_dir, loaded_con, monkeypatch):
+    """A short export must trip the ±5% band, not slip through it."""
+    # 2 exported against an Entrez total of 4 is 50% — inside the old [0.1, 1.5]
+    # band, outside the calibrated default one.
+    monkeypatch.setattr(
+        validate, "_eutils", _fake_eutils_factory(_EFETCH, entrez_count=4)
+    )
+    report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
+    assert report["checks"]["coverage"]["pct_of_entrez"] == pytest.approx(0.5)
+    assert any(w["code"] == "coverage_out_of_band" for w in report["warnings"]), (
+        report["warnings"]
+    )
+
+
 def test_field_validation_matches(export_dir, loaded_con, monkeypatch):
     monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
     report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")

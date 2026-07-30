@@ -209,9 +209,10 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int, gzip_output: boo
               help="NCBI API key (raises the rate limit to 10 req/s).")
 @click.option("--email", default=None, envvar="NCBI_EMAIL",
               help="Contact email sent to NCBI, per their usage etiquette.")
-@click.option("--entrez-low", type=float, default=0.1, show_default=True,
-              help="Lower bound of the acceptable exported/Entrez fraction.")
-@click.option("--entrez-high", type=float, default=1.5, show_default=True,
+@click.option("--entrez-low", type=float, default=0.95, show_default=True,
+              help="Lower bound of the acceptable exported/Entrez fraction. "
+                   "Widen for a partial export (e.g. a --limit test run).")
+@click.option("--entrez-high", type=float, default=1.05, show_default=True,
               help="Upper bound of the acceptable exported/Entrez fraction.")
 @click.option("--out", type=click.Path(dir_okay=False), default=None,
               help="Report path (default: <directory>/validation_report.json).")

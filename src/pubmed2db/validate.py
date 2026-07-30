@@ -442,7 +442,16 @@ def check_coverage(
     entrez_low: float,
     entrez_high: float,
 ) -> None:
-    """Compare the exported record count to Entrez and the local DB."""
+    """Compare the exported record count to Entrez and the local DB.
+
+    The default ``entrez_low``/``entrez_high`` band is calibrated against a real
+    full-corpus run: the 2026-07-30 export held 40,901,984 documents against an
+    Entrez total of 40,944,369, a ratio of 0.9990. The ±5% band therefore leaves
+    room for the Entrez total growing between export and validation (PubMed adds
+    roughly 4% a year) while still catching a materially short export. A partial
+    export — anything downloaded with ``--limit`` — is legitimately far below the
+    band and needs ``--entrez-low`` widened.
+    """
     coverage: dict = {
         "exported_count": exported_count,
         "entrez_total": None,
@@ -730,8 +739,8 @@ def run_validation(
     online: bool = True,
     api_key: str | None = None,
     email: str | None = None,
-    entrez_low: float = 0.1,
-    entrez_high: float = 1.5,
+    entrez_low: float = 0.95,
+    entrez_high: float = 1.05,
 ) -> dict:
     """Run all checks and return the assembled report dict."""
     start = time.monotonic()
