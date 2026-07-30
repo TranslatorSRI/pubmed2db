@@ -178,3 +178,11 @@ def test_cli_validate_fails_on_error(export_dir):
     result = CliRunner().invoke(main, ["--db", no_db, "validate", str(export_dir), "--offline"])
     assert result.exit_code == 1
     assert "Validation FAIL" in result.output
+
+
+def test_expected_fields_matches_exporter():
+    """EXPECTED_FIELDS is hand-maintained; fail loudly if the exporter drifts."""
+    from pubmed2db.export import _document
+
+    row = (1001, "Nature", "Nature", "A title", "581", "7807", 2020, "Mar", 16, "An abstract.")
+    assert set(_document(row)) == set(validate.EXPECTED_FIELDS)

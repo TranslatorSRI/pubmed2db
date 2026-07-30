@@ -73,9 +73,12 @@ Parquet (PubMed field names, for downloadable queries).
   network call funnels through `validate._eutils` (one monkeypatchable seam, so
   tests stay offline). The report leads with `errors`/`warnings` arrays that are
   empty on a clean run; the process exits non-zero on errors so it can gate an
-  HPC pipeline. Structural checks and the API field comparison deliberately
-  reuse `export._document`/`month_to_abbrev` so "expected" is defined the same
-  way the exporter defines it.
+  HPC pipeline. "Expected" is defined the way the exporter defines it, by two
+  different mechanisms: the API field comparison imports `month_to_abbrev` from
+  `export`, but the record shape is mirrored as `validate.EXPECTED_FIELDS`
+  rather than derived from `export._document`. Adding or renaming an exported
+  field means updating that constant by hand;
+  `test_expected_fields_matches_exporter` fails if the two drift apart.
 
 ## Known upstream issue — journal parsing
 
