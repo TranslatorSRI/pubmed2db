@@ -213,3 +213,45 @@ def test_expected_fields_matches_spec():
         "pub_day",
         "abstract",
     }
+
+
+def test_manifest_round_trips(export_dir, tmp_path):
+    """write_manifest/read_manifest agree, and the file is sorted and gzipped."""
+    import gzip
+
+    path = tmp_path / "pmids.txt.gz"
+    validate.write_manifest({1003, 1001, 1002}, path)
+
+    lines = gzip.open(path, "rt").read().split()
+    assert lines == ["1001", "1002", "1003"]  # sorted, one per line
+    assert validate.read_manifest(path) == {1001, 1002, 1003}
+
+
+def test_drops_explained_by_recorded_deletion(export_dir, loaded_con, tmp_path):
+    """A dropped PMID the DB marks deleted is expected, not an error."""
+    # The export holds 1001 and 1003; 1002 was deleted by the update file.
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1002, 1003}, manifest)
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, online=False
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["dropped"] == 1
+    assert drops["explained_by_deletion"] == [1002]
+    assert drops["unexplained"] == []
+    assert not [e for e in report["errors"] if e["code"] == "unexplained_drops"]
+
+
+def test_unexplained_drop_is_an_error(export_dir, loaded_con, tmp_path):
+    """A PMID that vanished without a recorded deletion fails the run."""
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1003, 4242}, manifest)
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, online=False
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["unexplained"] == [4242]
+    assert report["status"] == "fail"
+    assert any(e["code"] == "unexplained_drops" for e in report["errors"])

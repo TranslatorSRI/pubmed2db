@@ -142,6 +142,34 @@ def _normalize(value: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# PMID manifest sidecar
+# --------------------------------------------------------------------------- #
+
+
+def write_manifest(pmids: set[int], out_path: Path) -> None:
+    """Write a sorted, gzipped PMID manifest — one decimal PMID per line.
+
+    The report deliberately stores counts rather than millions of PMIDs, so this
+    sidecar is what makes a *set* comparison between two exports possible. It is
+    written from the set the structure check already built, so it costs one sort
+    and one write rather than another pass over the shards.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(out_path, "wt", encoding="utf-8") as handle:
+        handle.writelines(f"{pmid}\n" for pmid in sorted(pmids))
+
+
+def read_manifest(path: Path) -> set[int]:
+    """Read a PMID manifest written by :func:`write_manifest`.
+
+    Accepts gzipped or plain text, and tolerates blank lines so a hand-edited
+    manifest still loads.
+    """
+    with _open_text(path) as handle:
+        return {int(line) for line in handle if line.strip()}
+
+
+# --------------------------------------------------------------------------- #
 # Check 1: structure
 # --------------------------------------------------------------------------- #
 
@@ -727,11 +755,85 @@ def check_deletions(
 # --------------------------------------------------------------------------- #
 
 
+def check_drops_since(
+    report: Report,
+    *,
+    all_pmids: set[int],
+    previous_manifest: Path | None,
+    con: duckdb.DuckDBPyConnection | None,
+) -> None:
+    """Diff this export's PMID set against a previous export's manifest.
+
+    This is the check the coverage counts cannot make: two exports can hold the
+    same number of records while a thousand PMIDs silently swapped out. A PMID
+    the previous export shipped and this one does not is only legitimate if the
+    database recorded a ``DeleteCitation`` for it, so an *unexplained* drop is an
+    error — it means records vanished without PubMed asking for their removal.
+
+    Without a database the drops cannot be attributed, so they are reported as a
+    warning to review rather than silently accepted.
+    """
+    if previous_manifest is None:
+        report.skip("drops_since_previous (no --previous-manifest)")
+        return
+
+    previous_pmids = read_manifest(previous_manifest)
+    dropped = previous_pmids - all_pmids
+    added = all_pmids - previous_pmids
+
+    explained: list[int] = []
+    unexplained = sorted(dropped)
+    if dropped and con is not None:
+        # Ask the DB which of the dropped PMIDs it actually marked deleted. Passed
+        # as an Arrow-friendly temp view rather than a giant IN list.
+        rows = con.execute(
+            """
+            SELECT DISTINCT d.pmid FROM deleted_pmid d
+            WHERE d.pmid IN (SELECT * FROM UNNEST(?))
+            """,
+            [sorted(dropped)],
+        ).fetchall()
+        explained = sorted(r[0] for r in rows)
+        unexplained = sorted(dropped - set(explained))
+
+    report.checks["drops_since_previous"] = {
+        "previous_manifest": str(previous_manifest),
+        "previous_count": len(previous_pmids),
+        "current_count": len(all_pmids),
+        "dropped": len(dropped),
+        "added": len(added),
+        "explained_by_deletion": _capped(explained),
+        "explained_by_deletion_count": len(explained),
+        "unexplained": _capped(unexplained),
+        "unexplained_count": len(unexplained),
+        "added_examples": _capped(sorted(added)),
+    }
+
+    if unexplained and con is not None:
+        report.error(
+            "unexplained_drops",
+            "PMIDs present in the previous export are missing from this one "
+            "without a recorded deletion.",
+            count=len(unexplained),
+            see="checks.drops_since_previous.unexplained",
+        )
+    elif unexplained:
+        report.warning(
+            "drops_unattributed",
+            "PMIDs present in the previous export are missing from this one; "
+            "no database was available to confirm they were deleted.",
+            count=len(unexplained),
+            see="checks.drops_since_previous.unexplained",
+        )
+
+
 def run_validation(
     export_dir: Path,
     *,
     con: duckdb.DuckDBPyConnection | None = None,
     previous_report: Path | None = None,
+    previous_manifest: Path | None = None,
+    manifest_out: Path | None = None,
     sample_size: int = 15,
     drop_sample: int = 10,
     seed: int = 0,
@@ -772,6 +874,13 @@ def run_validation(
         report, all_pmids=structure.all_pmids, con=con,
         online=online, api_key=api_key, email=email, drop_sample=drop_sample, seed=seed,
     )
+    check_drops_since(
+        report, all_pmids=structure.all_pmids,
+        previous_manifest=previous_manifest, con=con,
+    )
+
+    if manifest_out is not None:
+        write_manifest(structure.all_pmids, manifest_out)
 
     return {
         "status": report.status,
@@ -785,6 +894,8 @@ def run_validation(
             "shards": [p.name for p in shards],
             "database": None if con is None else "available",
             "previous_report": None if previous_report is None else str(previous_report),
+            "previous_manifest": None if previous_manifest is None else str(previous_manifest),
+            "manifest_written": None if manifest_out is None else str(manifest_out),
             "online": online,
             "sample_size": sample_size,
             "drop_sample": drop_sample,

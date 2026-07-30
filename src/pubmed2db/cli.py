@@ -195,6 +195,12 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int, gzip_output: boo
 @click.argument("directory", type=click.Path(exists=True, file_okay=False))
 @click.option("--previous-report", type=click.Path(exists=True, dir_okay=False), default=None,
               help="Prior validation_report.json to compare coverage against.")
+@click.option("--previous-manifest", type=click.Path(exists=True, dir_okay=False), default=None,
+              help="Prior pmids.txt.gz manifest; reports which PMIDs disappeared "
+                   "since that export.")
+@click.option("--manifest", "manifest", type=click.Path(dir_okay=False), default=None,
+              help="Write this export's sorted PMID manifest here (gzipped), for a "
+                   "later run to diff against with --previous-manifest.")
 @click.option("--sample-size", type=int, default=15, show_default=True,
               help="Records sampled per shard for API field validation.")
 @click.option("--drop-sample", type=int, default=10, show_default=True,
@@ -222,6 +228,8 @@ def validate(
     ctx: click.Context,
     directory: str,
     previous_report: str | None,
+    previous_manifest: str | None,
+    manifest: str | None,
     sample_size: int,
     drop_sample: int,
     seed: int,
@@ -269,6 +277,8 @@ def validate(
             export_dir,
             con=con,
             previous_report=Path(previous_report) if previous_report else None,
+            previous_manifest=Path(previous_manifest) if previous_manifest else None,
+            manifest_out=Path(manifest) if manifest else None,
             sample_size=sample_size,
             drop_sample=drop_sample,
             seed=seed,

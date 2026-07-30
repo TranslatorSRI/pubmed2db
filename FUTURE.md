@@ -16,12 +16,6 @@ below are deliberately deferred.
 
 ## Validation (`validate`)
 
-- **Previous-report drop detection.** `validate` compares coverage
-  counts/percentages to a `--previous-report`, but does not diff the full PMID
-  set between exports (we deliberately don't store millions of PMIDs in the
-  report). If we want to confirm *which* PMIDs disappeared between two exports,
-  add an optional sidecar PMID manifest (e.g. a sorted `pmids.txt.gz`) the
-  deletion check can diff against.
 - **Richer deletion status.** Deletion confirmation currently treats "efetch
   returns nothing" as deleted. Entrez `esummary` distinguishes deleted vs.
   merged/moved records; use it to label merges explicitly rather than surfacing

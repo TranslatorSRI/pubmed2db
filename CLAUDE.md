@@ -74,12 +74,19 @@ Parquet (PubMed field names, for downloadable queries).
   network call funnels through `validate._eutils` (one monkeypatchable seam, so
   tests stay offline). The report leads with `errors`/`warnings` arrays that are
   empty on a clean run; the process exits non-zero on errors so it can gate an
-  HPC pipeline. "Expected" is defined the way the exporter defines it, by two
-  different mechanisms: the API field comparison imports `month_to_abbrev` from
-  `export`, but the record shape is mirrored as `validate.EXPECTED_FIELDS`
-  rather than derived from `export._document`. Adding or renaming an exported
-  field means updating that constant by hand;
-  `test_expected_fields_matches_exporter` fails if the two drift apart.
+  HPC pipeline. "Expected" is always defined by the exporter itself, never
+  restated: the field comparison imports `month_to_abbrev` from `export`, and
+  `EXPECTED_FIELDS` is derived by calling `export._document` on a placeholder row
+  so the record shape cannot drift out of sync. `test_expected_fields_matches_spec`
+  additionally locks those ten names, since they are an external contract with
+  Node Annotator / ElasticSearch.
+- **PMID-set drift needs a sidecar, not a bigger report.** The report stores
+  counts, never millions of PMIDs, so `--manifest` writes a sorted gzipped
+  `pmids.txt.gz` from the set the structure check already holds and
+  `--previous-manifest` diffs against it. A drop the `deleted_pmid` table
+  explains is expected; an unexplained one is an **error** (records lost, not
+  retired), downgraded to a warning when no database is available to attribute
+  it. This catches same-count exports whose contents silently changed.
 
 ## Known upstream issue — journal parsing
 

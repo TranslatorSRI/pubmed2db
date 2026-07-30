@@ -110,6 +110,24 @@ fails on warnings) so it can gate an HPC run; pass `--offline` to skip the
 network checks. Set `--email` (or `NCBI_EMAIL`) and optionally `--api-key` (or
 `NCBI_API_KEY`, which raises the rate limit) for the API checks.
 
+Coverage counts alone cannot tell you that two exports of the same size hold the
+same *records*, so `validate` can write a sorted PMID manifest and diff against
+an earlier one:
+
+```bash
+# Archive this export's PMID set (gzipped, one PMID per line).
+uv run pubmed2db validate data/json --manifest data/json/pmids.txt.gz
+
+# Next month: report which PMIDs disappeared since that export.
+uv run pubmed2db validate data/json-new \
+    --previous-manifest data/json/pmids.txt.gz --manifest data/json-new/pmids.txt.gz
+```
+
+A dropped PMID is fine if the database recorded a `DeleteCitation` for it; one
+that vanished *without* a recorded deletion is an **error**, since it means
+records were lost rather than retired. With no database available the drops can't
+be attributed, so they downgrade to a warning to review.
+
 The coverage check expects the export to be within ±5% of the live PubMed total
 (the 2026-07-30 full run came in at 99.90% of it). A **partial** export — from a
 `--limit` test download — is legitimately far below that, so pass something like
