@@ -251,7 +251,7 @@ def validate(
     con = None
     db_path = Path(ctx.obj["db"])
     if db_path.exists():
-        candidate = connect(str(db_path))
+        candidate = _connect(ctx)
         if articles_loaded(candidate):
             con = candidate
         else:
