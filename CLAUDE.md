@@ -22,7 +22,8 @@ Parquet (PubMed field names, for downloadable queries).
 | `src/pubmed2db/export.py` | JSON (spec fields, empty-string-not-null) + Parquet export. |
 | `src/pubmed2db/validate.py` | Post-export sanity checks over a NDJSON directory: structure, coverage (Entrez + DB denominators), sampled Entrez field comparison, deletion confirmation; emits a gated JSON report. |
 | `src/pubmed2db/status.py` | Pipeline-readiness checks derived from DB state (drives the CLI's prerequisite errors/warnings). |
-| `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`, `status`, `validate`. |
+| `src/pubmed2db/util.py` | Shared helpers: progress/ETA formatting, duration formatting, peak-RSS reporting. |
+| `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`, `status`, `validate`; group-level `--threads`/`--temp-dir` are applied by `_connect`. |
 
 ## Key design decisions (and why)
 

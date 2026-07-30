@@ -68,6 +68,7 @@ uv run pubmed2db --data-dir data load
 uv run pubmed2db --data-dir data export --format json --out data/json --shards 16
 
 # Export the database to Parquet (latest version per table, or --all for full history).
+# Note: unlike the JSON export, this has not yet been run against the full corpus.
 uv run pubmed2db --data-dir data export --format parquet --out data/parquet
 
 # Download + journals + load in one step (for scheduled runs).
@@ -83,6 +84,12 @@ uv run pubmed2db --data-dir data validate data/json --email you@example.com
 
 `--data-dir data` is the default, so omitting it gives the same result.
 The DuckDB database is stored as `<data-dir>/pubmed.duckdb`; override with `--db`.
+
+Two more group-level options tune DuckDB itself, mainly for large exports on a
+cluster: `--threads N` (`PUBMED2DB_THREADS`) caps the thread pool, which
+otherwise sizes itself from the machine's core count and so oversubscribes a
+smaller allocation, and `--temp-dir PATH` (`PUBMED2DB_DUCKDB_TEMP_DIR`) sets
+where DuckDB spills when a query exceeds memory. Both go before the subcommand.
 
 The steps are independent and incremental (re-running `download` revalidates
 existing files rather than refetching them), and each checks its prerequisites
@@ -160,7 +167,14 @@ See [`CLAUDE.md`](./CLAUDE.md) for architecture and design decisions, and
   file into a separate DuckDB file, then use a query that spans multiple files to either load everything into one
   file or to simply export it from the multiple files (using PMIDs to group related queries might not take very long?).
   Running it with 64G of memory seems sufficient.
-- `uv run pubmed2db export` takes a few hours to run; when run with --mem 256G, its peak RSS was 199.6 GiB.
+- `uv run pubmed2db export --format json` is fast but memory-hungry: 40,901,984 documents in ~23 minutes
+  (≈30k documents/s) at a peak RSS of 201.1 GiB, run with `--mem 256G` (an earlier run peaked at 199.6 GiB).
+  Unlike `load`, its memory scales with the whole database rather than the largest input file — see
+  [`slurm/README.md`](./slurm/README.md#running-export) for why, and for what to request on a cluster.
+- **`export --format parquet` is untested at full scale.** Only the JSON export has been run against the
+  whole corpus. Parquet should be the lighter of the two (each table is written by a DuckDB `COPY ... TO`
+  rather than pulled through Python), but that is reasoning, not a measurement: request the same 256 GB
+  the first time and check the logged peak RSS.
 
 ## Development
 

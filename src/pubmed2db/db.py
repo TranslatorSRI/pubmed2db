@@ -31,11 +31,27 @@ def parse_file_name(file_name: str) -> tuple[int, int, int]:
     return year_yy, file_number, year_yy * _ORDER_MULTIPLIER + file_number
 
 
-def connect(db_path: str | Path) -> duckdb.DuckDBPyConnection:
-    """Open (creating if needed) the DuckDB database and ensure the schema."""
+def connect(
+    db_path: str | Path,
+    *,
+    threads: int | None = None,
+    temp_directory: str | Path | None = None,
+) -> duckdb.DuckDBPyConnection:
+    """Open (creating if needed) the DuckDB database and ensure the schema.
+
+    ``threads`` caps DuckDB's thread pool, which otherwise sizes itself from the
+    machine's core count and so oversubscribes a Slurm allocation smaller than
+    the node. ``temp_directory`` is where DuckDB spills when a query exceeds its
+    memory budget — worth pointing at local scratch for `export`.
+    """
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    con = duckdb.connect(str(path))
+    config = {}
+    if threads is not None:
+        config["threads"] = threads
+    if temp_directory is not None:
+        config["temp_directory"] = str(temp_directory)
+    con = duckdb.connect(str(path), config=config)
     init_schema(con)
     return con
 

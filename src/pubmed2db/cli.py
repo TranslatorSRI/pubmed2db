@@ -49,9 +49,35 @@ def _sync_options(f):
     show_default=False,
     help="Path to the DuckDB database (default: <data-dir>/pubmed.duckdb).",
 )
+@click.option(
+    "--threads",
+    type=int,
+    default=None,
+    envvar="PUBMED2DB_THREADS",
+    help=(
+        "Cap DuckDB's thread pool (default: the machine's core count, which "
+        "oversubscribes a smaller Slurm allocation). Env: PUBMED2DB_THREADS."
+    ),
+)
+@click.option(
+    "--temp-dir",
+    default=None,
+    envvar="PUBMED2DB_DUCKDB_TEMP_DIR",
+    help=(
+        "Where DuckDB spills when a query exceeds memory (point at local "
+        "scratch for large exports). Env: PUBMED2DB_DUCKDB_TEMP_DIR."
+    ),
+)
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging.")
 @click.pass_context
-def main(ctx: click.Context, data_dir: str, db: str | None, verbose: bool) -> None:
+def main(
+    ctx: click.Context,
+    data_dir: str,
+    db: str | None,
+    threads: int | None,
+    temp_dir: str | None,
+    verbose: bool,
+) -> None:
     """Download, store, and export PubMed abstracts."""
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -64,7 +90,16 @@ def main(ctx: click.Context, data_dir: str, db: str | None, verbose: bool) -> No
     ctx.obj["db"] = db or os.environ.get(
         "PUBMED2DB_DB", str(Path(data_dir) / "pubmed.duckdb")
     )
+    ctx.obj["threads"] = threads
+    ctx.obj["temp_dir"] = temp_dir
     ctx.obj["verbose"] = verbose
+
+
+def _connect(ctx: click.Context):
+    """Open the database with the group-level DuckDB tuning options applied."""
+    return connect(
+        ctx.obj["db"], threads=ctx.obj["threads"], temp_directory=ctx.obj["temp_dir"]
+    )
 
 
 @main.command()
@@ -74,7 +109,7 @@ def download(ctx: click.Context, baseline: bool, updates: bool, limit: int | Non
     """Download baseline/update files and record MD5 checksums."""
     from .download import sync
 
-    with closing(connect(ctx.obj["db"])) as con:
+    with closing(_connect(ctx)) as con:
         results = sync(con, baseline=baseline, updates=updates, limit=limit, verify=verify)
         click.echo(f"Synced {len(results)} file(s).")
 
@@ -85,7 +120,7 @@ def journals(ctx: click.Context) -> None:
     """Refresh the journal dimension from the NLM Catalog."""
     from .load import load_journals
 
-    with closing(connect(ctx.obj["db"])) as con:
+    with closing(_connect(ctx)) as con:
         n = load_journals(con)
         click.echo(f"Loaded {n} journals.")
 
@@ -101,7 +136,7 @@ def load(ctx: click.Context, force: bool) -> None:
     """
     from .load import load_files
 
-    with closing(connect(ctx.obj["db"])) as con:
+    with closing(_connect(ctx)) as con:
         files = _local_files()
         if not files:
             raise click.ClickException(
@@ -134,7 +169,7 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int, gzip_output: boo
     from .status import export_readiness
     from .util import peak_rss_gib
 
-    with closing(connect(ctx.obj["db"])) as con:
+    with closing(_connect(ctx)) as con:
         readiness = export_readiness(con)
         if readiness["blocked"]:
             raise click.ClickException(readiness["warnings"][0])
@@ -268,7 +303,7 @@ def status(ctx: click.Context) -> None:
     """Report what's been downloaded, loaded, and is ready to export."""
     from .status import export_readiness, summarize
 
-    with closing(connect(ctx.obj["db"])) as con:
+    with closing(_connect(ctx)) as con:
         s = summarize(con)
         pct = (
             f"{100 * s['loaded_files'] / s['downloaded_files']:.1f}%"
@@ -326,7 +361,7 @@ def update(
     from .download import sync
     from .load import load_files, load_journals
 
-    with closing(connect(ctx.obj["db"])) as con:
+    with closing(_connect(ctx)) as con:
         results = sync(con, baseline=baseline, updates=updates, limit=limit, verify=verify)
         click.echo(f"Synced {len(results)} file(s).")
         n = load_journals(con)
