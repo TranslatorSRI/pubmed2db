@@ -135,10 +135,12 @@ Notes on the knobs:
   DuckDB sized its own pool from the node's cores, and the run was still fast —
   so treat `--threads` as insurance against contention on a busy node, not as
   something the export needs.
-- **Parquet is the lighter of the two.** `export_parquet` builds the same
-  `_latest_snapshot`, but each table is written by a DuckDB `COPY ... TO`, so no
-  full result set is pulled through Python. It has not been measured at full
-  scale — request the same 256 GB the first time and read the logged peak RSS.
+- **Parquet should be the lighter of the two — but is unmeasured.**
+  `export_parquet` builds the same `_latest_snapshot`, then writes each table
+  with a DuckDB `COPY ... TO`, so no full result set is pulled through Python.
+  It has never been run against the full corpus, so that is reasoning rather
+  than a number: request the same 256 GB the first time and read the logged
+  peak RSS.
 - **Run `export` in a separate `srun` from `load`.** `update` deliberately does
   not chain into it, and sizing one job for both means paying the export's memory
   for the load's several hours.

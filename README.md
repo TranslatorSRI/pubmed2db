@@ -68,6 +68,7 @@ uv run pubmed2db --data-dir data load
 uv run pubmed2db --data-dir data export --format json --out data/json --shards 16
 
 # Export the database to Parquet (latest version per table, or --all for full history).
+# Note: unlike the JSON export, this has not yet been run against the full corpus.
 uv run pubmed2db --data-dir data export --format parquet --out data/parquet
 
 # Download + journals + load in one step (for scheduled runs).
@@ -155,6 +156,10 @@ See [`CLAUDE.md`](./CLAUDE.md) for architecture and design decisions, and
   (≈30k documents/s) at a peak RSS of 201.1 GiB, run with `--mem 256G` (an earlier run peaked at 199.6 GiB).
   Unlike `load`, its memory scales with the whole database rather than the largest input file — see
   [`slurm/README.md`](./slurm/README.md#running-export) for why, and for what to request on a cluster.
+- **`export --format parquet` is untested at full scale.** Only the JSON export has been run against the
+  whole corpus. Parquet should be the lighter of the two (each table is written by a DuckDB `COPY ... TO`
+  rather than pulled through Python), but that is reasoning, not a measurement: request the same 256 GB
+  the first time and check the logged peak RSS.
 
 ## Development
 
