@@ -10,6 +10,7 @@ We drive the XML iteration ourselves (rather than using
    ``PubDate`` components (so ``MedlineDate``-only and partial dates survive with
    full fidelity) and ``<DeleteCitation>`` PMIDs (needed for latest-version
    selection).
+3. We re-extract ``xrefs``, which that parser gets wrong — see :func:`_xrefs`.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from lxml import etree
-from pubmed_downloader.api import Article, _extract_article
+from pubmed_downloader.api import Article, Reference, _extract_article
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,35 @@ def _raw_pubdate(element: etree._Element) -> tuple[str | None, ...]:
     )
 
 
+#: The article's *own* ``ArticleIdList`` — a direct child of ``PubmedData``, and
+#: the path Babel reads (``createcompendia/publications.py``).
+_ARTICLE_ID_PATH = "PubmedData/ArticleIdList/ArticleId"
+
+#: cthoyt's parser drops the article's own PMID from ``xrefs``; we keep that
+#: behaviour, since the PMID is the record's key and is re-added at export.
+_SKIP_ID_TYPES = {"pubmed"}
+
+
+def _xrefs(element: etree._Element) -> list[Reference]:
+    """Extract the article's own ``ArticleId`` cross-references.
+
+    ``_extract_article`` collects these with ``.//ArticleIdList/ArticleId``
+    under ``PubmedData``, but ``.//`` matches at any depth and
+    ``PubmedData/ReferenceList/Reference`` has an ``ArticleIdList`` of its own.
+    Every *cited reference's* DOI therefore ends up attributed to the citing
+    article — one observed record picked up 426 DOIs that were not its own.
+    Anchoring to the direct child keeps only the article's identifiers.
+    """
+    return [
+        Reference(prefix=id_type, identifier=tag.text.strip())
+        for tag in element.findall(_ARTICLE_ID_PATH)
+        if tag.text
+        and tag.text.strip()
+        and (id_type := tag.get("IdType"))
+        and id_type not in _SKIP_ID_TYPES
+    ]
+
+
 def _pmid_version(element: etree._Element) -> int | None:
     pmid_tag = element.find("MedlineCitation/PMID")
     if pmid_tag is None:
@@ -100,6 +130,7 @@ def parse_file(path: str | Path) -> ParsedFile:
             continue
         if article is None:
             continue
+        article.xrefs = _xrefs(element)
         year, month, day, medline_date = _raw_pubdate(element)
         result.articles.append(
             ParsedArticle(

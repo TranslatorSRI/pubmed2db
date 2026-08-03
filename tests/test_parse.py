@@ -44,6 +44,28 @@ def test_extracts_rich_fields(gz_fixture):
     assert article.journal.nlm_catalog_id == "0410462"
 
 
+def test_xrefs_exclude_cited_references(gz_fixture):
+    """A cited reference's ArticleIdList must not become the article's own.
+
+    Upstream's `_extract_article` searches `.//ArticleIdList/ArticleId` under
+    `PubmedData`, which also matches `ReferenceList/Reference/ArticleIdList`;
+    `parse._xrefs` anchors to the direct child instead.
+    """
+    from pubmed2db.parse import parse_file
+
+    parsed = parse_file(gz_fixture("pubmed25n0002"))
+    article = next(pa.article for pa in parsed.articles if pa.pubmed == 1001)
+
+    assert {(x.prefix, x.identifier) for x in article.xrefs} == {
+        ("doi", "10.1038/example1001"),
+        ("pmc", "PMC7654321"),
+        ("pii", "S0140-6736(20)30183-5"),
+    }
+    # The cited paper's identifiers are absent, and so is our own PMID.
+    assert not any(x.identifier.startswith("10.9999/") for x in article.xrefs)
+    assert not any(x.prefix == "pubmed" for x in article.xrefs)
+
+
 def test_collects_delete_citation(gz_fixture):
     from pubmed2db.parse import parse_file
 
