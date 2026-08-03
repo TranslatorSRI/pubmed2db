@@ -31,6 +31,11 @@ below are deliberately deferred.
   `start_year`/`end_year` (broken in ≤ 0.0.14 — those fields aren't in
   `J_Entrez.txt`). Then we can go back to using the library's `Journal` model
   directly. See `CLAUDE.md`.
+- **Report the `xrefs` bug upstream.** `_extract_article` uses
+  `.//ArticleIdList/ArticleId` under `PubmedData`, which also matches
+  `ReferenceList/Reference/ArticleIdList` and so attributes every cited
+  reference's DOI/PMCID to the citing article. Worked around in `parse._xrefs`;
+  the one-character fix upstream is anchoring the path to the direct child.
 - Consider whether any of our additions (raw `PubDate` components,
   `DeleteCitation` handling) are worth contributing upstream after all.
 
@@ -58,6 +63,11 @@ below are deliberately deferred.
 - **`MedlineDate` ranges** (e.g. "1998 Spring", "1998 Dec-1999 Jan") currently
   yield empty `pub_year`/`pub_month`/`pub_day` in the JSON export. Could parse a
   leading 4-digit year out of `medline_date` to populate `pub_year`.
+- **`ELocationID` DOIs are not read.** The exported `identifiers` come from
+  `PubmedData/ArticleIdList` only — the same place Babel reads, and the
+  authoritative one. A DOI can also appear as
+  `Article/ELocationID[@EIdType="doi"]`, normally as a duplicate; parse it as a
+  fallback if records ever turn up with the latter but not the former.
 - **Grounding is off.** We call `pubmed_downloader`'s parser with `ground=False`
   (no MeSH/ROR/ORCID lookups), so `author_affiliation.ror` etc. are unpopulated.
   The library's `[process]` extra (pyobo/orcid-downloader) could enable grounding

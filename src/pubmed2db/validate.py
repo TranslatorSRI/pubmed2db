@@ -6,7 +6,7 @@ archived alongside the export. It runs four checks, split into an **offline
 phase** (fast, deterministic, no network) and an **online phase** (sampled
 Entrez eutils cross-checks):
 
-1. **structure** — every line parses as JSON and matches the exporter's 10-field
+1. **structure** — every line parses as JSON and matches the exporter's 11-field
    record shape (:func:`pubmed2db.export._document`); PMIDs are unique.
 2. **coverage** — how much of PubMed we exported, against *two* denominators:
    the live Entrez total (portable) and the local ``latest_article`` count
@@ -41,7 +41,7 @@ import duckdb
 import requests
 from lxml import etree
 
-from .export import _document, month_to_abbrev
+from .export import ID_PREFIXES, _document, month_to_abbrev
 from .util import fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 #: Exactly the keys :func:`pubmed2db.export._document` emits, derived from the
 #: exporter itself so the two cannot drift apart. The placeholder row only has
 #: to be the right arity — ``_document`` names the keys, not the values.
-EXPECTED_FIELDS = frozenset(_document((0,) + (None,) * 9))
+EXPECTED_FIELDS = frozenset(_document((0,) + (None,) * 10))
 
 #: Fields compared strictly against Entrez; a high mismatch rate here is an error.
 CORE_FIELDS = ("article_title", "volume", "issue", "pub_year", "pub_month", "pub_day")
@@ -402,6 +402,21 @@ def _text(element, path: str) -> str:
     return _normalize("".join(node.itertext()))
 
 
+def _identifiers(article, pmid: int) -> list[str]:
+    """Rebuild the exporter's ``identifiers`` CURIEs from an efetch record.
+
+    Reads the same ``ArticleIdList`` the loader does and applies the same
+    :data:`pubmed2db.export.ID_PREFIXES` casing, so a difference between this
+    and the export is a real difference in the data, not in the formatting.
+    """
+    curies = [f"PMID:{pmid}"]
+    for node in article.findall("PubmedData/ArticleIdList/ArticleId"):
+        prefix = ID_PREFIXES.get(node.get("IdType", ""))
+        if prefix and node.text and node.text.strip():
+            curies.append(f"{prefix}:{node.text.strip()}")
+    return curies
+
+
 def efetch_documents(
     pmids: list[int], *, api_key: str | None, email: str | None
 ) -> dict[int, dict]:
@@ -438,6 +453,9 @@ def efetch_documents(
             )
             docs[pmid] = {
                 "id": f"PMID:{pmid}",
+                # `art` (the PubmedArticle root), not `article`: ArticleIdList
+                # lives under PubmedData, a sibling of MedlineCitation.
+                "identifiers": _identifiers(art, pmid),
                 "journal_name": _text(article, "Journal/Title"),
                 "journal_abbrev": _text(article, "Journal/ISOAbbreviation"),
                 "article_title": _text(article, "ArticleTitle"),
@@ -604,6 +622,20 @@ def check_fields(
                 mismatches.append(
                     {"pmid": pmid, "field": f, "exported": exported.get(f), "entrez": entrez.get(f)}
                 )
+
+        # `identifiers` is the one list-valued field, so it can't go through the
+        # string comparison above. Order is irrelevant; membership is not. Note
+        # this compares our newest *loaded* version against live PubMed, so a
+        # DOI assigned after our last update file reads as a mismatch — the same
+        # exposure the other core fields carry, absorbed by the rate threshold.
+        core_comparisons += 1
+        if set(exported.get("identifiers") or []) != set(entrez.get("identifiers") or []):
+            core_mismatch += 1
+            mismatches.append({
+                "pmid": pmid, "field": "identifiers",
+                "exported": exported.get("identifiers"),
+                "entrez": entrez.get("identifiers"),
+            })
 
         exp_abs = _normalize(str(exported.get("abstract", "")))
         ent_abs = entrez.get("abstract", "")

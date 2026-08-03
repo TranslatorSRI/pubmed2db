@@ -26,7 +26,13 @@ _EFETCH = {
         </Journal>
         <ArticleTitle>Revised title for article one.</ArticleTitle>
         <Abstract><AbstractText>The revised abstract for article one.</AbstractText></Abstract>
-      </Article></MedlineCitation></PubmedArticle>""",
+      </Article></MedlineCitation>
+      <PubmedData><ArticleIdList>
+        <ArticleId IdType="pubmed">1001</ArticleId>
+        <ArticleId IdType="doi">10.1038/example1001</ArticleId>
+        <ArticleId IdType="pmc">PMC7654321</ArticleId>
+        <ArticleId IdType="pii">S0140-6736(20)30183-5</ArticleId>
+      </ArticleIdList></PubmedData></PubmedArticle>""",
     1003: """
       <PubmedArticle><MedlineCitation><PMID>1003</PMID>
         <Article><Journal>
@@ -37,7 +43,10 @@ _EFETCH = {
           <ISOAbbreviation>J. Examples</ISOAbbreviation>
         </Journal>
         <ArticleTitle>Article three with a MedlineDate range.</ArticleTitle>
-      </Article></MedlineCitation></PubmedArticle>""",
+      </Article></MedlineCitation>
+      <PubmedData><ArticleIdList>
+        <ArticleId IdType="pubmed">1003</ArticleId>
+      </ArticleIdList></PubmedData></PubmedArticle>""",
 }
 
 
@@ -92,6 +101,7 @@ def test_malformed_and_structural_errors(export_dir):
 def _valid_doc():
     return {
         "id": "PMID:9",
+        "identifiers": ["PMID:9"],
         "journal_name": "", "journal_abbrev": "", "article_title": "",
         "volume": "", "issue": "", "pub_year": "", "pub_month": "",
         "pub_day": "", "abstract": "",
@@ -197,12 +207,14 @@ def test_cli_validate_fails_on_error(export_dir):
 def test_expected_fields_matches_spec():
     """EXPECTED_FIELDS derives from the exporter; lock it to the shipped spec.
 
-    The 10 DocumentMetadataAPI field names are an external contract (Node
-    Annotator / ElasticSearch consume them), so changing the export shape should
-    trip a test rather than silently re-define what validate accepts.
+    The 11 exported field names are an external contract (Node Annotator /
+    ElasticSearch consume them), so changing the export shape should trip a test
+    rather than silently re-define what validate accepts. Nine of them are the
+    DocumentMetadataAPI spec's; `id` and `identifiers` are our extensions.
     """
     assert set(validate.EXPECTED_FIELDS) == {
         "id",
+        "identifiers",
         "journal_name",
         "journal_abbrev",
         "article_title",

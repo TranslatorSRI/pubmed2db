@@ -47,6 +47,9 @@ def test_json_export_uses_spec_fields(loaded_con, tmp_path):
     one = docs["PMID:1001"]
     assert one == {
         "id": "PMID:1001",
+        # v2's PMCID (PMC7654321), not v1's PMC1234567, and no `pii`. Sorted,
+        # so uppercase "PMC:" precedes lowercase "doi:", with the PMID first.
+        "identifiers": ["PMID:1001", "PMC:PMC7654321", "doi:10.1038/example1001"],
         "journal_name": "Nature",
         "journal_abbrev": "Nature",
         "article_title": "Revised title for article one.",
@@ -64,6 +67,8 @@ def test_json_export_empty_string_not_null(loaded_con, tmp_path):
 
     docs = _read_ndjson(export_json(loaded_con, tmp_path / "json"))
     three = docs["PMID:1003"]
+    # No DOI or PMCID: the record still carries its own PMID, never null.
+    assert three["identifiers"] == ["PMID:1003"]
     # MedlineDate-only article: missing fields are empty strings, never null.
     assert three["pub_year"] == ""
     assert three["pub_month"] == ""

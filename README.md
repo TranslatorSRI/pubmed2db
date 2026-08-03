@@ -85,6 +85,48 @@ uv run pubmed2db --data-dir data validate data/json --email you@example.com
 `--data-dir data` is the default, so omitting it gives the same result.
 The DuckDB database is stored as `<data-dir>/pubmed.duckdb`; override with `--db`.
 
+### Identifiers in the JSON export
+
+Alongside the DocumentMetadataAPI fields, each JSON record carries an
+`identifiers` array of CURIEs — the PMID, plus the DOI and PMCID when PubMed
+published them:
+
+```json
+{
+  "id": "PMID:30690000",
+  "identifiers": ["PMID:30690000", "PMC:PMC6423490", "doi:10.1016/j.ejphar.2019.01.030"],
+  "journal_name": "European journal of pharmacology",
+  "...": "..."
+}
+```
+
+The prefixes deliberately match Babel's `src/prefixes.py` — `PMID`, lowercase
+`doi`, and `PMC` — so these CURIEs join directly against the Babel publication
+compendium. PubMed's PMCID values already begin with `PMC`, hence the doubled
+`PMC:PMC6423490`. A record with neither a DOI nor a PMCID still gets its own
+`["PMID:<id>"]`; the array is never empty and never null.
+
+> **Consumers must match identifiers case-insensitively.** Values are stored and
+> exported exactly as PubMed published them, with no case normalization (Babel
+> does the same). DOIs are case-insensitive by specification and PubMed is not
+> internally consistent about them, so `doi:10.1234/ABC` and `doi:10.1234/abc`
+> can both occur and refer to the same article.
+
+Only DOIs and PMCIDs are promoted into this field. Any other `ArticleId` type
+PubMed supplies (`pii`, `mid`, …) is still loaded and is available in the
+`article_id` table and the Parquet export.
+
+> **Databases built before this feature need a `load --force`.** The identifiers
+> come from the `article_id` table, and until now that table was populated by an
+> upstream parser that also swept up every *cited reference's* DOI and PMCID (see
+> `CLAUDE.md`). Loading is idempotent, so re-running it simply replaces each
+> file's rows — but nothing detects the stale data automatically, because the
+> files themselves have not changed:
+>
+> ```bash
+> uv run pubmed2db --data-dir data load --force
+> ```
+
 Two more group-level options tune DuckDB itself, mainly for large exports on a
 cluster: `--threads N` (`PUBMED2DB_THREADS`) caps the thread pool, which
 otherwise sizes itself from the machine's core count and so oversubscribes a

@@ -40,6 +40,15 @@ _VERSIONED_CHILDREN = (
 #: Dimension/bookkeeping tables exported as-is.
 _OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid")
 
+#: PubMed ``ArticleId/@IdType`` -> CURIE prefix for the JSON ``identifiers``
+#: field. The casing matches Babel's ``src/prefixes.py`` (``DOI = "doi"``,
+#: ``PMC = "PMC"``, ``PMID = "PMID"``) so our CURIEs join against the Babel
+#: publication compendium; ``DOI:`` would not. PubMed's ``pmc`` values already
+#: start with ``PMC``, hence the doubled ``PMC:PMC1234567``. Values are emitted
+#: verbatim, so consumers must match case-insensitively (DOIs are
+#: case-insensitive per spec and PubMed is not consistent).
+ID_PREFIXES = {"doi": "doi", "pmc": "PMC"}
+
 
 def month_to_abbrev(raw: str | None) -> str:
     """Normalize a raw PubMed month to a capitalized 3-letter abbreviation.
@@ -62,10 +71,21 @@ def _s(value: object) -> str:
     return "" if value is None else str(value)
 
 
+#: Joining `article_id` on (pmid, source_file) — the same key `abs` uses —
+#: confines the identifiers to the article's *latest* version, so a DOI or PMCID
+#: that only ever appeared on a superseded version does not leak into the export.
 _LATEST_METADATA_SQL = """
 WITH abs AS (
     SELECT pmid, source_file, string_agg(text, ' ' ORDER BY seq) AS abstract
     FROM abstract_text
+    GROUP BY pmid, source_file
+),
+ids AS (
+    SELECT pmid, source_file, list_sort(list_distinct(list(
+        CASE id_type WHEN 'doi' THEN 'doi:' ELSE 'PMC:' END || id_value
+    ))) AS identifiers
+    FROM article_id
+    WHERE id_type IN ('doi', 'pmc')
     GROUP BY pmid, source_file
 )
 SELECT
@@ -78,18 +98,26 @@ SELECT
     la.pub_year,
     la.pub_month,
     la.pub_day,
-    abs.abstract
+    abs.abstract,
+    ids.identifiers
 FROM _latest_snapshot la
 LEFT JOIN journal j ON la.nlm_catalog_id = j.nlm_catalog_id
 LEFT JOIN abs ON abs.pmid = la.pmid AND abs.source_file = la.source_file
+LEFT JOIN ids ON ids.pmid = la.pmid AND ids.source_file = la.source_file
 ORDER BY la.pmid
 """
 
 
-def _document(row: tuple) -> dict[str, str]:
-    pmid, journal_name, journal_abbrev, title, volume, issue, year, month, day, abstract = row
+def _document(row: tuple) -> dict[str, str | list[str]]:
+    (
+        pmid, journal_name, journal_abbrev, title, volume, issue,
+        year, month, day, abstract, identifiers,
+    ) = row
     return {
         "id": f"PMID:{pmid}",
+        # The LEFT JOIN yields NULL, not an empty list, for a PMID with neither
+        # a DOI nor a PMCID; such a record still gets its own PMID CURIE.
+        "identifiers": [f"PMID:{pmid}", *(identifiers or [])],
         "journal_name": _s(journal_name),
         "journal_abbrev": _s(journal_abbrev),
         "article_title": _s(title),
