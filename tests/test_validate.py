@@ -133,6 +133,9 @@ def test_coverage_warns_outside_default_band(export_dir, loaded_con, monkeypatch
 
 
 def test_field_validation_matches(export_dir, loaded_con, monkeypatch):
+    """Also guards that identifiers compare as a *set*: the export sorts them
+    (`PMC:` before `doi:`) while `_EFETCH` lists them in document order
+    (doi first), so an order-sensitive comparison fails here."""
     monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
     report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
     fv = report["checks"]["field_validation"]
@@ -151,6 +154,39 @@ def test_field_validation_flags_mismatch(export_dir, loaded_con, monkeypatch):
     report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
     mismatched = report["checks"]["field_validation"]["mismatches"]
     assert any(m["field"] == "article_title" and m["pmid"] == 1001 for m in mismatched)
+
+
+def test_field_validation_flags_identifier_mismatch(export_dir, loaded_con, monkeypatch):
+    """A DOI that disagrees with Entrez is caught like any other core field."""
+    tampered = dict(_EFETCH)
+    tampered[1001] = _EFETCH[1001].replace("10.1038/example1001", "10.1038/somethingelse")
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(tampered))
+    report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
+    mismatched = report["checks"]["field_validation"]["mismatches"]
+    entry = next(m for m in mismatched if m["field"] == "identifiers" and m["pmid"] == 1001)
+    assert "doi:10.1038/somethingelse" in entry["entrez"]
+    assert "doi:10.1038/example1001" in entry["exported"]
+
+
+def test_efetch_identifiers_exclude_cited_references(monkeypatch):
+    """validate reads the article's own ArticleIdList, not its references'.
+
+    The mirror of `test_xrefs_exclude_cited_references` on the parse side — if
+    validate over-matched the way upstream's parser did, every sampled record
+    with references would be reported as a mismatch against a correct export.
+    """
+    with_refs = _EFETCH[1001].replace(
+        "</ArticleIdList></PubmedData>",
+        "</ArticleIdList>"
+        "<ReferenceList><Reference><ArticleIdList>"
+        '<ArticleId IdType="doi">10.9999/not-our-doi</ArticleId>'
+        "</ArticleIdList></Reference></ReferenceList></PubmedData>",
+    )
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory({1001: with_refs}))
+    docs = validate.efetch_documents([1001], api_key=None, email="me@example.com")
+    assert docs[1001]["identifiers"] == [
+        "PMID:1001", "doi:10.1038/example1001", "PMC:PMC7654321",
+    ]
 
 
 def test_field_validation_flags_missing_from_api(export_dir, loaded_con, monkeypatch):

@@ -31,6 +31,14 @@ below are deliberately deferred.
   `start_year`/`end_year` (broken in ≤ 0.0.14 — those fields aren't in
   `J_Entrez.txt`). Then we can go back to using the library's `Journal` model
   directly. See `CLAUDE.md`.
+- **`reference_citation` is always empty.** `_extract_article` builds
+  `cites_pubmed_ids` from `medline_citation.findall(".//ReferenceList/Reference")`,
+  but `ReferenceList` lives under `PubmedData`, a sibling of `MedlineCitation`,
+  so the search never matches: 0 rows loaded from 14,201 real articles whose
+  records carry hundreds of references each. Fix alongside `parse._xrefs` by
+  reading `PubmedData/ReferenceList/Reference/ArticleIdList/ArticleId[@IdType='pubmed']`
+  ourselves, and decide whether the citation graph is wanted at full scale
+  (it is a large table — ~444 rows for one article).
 - **Report the `xrefs` bug upstream.** `_extract_article` uses
   `.//ArticleIdList/ArticleId` under `PubmedData`, which also matches
   `ReferenceList/Reference/ArticleIdList` and so attributes every cited

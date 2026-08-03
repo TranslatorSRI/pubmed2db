@@ -101,6 +101,20 @@ Parquet (PubMed field names, for downloadable queries).
   retired), downgraded to a warning when no database is available to attribute
   it. This catches same-count exports whose contents silently changed.
 
+## Known upstream issue — `_extract_article` XPaths are scoped loosely
+
+Every extraction in `pubmed_downloader.api._extract_article` uses a `.//`
+descendant search, and two of them hit the wrong subtree. **Check the scope of
+any field you take from that parser before trusting it**; both bugs are silent.
+
+1. **`xrefs` over-matches** — see below. Fixed in `parse._xrefs`.
+2. **`cites_pubmed_ids` never matches.** It searches
+   `medline_citation.findall(".//ReferenceList/Reference")`, but `ReferenceList`
+   is a child of `PubmedData`, a *sibling* of `MedlineCitation` — so it returns
+   nothing on real data and **`reference_citation` is always empty** (0 rows
+   across 14,201 real articles from a file whose records carry 444 references).
+   Not yet fixed; see `FUTURE.md`.
+
 ## Known upstream issue — xrefs pick up cited references
 
 `_extract_article` builds `Article.xrefs` from
