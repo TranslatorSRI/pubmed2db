@@ -46,7 +46,7 @@ import duckdb
 import requests
 from lxml import etree
 
-from .export import _document, month_to_abbrev
+from .export import _document, _year_from_medline_date, month_to_abbrev
 from .util import fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
@@ -54,10 +54,25 @@ logger = logging.getLogger(__name__)
 #: NCBI E-utilities base URL.
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 
-#: Exactly the keys :func:`pubmed2db.export._document` emits, derived from the
-#: exporter itself so the two cannot drift apart. The placeholder row only has
-#: to be the right arity — ``_document`` names the keys, not the values.
-EXPECTED_FIELDS = frozenset(_document((0,) + (None,) * 9))
+def _expected_fields() -> frozenset[str]:
+    """Exactly the keys :func:`pubmed2db.export._document` emits.
+
+    Derived from the exporter itself so the record shape cannot drift. The
+    placeholder row only has to be the right *arity* — ``_document`` names the
+    keys, not the values — but that arity is itself a drift surface: it changes
+    whenever the export query selects another column, and a hardcoded one turns
+    an unrelated export change into an import-time crash here. So find it by
+    asking, rather than by remembering.
+    """
+    for arity in range(1, 64):
+        try:
+            return frozenset(_document((0,) + (None,) * (arity - 1)))
+        except ValueError:
+            continue  # wrong number of values to unpack; try the next width
+    raise RuntimeError("could not determine export._document's row arity")
+
+
+EXPECTED_FIELDS = _expected_fields()
 
 #: Fields compared strictly against Entrez; a high mismatch rate here is an error.
 CORE_FIELDS = ("article_title", "volume", "issue", "pub_year", "pub_month", "pub_day")
@@ -518,6 +533,14 @@ def efetch_documents(
                 continue
             journal = article.find("Journal/JournalIssue")
             pub = article.find("Journal/JournalIssue/PubDate")
+            # efetch renders a season/range record as <Year>+<Season> where the
+            # archival XML has a bare <MedlineDate>, but it does not always do
+            # so. Apply the exporter's own recovery to whichever form comes
+            # back, or every such record reads as a mismatch against an export
+            # that did recover the year.
+            pub_year = _text(pub, "Year") if pub is not None else ""
+            if not pub_year and pub is not None:
+                pub_year = _year_from_medline_date(_text(pub, "MedlineDate"))
             abstract = " ".join(
                 _normalize("".join(node.itertext()))
                 for node in article.findall("Abstract/AbstractText")
@@ -529,7 +552,7 @@ def efetch_documents(
                 "article_title": _text(article, "ArticleTitle"),
                 "volume": _text(journal, "Volume") if journal is not None else "",
                 "issue": _text(journal, "Issue") if journal is not None else "",
-                "pub_year": _text(pub, "Year") if pub is not None else "",
+                "pub_year": pub_year,
                 "pub_month": month_to_abbrev(
                     pub.findtext("Month") if pub is not None else None
                 ),

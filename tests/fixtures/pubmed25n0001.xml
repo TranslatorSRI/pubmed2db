@@ -35,11 +35,23 @@
             <LastName>Smith</LastName>
             <ForeName>Jane</ForeName>
             <Initials>J</Initials>
+            <Identifier Source="ORCID">0000-0002-1825-0097</Identifier>
             <AffiliationInfo>
               <Affiliation>Department of Testing, Example University.</Affiliation>
             </AffiliationInfo>
           </Author>
+          <Author ValidYN="Y">
+            <CollectiveName>The Example Study Group</CollectiveName>
+          </Author>
         </AuthorList>
+        <GrantList CompleteYN="Y">
+          <Grant>
+            <GrantID>R01 GM123456</GrantID>
+            <Acronym>GM</Acronym>
+            <Agency>NIGMS NIH HHS</Agency>
+            <Country>United States</Country>
+          </Grant>
+        </GrantList>
         <PublicationTypeList>
           <PublicationType UI="D016428">Journal Article</PublicationType>
         </PublicationTypeList>
@@ -74,6 +86,27 @@
         <ArticleId IdType="doi">10.1038/example1001</ArticleId>
         <ArticleId IdType="pmc">PMC1234567</ArticleId>
       </ArticleIdList>
+      <!-- Real PubMed nests ReferenceList under PubmedData, not MedlineCitation. -->
+      <ReferenceList>
+        <Reference>
+          <Citation>Prior work, et al.</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">9001</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>A reference with no PMID.</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="doi">10.1000/nopmid</ArticleId>
+          </ArticleIdList>
+        </Reference>
+        <Reference>
+          <Citation>Duplicate of the first.</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">9001</ArticleId>
+          </ArticleIdList>
+        </Reference>
+      </ReferenceList>
     </PubmedData>
   </PubmedArticle>
 

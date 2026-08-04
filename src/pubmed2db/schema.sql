@@ -132,11 +132,11 @@ CREATE TABLE IF NOT EXISTS grant_ (
     country     TEXT
 );
 
-CREATE TABLE IF NOT EXISTS reference_citation (
-    pmid        BIGINT NOT NULL,
-    source_file TEXT   NOT NULL,
-    cited_pmid  TEXT
-);
+-- No `reference_citation` table: the citation graph is deliberately not stored.
+-- One real article carries ~444 references, so it would have been the largest
+-- table here, and nothing downstream consumes it. `parse._cited_pmids` keeps the
+-- extraction if that changes. Databases built before this keep a stale table;
+-- `DROP TABLE reference_citation` clears it.
 
 CREATE TABLE IF NOT EXISTS article_id (
     pmid        BIGINT NOT NULL,

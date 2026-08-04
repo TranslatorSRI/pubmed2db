@@ -416,3 +416,22 @@ def test_summary_surfaces_findings_from_unrendered_checks(export_dir):
     out = validate.format_summary(report)
     assert "OTHER FINDINGS" in out
     assert "A check the renderer knows nothing about." in out
+
+
+def test_medline_date_year_is_not_a_false_mismatch(export_dir, loaded_con, monkeypatch):
+    """efetch returning a bare MedlineDate must not read as a pub_year mismatch.
+
+    The export recovers a year from a free-text MedlineDate ("1998 Spring" ->
+    "1998"). efetch usually renders those records as <Year>+<Season> instead,
+    but not always — and when it returns the archival form, comparing it raw
+    against a recovered year makes every such record a mismatch. validate
+    applies the exporter's own recovery so the two sides are comparable.
+    PMID 1003's canned response is deliberately the MedlineDate form.
+    """
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
+    report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
+
+    fetched = validate.efetch_documents([1003], api_key=None, email=None)
+    assert fetched[1003]["pub_year"] == "1998"
+    assert [m for m in report["checks"]["field_validation"]["mismatches"]
+            if m["field"] == "pub_year"] == []

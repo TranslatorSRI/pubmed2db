@@ -43,10 +43,10 @@ def test_needs_load_and_md5_change(con, gz_fixture):
     from pubmed2db.load import load_files, needs_load
 
     files = [(gz_fixture("pubmed25n0001"), "baseline")]
-    assert load_files(con, files) == 1
+    assert load_files(con, files) == (1, [])
     # Already processed and not re-downloaded -> skipped.
     assert needs_load(con, "pubmed25n0001.xml.gz") is False
-    assert load_files(con, files) == 0
+    assert load_files(con, files) == (0, [])
 
     # Simulate a re-download with a changed checksum (downloaded_at > processed_at).
     con.execute(
@@ -54,9 +54,69 @@ def test_needs_load_and_md5_change(con, gz_fixture):
         "published_md5 = 'changed' WHERE file_name = 'pubmed25n0001.xml.gz'"
     )
     assert needs_load(con, "pubmed25n0001.xml.gz") is True
-    assert load_files(con, files) == 1
+    assert load_files(con, files) == (1, [])
     # Reload replaced rows rather than duplicating them.
     assert con.execute("SELECT count(*) FROM article").fetchone()[0] == 3
+
+
+def test_child_tables_populated(loaded_con):
+    """Cover the per-version tables the original fixtures never exercised."""
+    baseline = "pubmed25n0001.xml.gz"
+
+    assert loaded_con.execute(
+        "SELECT grant_id, acronym, agency, country FROM grant_ WHERE pmid = 1001"
+    ).fetchall() == [("R01 GM123456", "GM", "NIGMS NIH HHS", "United States")]
+
+    assert loaded_con.execute(
+        "SELECT descriptor_ui, qualifier_ui, qualifier_name, major_topic "
+        "FROM mesh_qualifier WHERE pmid = 1001"
+    ).fetchall() == [("D006801", "Q000235", "genetics", False)]
+
+    # A CollectiveName author is stored as kind='collective' with no orcid/valid.
+    assert loaded_con.execute(
+        "SELECT kind, name, orcid, valid FROM author "
+        "WHERE pmid = 1001 AND source_file = ? ORDER BY position",
+        [baseline],
+    ).fetchall() == [
+        ("author", "Jane Smith", "0000-0002-1825-0097", True),
+        ("collective", "The Example Study Group", None, None),
+    ]
+
+    # Affiliations attach to the named author only, never the collective.
+    assert loaded_con.execute(
+        "SELECT position, affiliation FROM author_affiliation WHERE pmid = 1001 "
+        "AND source_file = ?",
+        [baseline],
+    ).fetchall() == [(1, "Department of Testing, Example University.")]
+
+
+def test_no_reference_citation_table(con):
+    """The citation graph is deliberately not stored -- see parse._cited_pmids."""
+    assert con.execute(
+        "SELECT count(*) FROM information_schema.tables "
+        "WHERE table_name = 'reference_citation'"
+    ).fetchone()[0] == 0
+
+
+def test_bad_file_is_skipped_not_fatal(con, gz_fixture, tmp_path):
+    """One corrupt file must not abort a run over the other ~1,300."""
+    from pubmed2db.load import load_files, needs_load
+
+    good = gz_fixture("pubmed25n0001")
+    bad = tmp_path / "pubmed25n0003.xml.gz"
+    bad.write_bytes(b"not gzipped XML at all")
+
+    loaded, failed = load_files(con, [(bad, "update"), (good, "baseline")])
+
+    assert loaded == 1
+    assert failed == ["pubmed25n0003.xml.gz"]
+    # The good file landed...
+    assert con.execute("SELECT count(*) FROM article").fetchone()[0] == 3
+    # ...and the bad one left no rows, no watermark, so a later run retries it.
+    assert con.execute(
+        "SELECT count(*) FROM article WHERE source_file = 'pubmed25n0003.xml.gz'"
+    ).fetchone()[0] == 0
+    assert needs_load(con, "pubmed25n0003.xml.gz") is True
 
 
 def test_source_file_registry_counts(loaded_con):

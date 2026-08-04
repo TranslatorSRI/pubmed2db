@@ -7,10 +7,10 @@ nulls, for absent values. Parquet export keeps PubMed's own field names.
 
 from __future__ import annotations
 
-import calendar
 import gzip
 import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -32,13 +32,19 @@ _VERSIONED_CHILDREN = (
     "mesh_qualifier",
     "publication_type",
     "grant_",
-    "reference_citation",
     "article_id",
     "history",
 )
 
 #: Dimension/bookkeeping tables exported as-is.
 _OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid")
+
+
+#: Month abbreviations, frozen rather than taken from ``calendar.month_abbr``:
+#: that is ``strftime('%b')`` under ``LC_TIME``, so any dependency calling
+#: ``locale.setlocale`` would silently localize a spec-defined output field.
+_MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 def month_to_abbrev(raw: str | None) -> str:
@@ -52,9 +58,9 @@ def month_to_abbrev(raw: str | None) -> str:
     raw = raw.strip()
     if raw.isdigit():
         month = int(raw)
-        return calendar.month_abbr[month] if 1 <= month <= 12 else ""
+        return _MONTH_ABBR[month - 1] if 1 <= month <= 12 else ""
     key = raw[:3].capitalize()
-    return key if key in calendar.month_abbr else ""
+    return key if key in _MONTH_ABBR else ""
 
 
 def _s(value: object) -> str:
@@ -62,10 +68,39 @@ def _s(value: object) -> str:
     return "" if value is None else str(value)
 
 
+_MEDLINE_YEAR_RE = re.compile(r"^\s*(\d{4})")
+
+
+def _year_from_medline_date(raw: str | None) -> str:
+    """Leading 4-digit year of a free-text ``MedlineDate``, or ``""``.
+
+    Records whose ``PubDate`` is a range or a season carry no ``<Year>`` element
+    — PubMed puts the whole thing in ``<MedlineDate>`` ("1978 Jul-Aug", "1998
+    Spring", "1998 Dec-1999 Jan", "1999-2000"). We store that verbatim for
+    fidelity, which left ``pub_year`` blank in the export for every such record.
+    The leading year is unambiguous in all of those shapes, so it is safe to
+    recover; the month is not (a range has no single month), so ``pub_month``
+    and ``pub_day`` stay empty rather than gaining a value we invented.
+    """
+    if not raw:
+        return ""
+    match = _MEDLINE_YEAR_RE.match(raw)
+    return match.group(1) if match else ""
+
+
+#: Section ``label``s ("BACKGROUND", "METHODS", ...) are deliberately dropped:
+#: the consumer is a full-text search index, which wants prose, not headings.
 _LATEST_METADATA_SQL = """
 WITH abs AS (
     SELECT pmid, source_file, string_agg(text, ' ' ORDER BY seq) AS abstract
-    FROM abstract_text
+    FROM abstract_text a
+    -- Restrict to the latest versions *before* aggregating: without this the
+    -- group-by spans the entire version history and throws the superseded
+    -- rows away in the join below, which dominates the export's peak RSS.
+    WHERE EXISTS (
+        SELECT 1 FROM _latest_snapshot la
+        WHERE la.pmid = a.pmid AND la.source_file = a.source_file
+    )
     GROUP BY pmid, source_file
 )
 SELECT
@@ -78,6 +113,7 @@ SELECT
     la.pub_year,
     la.pub_month,
     la.pub_day,
+    la.medline_date,
     abs.abstract
 FROM _latest_snapshot la
 LEFT JOIN journal j ON la.nlm_catalog_id = j.nlm_catalog_id
@@ -87,7 +123,10 @@ ORDER BY la.pmid
 
 
 def _document(row: tuple) -> dict[str, str]:
-    pmid, journal_name, journal_abbrev, title, volume, issue, year, month, day, abstract = row
+    (
+        pmid, journal_name, journal_abbrev, title, volume, issue,
+        year, month, day, medline_date, abstract,
+    ) = row
     return {
         "id": f"PMID:{pmid}",
         "journal_name": _s(journal_name),
@@ -95,7 +134,9 @@ def _document(row: tuple) -> dict[str, str]:
         "article_title": _s(title),
         "volume": _s(volume),
         "issue": _s(issue),
-        "pub_year": _s(year),
+        # Falls back to the year inside a free-text MedlineDate, which is the
+        # only place these records carry one. See _year_from_medline_date.
+        "pub_year": _s(year) or _year_from_medline_date(medline_date),
         "pub_month": month_to_abbrev(month),
         "pub_day": _s(day),
         "abstract": _s(abstract),
