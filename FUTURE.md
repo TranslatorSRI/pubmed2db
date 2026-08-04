@@ -40,28 +40,30 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
   redundant `pubmed` self-ID). `test_article_ids_exclude_reference_ids` pins it.
 ### TODO: investigate the two reference bugs before reporting them upstream
 
-Both were found while writing a fixture, and the evidence so far is a synthetic
-XML file plus the PubMed DTD — not real data. Nothing has been filed against
-`cthoyt/pubmed-downloader` for either, and nothing should be until these are
-answered. (The journal-model fix is the exception: already filed as
-https://github.com/cthoyt/pubmed-downloader/pull/16.)
+Nothing has been filed against `cthoyt/pubmed-downloader` for either, and nothing
+should be until the open items below are answered. (The journal-model fix is the
+exception: already filed as https://github.com/cthoyt/pubmed-downloader/pull/16.)
 
-- [ ] **Confirm `<ReferenceList>` placement across the real corpus.** We assert it
-  lives under `<PubmedData>`; verify against actual baseline files, across several
-  release years, that it never appears under `<MedlineCitation>`. If both
-  placements occur historically, upstream's selector isn't simply wrong and the
-  report changes shape. Also count how many articles carry references at all — if
-  it's a small fraction, the impact claim needs tempering.
-- [ ] **Quantify the `article_id` contamination on real data.** Load a few files
-  with the pre-fix code and count how many `article_id` rows came from cited
-  references rather than the article itself. A concrete ratio makes the report
-  credible and tells us how badly existing databases are affected.
-- [ ] **Audit upstream's other `.//` selectors for the same over-reach.**
-  `_extract_article` uses descendant-or-self searches in several places; the
-  article-ID bug is one instance of a pattern. `pubmed_data.findall(".//History/PubMedPubDate")`
-  looks safe only because `<Reference>` has no `<History>` — confirm that, and
-  check the abstract/MeSH/author selectors too. There may be one report to file,
-  not two.
+Real-data evidence gathered on the `add-doi-and-pmcids` branch, which found the
+`article_id` bug independently:
+
+- [x] **`article_id` contamination is real and large.** PMID:41136637 alone
+  contributed 426 cited references' DOIs alongside its own.
+- [x] **`reference_citation` really is always empty.** 0 rows from 14,201 real
+  articles whose records carry hundreds of references between them — so the
+  failure is total, not a partial-match edge case.
+
+Still open:
+
+- [ ] **Confirm `<ReferenceList>` placement across release years.** The 14,201-article
+  sample shows the current layout puts it under `<PubmedData>`; verify it was never
+  under `<MedlineCitation>` in older baselines. If both placements occur
+  historically, upstream's selector isn't simply wrong and the report changes shape.
+- [ ] **Audit upstream's other `.//` selectors for the same over-reach.** Partly
+  done — auditing found `cites_pubmed_ids` as the second instance. Still unchecked:
+  `pubmed_data.findall(".//History/PubMedPubDate")` (looks safe only because
+  `<Reference>` has no `<History>` — confirm), and the abstract/MeSH/author
+  selectors. There may be one report to file, not two.
 - [ ] **Check which versions are affected.** We only tested 0.0.14. Establish the
   range before claiming one in a report.
 - [ ] **Validate our replacements against real data**, not just the fixture:
