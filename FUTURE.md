@@ -25,19 +25,27 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
   `J_Entrez.txt`, filed at https://github.com/cthoyt/pubmed-downloader/pull/16).
   Then we can go back to using the library's `Journal` model
   directly. See `CLAUDE.md`.
-- **Revert `parse._cited_pmids`** once upstream finds references. `_extract_article`
+- **`cites_pubmed_ids` never matches, but we no longer care.** `_extract_article`
   searches `medline_citation.findall(".//ReferenceList/Reference")`, but PubMed
   nests `<ReferenceList>` under `<PubmedData>`, so `Article.cites_pubmed_ids` is
-  **always empty** on real data — `reference_citation` would never receive a row.
-  We search the whole `PubmedArticle` element instead, which matches either
-  placement. `test_cited_pmids_found_under_pubmed_data` pins the upstream
-  behaviour and will fail when it's fixed.
+  **always empty** on real data. We dropped the citation graph rather than fix it
+  (see below), so this affects nothing we store — but it is still a real upstream
+  bug, and `parse._cited_pmids` plus `test_cited_pmids_is_parked_but_works` keep a
+  working counter-example for whenever it gets reported.
 - **Revert `parse._article_ids`** once upstream stops over-collecting. It gathers
   `pubmed_data.findall(".//ArticleIdList/ArticleId")`, and that `.//` descends into
   `<ReferenceList>`, so every *cited* reference's DOI/PMID is attributed to the
   citing article — silently wrong rows in `article_id`, proportional to reference
   count. We use the direct `PubmedData/ArticleIdList/ArticleId` path (and drop the
   redundant `pubmed` self-ID). `test_article_ids_exclude_reference_ids` pins it.
+- **The citation graph is not stored — decided, not deferred.** `reference_citation`
+  was removed: one real article carries ~444 references, so at corpus scale it
+  would have been the largest table in the database, and no consumer wants it.
+  `parse._cited_pmids` is parked (uncalled) with re-enabling instructions in its
+  docstring, and `test_no_reference_citation_table` keeps it from creeping back.
+  A database built before the removal keeps a stale, populated table; `DROP TABLE
+  reference_citation` clears it.
+
 ### TODO: investigate the two reference bugs before reporting them upstream
 
 Nothing has been filed against `cthoyt/pubmed-downloader` for either, and nothing
@@ -66,23 +74,27 @@ Still open:
   selectors. There may be one report to file, not two.
 - [ ] **Check which versions are affected.** We only tested 0.0.14. Establish the
   range before claiming one in a report.
-- [ ] **Validate our replacements against real data**, not just the fixture:
-  references carrying multiple `pubmed` `ArticleId`s, `CommentsCorrections`
-  entries, and any non-numeric PMID text that `_cited_pmids` would silently drop.
+- [ ] **Validate `_article_ids` against real data**, not just the fixture: records
+  carrying unusual `ArticleId` types, and any whitespace or empty values it would
+  silently drop. (`_cited_pmids` needs this only if the citation graph is ever
+  revived.)
 - [ ] **Then decide: report upstream, or keep the workaround local.** Only after
   the above. Also worth deciding at that point whether our other additions (raw
   `PubDate` components, `DeleteCitation` handling) are worth contributing.
 
 ### TODO: existing databases carry the bad rows
 
-`article_id` rows written before the fix are still wrong, and `reference_citation`
-is still empty, in any database loaded with the previous code. Neither is
-corrected by a normal incremental run — `needs_load` only re-parses files whose
-checksum moved.
+`article_id` rows written before the fix are still wrong in any database loaded
+with the previous code, and that is not corrected by a normal incremental run —
+`needs_load` only re-parses files whose checksum moved. Such a database also
+still has a populated `reference_citation` table, which nothing will clear.
 
 - [ ] Decide whether to re-load affected files with `load --force` (a full
   re-parse, roughly a baseline's worth of time) or to rebuild from scratch, and
-  note the answer in the README's "Re-running after a gap" section.
+  note the answer in the README's "Re-running after a gap" section. Rebuilding is
+  the simpler answer: `load --force` fixes `article_id`'s rows but leaves the
+  dropped `reference_citation` table sitting there, since `schema.sql` only ever
+  adds tables.
 
 ## Scale & performance (full PubMed is ~38M articles, ~1500+ files)
 

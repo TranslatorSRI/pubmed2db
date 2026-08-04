@@ -33,7 +33,6 @@ _VERSIONED_TABLES = (
     "mesh_qualifier",
     "publication_type",
     "grant_",
-    "reference_citation",
     "article_id",
     "history",
     "deleted_pmid",
@@ -106,9 +105,6 @@ def _article_rows(parsed: ParsedArticle, source_file: str, order_key: int) -> di
 
     for g in a.grants:
         rows["grant_"].append((pmid, source_file, g.id, g.acronym, g.agency, g.country))
-
-    for cited in parsed.cited_pmids:
-        rows["reference_citation"].append((pmid, source_file, cited))
 
     for id_type, id_value in parsed.article_ids:
         rows["article_id"].append((pmid, source_file, id_type, id_value))
