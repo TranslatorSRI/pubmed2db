@@ -121,9 +121,15 @@ still has a populated `reference_citation` table, which nothing will clear.
 
 ## Data fidelity
 
-- **`MedlineDate` ranges** (e.g. "1998 Spring", "1998 Dec-1999 Jan") currently
-  yield empty `pub_year`/`pub_month`/`pub_day` in the JSON export. Could parse a
-  leading 4-digit year out of `medline_date` to populate `pub_year`.
+- **`MedlineDate` ranges — `pub_year` done, month/day still blank.** Records whose
+  `PubDate` is a season or a range carry no `<Year>`; PubMed puts the whole thing
+  in `<MedlineDate>` ("1998 Spring", "1978 Jul-Aug", "1998 Dec-1999 Jan"). The
+  export now recovers the leading 4-digit year via `export._year_from_medline_date`,
+  which a full-corpus `validate` run showed was the single largest source of
+  export/Entrez disagreement (18 of 20 sampled mismatches). `pub_month`/`pub_day`
+  are deliberately still empty: a range has no single month, and inventing one
+  would put a wrong value where there is currently an honest blank. Revisit only
+  if a consumer needs an approximate month more than it needs correctness.
 - **Grounding is off.** We call `pubmed_downloader`'s parser with `ground=False`
   (no MeSH/ROR/ORCID lookups), so `author_affiliation.ror` etc. are unpopulated.
   The library's `[process]` extra (pyobo/orcid-downloader) could enable grounding
