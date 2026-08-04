@@ -371,3 +371,48 @@ def test_summary_lists_sections_skips_and_gaps(export_dir):
     assert "every line parses as JSON" in out
     # The derived half of NOT CHECKED tracks CORE_FIELDS/SOFT_FIELDS.
     assert "journal_name" in out and "article_title" in out
+
+
+def test_report_records_the_thresholds_it_was_judged_against(export_dir):
+    """A report that cannot reproduce its own thresholds cannot be re-read later."""
+    report = validate.run_validation(
+        export_dir, online=False, abstract_threshold=0.8,
+        entrez_low=0.5, entrez_high=1.5,
+    )
+    assert report["inputs"]["abstract_threshold"] == 0.8
+    assert report["inputs"]["entrez_low"] == 0.5
+    assert report["inputs"]["entrez_high"] == 1.5
+
+
+def test_field_validation_records_its_denominator(export_dir, monkeypatch):
+    """core_mismatch_rate is unauditable without the comparison count."""
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
+    report = validate.run_validation(export_dir, online=True)
+
+    fv = report["checks"]["field_validation"]
+    assert fv["core_comparisons"] > 0
+    expected = round(fv["core_mismatches"] / fv["core_comparisons"], 4)
+    assert fv["core_mismatch_rate"] == expected
+
+
+def test_summary_surfaces_findings_from_unrendered_checks(export_dir):
+    """A check the renderer does not place in a section must still reach stdout.
+
+    Insurance against a future check being added without touching format_summary
+    and silently vanishing from the human-readable output.
+    """
+    report = validate.run_validation(export_dir, online=False)
+    report["checks_run"].append({
+        "name": "future-check", "section": "some-new-section",
+        "expectation": "something nobody has rendered yet", "status": "fail",
+        "observed": "it went wrong", "code": "future_code", "count": 3,
+        "see": "checks.future", "detail": {},
+    })
+    report["errors"].append({
+        "code": "future_code", "message": "A check the renderer knows nothing about.",
+        "count": 3, "see": "checks.future",
+    })
+
+    out = validate.format_summary(report)
+    assert "OTHER FINDINGS" in out
+    assert "A check the renderer knows nothing about." in out

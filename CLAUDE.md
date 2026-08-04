@@ -74,6 +74,13 @@ Parquet (PubMed field names, for downloadable queries).
   network call funnels through `validate._eutils` (one monkeypatchable seam, so
   tests stay offline). The process exits non-zero on errors so it can gate an HPC
   pipeline.
+- **A `validate` mismatch is not evidence about what we parsed.** efetch output is
+  a *rendering*, not the archival XML: PubMed serves PMID 152567 as
+  `<Year>1978</Year><Season>Jul-Aug</Season>`, while the baseline file it was
+  loaded from holds `<MedlineDate>1978 Jul-Aug</MedlineDate>` and no `<Year>` at
+  all. Diagnosing a field mismatch from efetch alone will therefore point at the
+  wrong layer. Download the baseline file containing the PMID and read the raw
+  element before changing any parsing or export code.
 - **Every check is recorded, not just the failures.** `Report.record` appends a
   `Check` (name, expectation, status, observed) for passing checks too, and
   `errors`/`warnings`/`skipped_checks` are *projections* of that list rather than
