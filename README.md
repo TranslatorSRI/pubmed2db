@@ -229,7 +229,9 @@ still fetched, so a changed published checksum is always detected.
   extraction looks under `MedlineCitation` for a `<ReferenceList>` that PubMed puts
   under `<PubmedData>`, so it never finds one; and its article-ID extraction
   descends into that `<ReferenceList>`, attributing every cited reference's DOI to
-  the citing article. We parse all three ourselves.
+  the citing article. We parse the journal file and the article IDs ourselves; the
+  reference bug is moot here because we deliberately do not store the citation
+  graph (one article carries ~444 references, and nothing consumes them).
 - This tool is intended to eventually replace the PubMed download in
   [Babel](https://github.com/NCATSTranslator/Babel) (`createcompendia/publications.py`).
 

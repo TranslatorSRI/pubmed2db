@@ -58,17 +58,33 @@ def test_article_ids_exclude_reference_ids(gz_fixture):
     assert ("doi", "10.1000/nopmid") in {(x.prefix, x.identifier) for x in article.article.xrefs}
 
 
-def test_cited_pmids_found_under_pubmed_data(gz_fixture):
-    from pubmed2db.parse import parse_file
+def test_cited_pmids_is_parked_but_works(gz_fixture):
+    """`_cited_pmids` is not wired into parse_file -- the citation graph is not
+    stored. Kept working so re-enabling it is a one-line change, and because it
+    is the counter-example to the upstream bug tracked in FUTURE.md.
+    """
+    import gzip
 
+    from lxml import etree
+
+    from pubmed2db.parse import _cited_pmids, parse_file
+
+    with gzip.open(gz_fixture("pubmed25n0001"), "rb") as handle:
+        root = etree.parse(handle).getroot()
+    element = next(
+        e for e in root.findall("PubmedArticle")
+        if e.findtext("MedlineCitation/PMID") == "1001"
+    )
+    # Deduplicated; the DOI-only reference contributes nothing.
+    assert _cited_pmids(element) == [9001]
+
+    # Nothing populates a cited_pmids field any more...
     parsed = parse_file(gz_fixture("pubmed25n0001"))
     article = next(pa for pa in parsed.articles if pa.pubmed == 1001)
-
-    # Deduplicated; the DOI-only reference contributes nothing.
-    assert article.cited_pmids == [9001]
-    # Upstream searches MedlineCitation for ReferenceList, which real PubMed
-    # nests under PubmedData -- hence our own extraction. When this assertion
-    # starts failing, upstream has fixed it and _cited_pmids can go. See FUTURE.md.
+    assert not hasattr(article, "cited_pmids")
+    # ...and upstream still finds nothing, because it searches MedlineCitation
+    # for a ReferenceList that PubMed nests under PubmedData. When this starts
+    # failing, upstream has fixed it. See FUTURE.md.
     assert article.article.cites_pubmed_ids == []
 
 

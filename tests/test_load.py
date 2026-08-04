@@ -63,12 +63,6 @@ def test_child_tables_populated(loaded_con):
     """Cover the per-version tables the original fixtures never exercised."""
     baseline = "pubmed25n0001.xml.gz"
 
-    # Citations land as BIGINT, so they join straight back to article.pmid.
-    assert loaded_con.execute(
-        "SELECT cited_pmid FROM reference_citation WHERE pmid = 1001 AND source_file = ?",
-        [baseline],
-    ).fetchall() == [(9001,)]
-
     assert loaded_con.execute(
         "SELECT grant_id, acronym, agency, country FROM grant_ WHERE pmid = 1001"
     ).fetchall() == [("R01 GM123456", "GM", "NIGMS NIH HHS", "United States")]
@@ -94,6 +88,14 @@ def test_child_tables_populated(loaded_con):
         "AND source_file = ?",
         [baseline],
     ).fetchall() == [(1, "Department of Testing, Example University.")]
+
+
+def test_no_reference_citation_table(con):
+    """The citation graph is deliberately not stored -- see parse._cited_pmids."""
+    assert con.execute(
+        "SELECT count(*) FROM information_schema.tables "
+        "WHERE table_name = 'reference_citation'"
+    ).fetchone()[0] == 0
 
 
 def test_bad_file_is_skipped_not_fatal(con, gz_fixture, tmp_path):
