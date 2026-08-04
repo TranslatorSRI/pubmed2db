@@ -16,6 +16,9 @@ below are deliberately deferred.
 
 ## Upstream dependency (`cthoyt/pubmed-downloader`)
 
+The dependency is pinned `<0.1` because we call private APIs (`_extract_article`,
+`_ensure_urls`); re-test before raising the ceiling.
+
 - **Revert the custom journal parser** in `load._parse_journal_overview` once
   `pubmed_downloader.catalog.process_journal_overview()` no longer requires
   `start_year`/`end_year` (broken in ≤ 0.0.14 — those fields aren't in
