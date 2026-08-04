@@ -43,10 +43,10 @@ def test_needs_load_and_md5_change(con, gz_fixture):
     from pubmed2db.load import load_files, needs_load
 
     files = [(gz_fixture("pubmed25n0001"), "baseline")]
-    assert load_files(con, files) == 1
+    assert load_files(con, files) == (1, [])
     # Already processed and not re-downloaded -> skipped.
     assert needs_load(con, "pubmed25n0001.xml.gz") is False
-    assert load_files(con, files) == 0
+    assert load_files(con, files) == (0, [])
 
     # Simulate a re-download with a changed checksum (downloaded_at > processed_at).
     con.execute(
@@ -54,7 +54,7 @@ def test_needs_load_and_md5_change(con, gz_fixture):
         "published_md5 = 'changed' WHERE file_name = 'pubmed25n0001.xml.gz'"
     )
     assert needs_load(con, "pubmed25n0001.xml.gz") is True
-    assert load_files(con, files) == 1
+    assert load_files(con, files) == (1, [])
     # Reload replaced rows rather than duplicating them.
     assert con.execute("SELECT count(*) FROM article").fetchone()[0] == 3
 

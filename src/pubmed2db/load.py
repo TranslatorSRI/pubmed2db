@@ -262,18 +262,32 @@ def load_files(
     files: list[tuple[Path, str]],
     *,
     force: bool = False,
-) -> int:
+) -> tuple[int, list[str]]:
     """Load a list of ``(path, kind)`` files in chronological order, skipping
-    ones already up to date. Returns the number of files loaded."""
+    ones already up to date.
+
+    Returns ``(n_loaded, failed_file_names)``. A file that fails to load is
+    logged and skipped rather than aborting the run: a full baseline is ~1,300
+    files, and one truncated download shouldn't cost a multi-hour job. Each
+    file loads in its own transaction, so a failure leaves no partial rows and
+    no ``processed_at`` watermark — a later run retries it.
+    """
     ordered = sorted(files, key=lambda pk: parse_file_name(pk[0].name)[2])
     to_load = [(p, k) for p, k in ordered if needs_load(con, p.name, force=force)]
     total = len(to_load)
     if total == 0:
-        return 0
+        return 0, []
 
     run_start = time.monotonic()
+    loaded = 0
+    failed: list[str] = []
     for i, (path, kind) in enumerate(to_load):
-        load_file(con, path, kind=kind)
+        try:
+            load_file(con, path, kind=kind)
+            loaded += 1
+        except Exception:  # noqa: BLE001 - keep going; the file is retried next run
+            logger.exception("failed to load %s; skipping", path.name)
+            failed.append(path.name)
         done = i + 1
         remaining = total - done
         elapsed = time.monotonic() - run_start
@@ -283,7 +297,13 @@ def load_files(
             done, total, remaining, eta,
         )
 
-    return total
+    if failed:
+        logger.error(
+            "%d of %d file(s) failed to load and were skipped: %s",
+            len(failed), total, ", ".join(failed),
+        )
+
+    return loaded, failed
 
 
 #: Maps keys in NLM's J_Entrez/J_Medline overview file to our journal columns.

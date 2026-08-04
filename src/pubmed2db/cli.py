@@ -142,8 +142,12 @@ def load(ctx: click.Context, force: bool) -> None:
             raise click.ClickException(
                 "No downloaded files found; run `pubmed2db download` first."
             )
-        loaded = load_files(con, files, force=force)
+        loaded, failed = load_files(con, files, force=force)
         click.echo(f"Loaded {loaded} of {len(files)} file(s).")
+        if failed:
+            raise click.ClickException(
+                f"{len(failed)} file(s) failed to load: {', '.join(failed)}"
+            )
 
 
 @main.command()
@@ -269,8 +273,12 @@ def update(
         # run's sync() happened to return, so previously-downloaded-but-not-yet
         # loaded files aren't silently skipped.
         files = _local_files()
-        loaded = load_files(con, files, force=force)
+        loaded, failed = load_files(con, files, force=force)
         click.echo(f"Loaded {loaded} of {len(files)} file(s).")
+        if failed:
+            raise click.ClickException(
+                f"{len(failed)} file(s) failed to load: {', '.join(failed)}"
+            )
 
 
 if __name__ == "__main__":
