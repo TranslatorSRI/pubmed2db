@@ -6,10 +6,11 @@ We drive the XML iteration ourselves (rather than using
 1. We reuse cthoyt's :func:`pubmed_downloader.api._extract_article` for the rich
    record (authors, MeSH, grants, citations, history, ...), called with all
    grounders ``None`` so no heavy ``pyobo``/``orcid`` lookups happen.
-2. In the same pass we capture two things cthoyt's pipeline drops: the *raw*
+2. In the same pass we capture three things cthoyt's pipeline drops: the *raw*
    ``PubDate`` components (so ``MedlineDate``-only and partial dates survive with
-   full fidelity) and ``<DeleteCitation>`` PMIDs (needed for latest-version
-   selection).
+   full fidelity), ``<DeleteCitation>`` PMIDs (needed for latest-version
+   selection), and the cited PMIDs from ``<ReferenceList>`` (see
+   :func:`_cited_pmids`).
 """
 
 from __future__ import annotations
@@ -37,6 +38,12 @@ class ParsedArticle:
     pub_month: str | None = None
     pub_day: str | None = None
     medline_date: str | None = None
+    #: PMIDs this article cites; see :func:`_cited_pmids` for why we don't use
+    #: the upstream ``Article.cites_pubmed_ids``.
+    cited_pmids: list[int] = field(default_factory=list)
+    #: ``(id_type, id_value)`` for the article itself; see :func:`_article_ids`
+    #: for why we don't use the upstream ``Article.xrefs``.
+    article_ids: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def pubmed(self) -> int:
@@ -66,6 +73,44 @@ def _raw_pubdate(element: etree._Element) -> tuple[str | None, ...]:
         pub_date.findtext("Day"),
         pub_date.findtext("MedlineDate"),
     )
+
+
+def _article_ids(element: etree._Element) -> list[tuple[str, str]]:
+    """``(id_type, id_value)`` pairs for the article itself.
+
+    We can't use ``Article.xrefs``: upstream collects
+    ``PubmedData.findall(".//ArticleIdList/ArticleId")``, and that ``.//``
+    descends into ``<ReferenceList>``, so every *cited* reference's DOI/PMID is
+    attributed to the citing article. The direct path below takes only the
+    article's own ``<ArticleIdList>``. See FUTURE.md.
+
+    The ``pubmed`` entry is dropped: it just restates the ``pmid`` column.
+    """
+    return [
+        (article_id.get("IdType"), article_id.text.strip())
+        for article_id in element.findall("PubmedData/ArticleIdList/ArticleId")
+        if article_id.get("IdType") not in (None, "pubmed")
+        and article_id.text
+        and article_id.text.strip()
+    ]
+
+
+def _cited_pmids(element: etree._Element) -> list[int]:
+    """Cited PMIDs from ``<ReferenceList>``, deduplicated, in document order.
+
+    We can't use ``Article.cites_pubmed_ids``: upstream looks for
+    ``.//ReferenceList/Reference`` under ``MedlineCitation``, but PubMed puts
+    ``<ReferenceList>`` under ``<PubmedData>``, so upstream always yields an
+    empty list on real data. Searching the whole ``PubmedArticle`` element
+    finds it in either position. See FUTURE.md.
+    """
+    seen: dict[int, None] = {}
+    for article_id in element.findall(".//ReferenceList/Reference//ArticleIdList/ArticleId"):
+        if article_id.get("IdType") == "pubmed" and article_id.text:
+            text = article_id.text.strip()
+            if text.isdigit():
+                seen.setdefault(int(text), None)
+    return list(seen)
 
 
 def _pmid_version(element: etree._Element) -> int | None:
@@ -109,6 +154,8 @@ def parse_file(path: str | Path) -> ParsedFile:
                 pub_month=month,
                 pub_day=day,
                 medline_date=medline_date,
+                cited_pmids=_cited_pmids(element),
+                article_ids=_article_ids(element),
             )
         )
 

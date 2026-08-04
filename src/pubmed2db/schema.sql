@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS grant_ (
 CREATE TABLE IF NOT EXISTS reference_citation (
     pmid        BIGINT NOT NULL,
     source_file TEXT   NOT NULL,
-    cited_pmid  TEXT
+    cited_pmid  BIGINT                          -- matches article.pmid, so citations self-join
 );
 
 CREATE TABLE IF NOT EXISTS article_id (

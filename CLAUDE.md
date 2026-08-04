@@ -17,7 +17,7 @@ Parquet (PubMed field names, for downloadable queries).
 | `src/pubmed2db/db.py` | DuckDB connection, schema init, `source_file` registry, `parse_file_name` (filename → chronological `file_order_key`). |
 | `src/pubmed2db/schema.sql` | Normalized tables (PubMed field names) + `latest_article` view. |
 | `src/pubmed2db/download.py` | Reuses `pubmed_downloader` to fetch baseline/update files; adds `.md5` sidecar tracking. |
-| `src/pubmed2db/parse.py` | Self-driven XML iteration: calls cthoyt's `_extract_article` per record, plus raw `PubDate` + `DeleteCitation`. |
+| `src/pubmed2db/parse.py` | Self-driven XML iteration: calls cthoyt's `_extract_article` per record, plus raw `PubDate`, `DeleteCitation`, cited PMIDs, and article IDs. |
 | `src/pubmed2db/load.py` | Loads parsed files (full history, provenance-tagged), `latest`/delete logic, journal dimension. |
 | `src/pubmed2db/export.py` | JSON (spec fields, empty-string-not-null) + Parquet export. |
 | `src/pubmed2db/status.py` | Pipeline-readiness checks derived from DB state (drives the CLI's prerequisite errors/warnings). |
@@ -29,10 +29,11 @@ Parquet (PubMed field names, for downloadable queries).
   It handles bulk download + the rich `Article` data model. We do not use its
   `iterate_process_*`/JSONL cache — DuckDB is our store.
 - **We drive the XML iteration ourselves** (`parse.py`) rather than using cthoyt's
-  process pipeline, because we need two things it drops: the **raw `PubDate`
-  components** (so `MedlineDate`-only/partial dates keep full fidelity instead of
-  being collapsed to a `datetime.date`) and **`<DeleteCitation>`** PMIDs (needed
-  for latest-version selection).
+  process pipeline, because we need things it drops or gets wrong: the **raw
+  `PubDate` components** (so `MedlineDate`-only/partial dates keep full fidelity
+  instead of being collapsed to a `datetime.date`), **`<DeleteCitation>`** PMIDs
+  (needed for latest-version selection), and **cited PMIDs + article IDs** (see the
+  upstream issues below).
 - **DB uses PubMed's own field names**; the DocumentMetadataAPI names
   (`journal_name`, `journal_abbrev`, `pub_month` as 3-letter abbrev, …) are
   applied **only** in the JSON export, with empty strings for missing values.
@@ -66,14 +67,25 @@ Parquet (PubMed field names, for downloadable queries).
   ~25–90× faster (~5–6 s/file). The load logs peak RSS per file for Slurm sizing;
   see `slurm/README.md` and `scripts/benchmark_load.py`.
 
-## Known upstream issue — journal parsing
+## Known upstream issues (`pubmed-downloader` ≤ 0.0.14)
 
-`pubmed_downloader.catalog.process_journal_overview()` (≤ 0.0.14) **raises** on the
-real `J_Entrez.txt` data: its `Journal` model requires `start_year`/`end_year`,
-which that file does not provide. We therefore **parse the overview file ourselves**
-in `load._parse_journal_overview` (reusing only `ensure_journal_overview()` for the
-download). Revisit if a newer `pubmed-downloader` makes those fields optional. See
-`FUTURE.md`.
+Three bugs we work around; all tracked in `FUTURE.md` with a pinning test each, so
+they fail loudly once upstream fixes them. The dependency is pinned `<0.1` because
+we also call private APIs (`_extract_article`, `_ensure_urls`).
+
+- **Journal parsing raises.** `catalog.process_journal_overview()`'s `Journal` model
+  requires `start_year`/`end_year`, which the real `J_Entrez.txt` does not provide.
+  We **parse the overview file ourselves** in `load._parse_journal_overview`
+  (reusing only `ensure_journal_overview()` for the download).
+- **References are never found.** `_extract_article` looks for
+  `.//ReferenceList/Reference` under `MedlineCitation`, but PubMed nests
+  `<ReferenceList>` under `<PubmedData>` — so `Article.cites_pubmed_ids` is always
+  empty on real data. `parse._cited_pmids` searches the whole `PubmedArticle`
+  element, which matches either placement.
+- **Article IDs are over-collected.** `pubmed_data.findall(".//ArticleIdList/ArticleId")`
+  descends into that same `<ReferenceList>`, attributing every *cited* reference's
+  DOI/PMID to the citing article. `parse._article_ids` uses the direct
+  `PubmedData/ArticleIdList/ArticleId` path instead.
 
 ## Development
 

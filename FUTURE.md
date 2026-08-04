@@ -26,7 +26,10 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
   Then we can go back to using the library's `Journal` model
   directly. See `CLAUDE.md`.
 - Consider whether any of our additions (raw `PubDate` components,
-  `DeleteCitation` handling) are worth contributing upstream after all.
+  `DeleteCitation` handling, the two fixes above) are worth contributing upstream
+  after all — the reference/article-ID ones are plain bugs and should be, alongside
+  the journal-model fix already filed as
+  https://github.com/cthoyt/pubmed-downloader/pull/16.
 
 ## Scale & performance (full PubMed is ~38M articles, ~1500+ files)
 
@@ -59,9 +62,11 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
 
 ## Misc
 
-- **MD5 verification** (`download --verify`) recomputes the local digest for every
-  file. Since PubMed files are immutable, this rarely catches anything; consider
-  defaulting it off for speed on large syncs.
+- **MD5 verification — done.** `download --verify` now hashes only files that are
+  new or whose published checksum moved, so re-syncing an unchanged baseline costs
+  no local I/O and verification can stay on by default. It no longer detects
+  corruption that appears *after* a successful download; if that ever matters, add
+  an explicit `--reverify` sweep rather than re-hashing on every run.
 - **DeleteCitation re-add edge case** is handled (delete then later re-add) by the
   `latest_article` view comparing max delete order vs the latest article order, but
   is only covered by synthetic fixtures — worth confirming against real data if it

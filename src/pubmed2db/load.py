@@ -40,9 +40,9 @@ _VERSIONED_TABLES = (
 )
 
 
-def _article_rows(pa: ParsedArticle, source_file: str, order_key: int) -> dict[str, list[tuple]]:
+def _article_rows(parsed: ParsedArticle, source_file: str, order_key: int) -> dict[str, list[tuple]]:
     """Build the per-table insert tuples for a single parsed article."""
-    a = pa.article
+    a = parsed.article
     pmid = a.pubmed
     ji = a.journal_issue
     rows: dict[str, list[tuple]] = {t: [] for t in _VERSIONED_TABLES if t != "deleted_pmid"}
@@ -50,7 +50,7 @@ def _article_rows(pa: ParsedArticle, source_file: str, order_key: int) -> dict[s
     rows["article"].append(
         (
             pmid,
-            pa.pmid_version,
+            parsed.pmid_version,
             source_file,
             order_key,
             a.title,
@@ -58,10 +58,10 @@ def _article_rows(pa: ParsedArticle, source_file: str, order_key: int) -> dict[s
             a.journal.issn,
             ji.volume,
             ji.issue,
-            pa.pub_year,
-            pa.pub_month,
-            pa.pub_day,
-            pa.medline_date,
+            parsed.pub_year,
+            parsed.pub_month,
+            parsed.pub_day,
+            parsed.medline_date,
             a.date_completed,
             a.date_revised,
         )
@@ -107,11 +107,11 @@ def _article_rows(pa: ParsedArticle, source_file: str, order_key: int) -> dict[s
     for g in a.grants:
         rows["grant_"].append((pmid, source_file, g.id, g.acronym, g.agency, g.country))
 
-    for cited in a.cites_pubmed_ids:
+    for cited in parsed.cited_pmids:
         rows["reference_citation"].append((pmid, source_file, cited))
 
-    for xref in a.xrefs:
-        rows["article_id"].append((pmid, source_file, xref.prefix, xref.identifier))
+    for id_type, id_value in parsed.article_ids:
+        rows["article_id"].append((pmid, source_file, id_type, id_value))
 
     for h in a.history:
         rows["history"].append((pmid, source_file, h.status, h.date))
