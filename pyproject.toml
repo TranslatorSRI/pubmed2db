@@ -3,11 +3,13 @@ name = "pubmed2db"
 version = "0.1.0"
 description = "Download PubMed abstracts, load them into DuckDB, and export to JSON and Parquet."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"   # hashlib.file_digest (download.file_md5)
 license = { file = "LICENSE" }
 authors = [{ name = "Gaurav Vaidya", email = "gaurav@ggvaidya.com" }]
 dependencies = [
-    "pubmed-downloader>=0.0.14",
+    # Upper bound: we call private APIs (`_extract_article`, `_ensure_urls`), so
+    # any 0.0.x release can break us. Re-test before raising the ceiling.
+    "pubmed-downloader>=0.0.14,<0.1",
     "duckdb>=1.1",
     "pyarrow>=14",
     "click>=8.1",

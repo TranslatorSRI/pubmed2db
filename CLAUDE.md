@@ -17,7 +17,7 @@ Parquet (PubMed field names, for downloadable queries).
 | `src/pubmed2db/db.py` | DuckDB connection, schema init, `source_file` registry, `parse_file_name` (filename → chronological `file_order_key`). |
 | `src/pubmed2db/schema.sql` | Normalized tables (PubMed field names) + `latest_article` view. |
 | `src/pubmed2db/download.py` | Reuses `pubmed_downloader` to fetch baseline/update files; adds `.md5` sidecar tracking. |
-| `src/pubmed2db/parse.py` | Self-driven XML iteration: calls cthoyt's `_extract_article` per record, plus raw `PubDate` + `DeleteCitation`. |
+| `src/pubmed2db/parse.py` | Self-driven XML iteration: calls cthoyt's `_extract_article` per record, plus raw `PubDate`, `DeleteCitation`, cited PMIDs, and article IDs. |
 | `src/pubmed2db/load.py` | Loads parsed files (full history, provenance-tagged), `latest`/delete logic, journal dimension. |
 | `src/pubmed2db/export.py` | JSON (spec fields, empty-string-not-null) + Parquet export. |
 | `src/pubmed2db/validate.py` | Post-export sanity checks over a NDJSON directory: structure, coverage (Entrez + DB denominators), sampled Entrez field comparison, deletion confirmation; emits a gated JSON report. |
@@ -31,10 +31,11 @@ Parquet (PubMed field names, for downloadable queries).
   It handles bulk download + the rich `Article` data model. We do not use its
   `iterate_process_*`/JSONL cache — DuckDB is our store.
 - **We drive the XML iteration ourselves** (`parse.py`) rather than using cthoyt's
-  process pipeline, because we need two things it drops: the **raw `PubDate`
-  components** (so `MedlineDate`-only/partial dates keep full fidelity instead of
-  being collapsed to a `datetime.date`) and **`<DeleteCitation>`** PMIDs (needed
-  for latest-version selection).
+  process pipeline, because we need things it drops or gets wrong: the **raw
+  `PubDate` components** (so `MedlineDate`-only/partial dates keep full fidelity
+  instead of being collapsed to a `datetime.date`), **`<DeleteCitation>`** PMIDs
+  (needed for latest-version selection), and **cited PMIDs + article IDs** (see the
+  upstream issues below).
 - **DB uses PubMed's own field names**; the DocumentMetadataAPI names
   (`journal_name`, `journal_abbrev`, `pub_month` as 3-letter abbrev, …) are
   applied **only** in the JSON export, with empty strings for missing values.
@@ -101,44 +102,36 @@ Parquet (PubMed field names, for downloadable queries).
   retired), downgraded to a warning when no database is available to attribute
   it. This catches same-count exports whose contents silently changed.
 
-## Known upstream issue — `_extract_article` XPaths are scoped loosely
+## Known upstream issues (`pubmed-downloader` ≤ 0.0.14)
 
-Every extraction in `pubmed_downloader.api._extract_article` uses a `.//`
-descendant search, and two of them hit the wrong subtree. **Check the scope of
-any field you take from that parser before trusting it**; both bugs are silent.
+Three bugs we work around; all tracked in `FUTURE.md` with a pinning test each, so
+they fail loudly once upstream fixes them. The dependency is pinned `<0.1` because
+we also call private APIs (`_extract_article`, `_ensure_urls`).
 
-1. **`xrefs` over-matches** — see below. Fixed in `parse._xrefs`.
-2. **`cites_pubmed_ids` never matches.** It searches
-   `medline_citation.findall(".//ReferenceList/Reference")`, but `ReferenceList`
-   is a child of `PubmedData`, a *sibling* of `MedlineCitation` — so it returns
-   nothing on real data and **`reference_citation` is always empty** (0 rows
-   across 14,201 real articles from a file whose records carry 444 references).
-   Not yet fixed; see `FUTURE.md`.
+Every extraction in `_extract_article` uses a `.//` descendant search, and two of
+them hit the wrong subtree. **Check the scope of any field you take from that
+parser before trusting it** — both bugs are silent, and both corrupted data we
+had already loaded.
 
-## Known upstream issue — xrefs pick up cited references
+- **Journal parsing raises.** `catalog.process_journal_overview()`'s `Journal` model
+  requires `start_year`/`end_year`, which the real `J_Entrez.txt` does not provide.
+  We **parse the overview file ourselves** in `load._parse_journal_overview`
+  (reusing only `ensure_journal_overview()` for the download).
+- **References are never found.** `_extract_article` looks for
+  `.//ReferenceList/Reference` under `MedlineCitation`, but PubMed nests
+  `<ReferenceList>` under `<PubmedData>`, a *sibling* — so `Article.cites_pubmed_ids`
+  is always empty on real data (0 rows across 14,201 real articles, from a file
+  whose records carry 444 references). `parse._cited_pmids` searches the whole
+  `PubmedArticle` element, which matches either placement.
+- **Article IDs are over-collected.** `pubmed_data.findall(".//ArticleIdList/ArticleId")`
+  descends into that same `<ReferenceList>`, attributing every *cited* reference's
+  DOI/PMID to the citing article — one real record (PMID:41136637) contributed 426
+  foreign DOIs. `parse._article_ids` uses the direct
+  `PubmedData/ArticleIdList/ArticleId` path instead (the path Babel reads).
 
-`_extract_article` builds `Article.xrefs` from
-`pubmed_data.findall(".//ArticleIdList/ArticleId")`. `.//` matches at any depth,
-and `PubmedData/ReferenceList/Reference` has an `ArticleIdList` of its own, so
-**every cited reference's DOI/PMCID is attributed to the citing article** — one
-real record contributed 426 foreign DOIs. `parse._xrefs` re-extracts them from
-the direct child `PubmedData/ArticleIdList/ArticleId` (the path Babel uses) and
-overwrites `article.xrefs` before the row is built.
-
-This silently corrupted `article_id` from the first load, so **any database
-built before this fix has a polluted `article_id` table** (the JSON export was
-unaffected only because it did not yet read it — the Parquet export was). A
-`load --force` over the corpus is required to clean it. `test_parse.py::test_xrefs_exclude_cited_references`
-locks the behaviour. Worth reporting upstream.
-
-## Known upstream issue — journal parsing
-
-`pubmed_downloader.catalog.process_journal_overview()` (≤ 0.0.14) **raises** on the
-real `J_Entrez.txt` data: its `Journal` model requires `start_year`/`end_year`,
-which that file does not provide. We therefore **parse the overview file ourselves**
-in `load._parse_journal_overview` (reusing only `ensure_journal_overview()` for the
-download). Revisit if a newer `pubmed-downloader` makes those fields optional. See
-`FUTURE.md`.
+Both silently corrupted `article_id` and left `reference_citation` empty from the
+first load, so **any database built before these fixes needs rebuilding** — see
+`FUTURE.md` for why `load --force` alone is not enough.
 
 ## Development
 

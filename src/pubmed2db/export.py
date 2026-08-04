@@ -7,7 +7,6 @@ nulls, for absent values. Parquet export keeps PubMed's own field names.
 
 from __future__ import annotations
 
-import calendar
 import gzip
 import json
 import logging
@@ -50,6 +49,13 @@ _OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid")
 ID_PREFIXES = {"doi": "doi", "pmc": "PMC"}
 
 
+#: Month abbreviations, frozen rather than taken from ``calendar.month_abbr``:
+#: that is ``strftime('%b')`` under ``LC_TIME``, so any dependency calling
+#: ``locale.setlocale`` would silently localize a spec-defined output field.
+_MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
 def month_to_abbrev(raw: str | None) -> str:
     """Normalize a raw PubMed month to a capitalized 3-letter abbreviation.
 
@@ -61,9 +67,9 @@ def month_to_abbrev(raw: str | None) -> str:
     raw = raw.strip()
     if raw.isdigit():
         month = int(raw)
-        return calendar.month_abbr[month] if 1 <= month <= 12 else ""
+        return _MONTH_ABBR[month - 1] if 1 <= month <= 12 else ""
     key = raw[:3].capitalize()
-    return key if key in calendar.month_abbr else ""
+    return key if key in _MONTH_ABBR else ""
 
 
 def _s(value: object) -> str:
@@ -71,21 +77,38 @@ def _s(value: object) -> str:
     return "" if value is None else str(value)
 
 
+#: Abstract section ``label``s ("BACKGROUND", "METHODS", ...) are deliberately
+#: dropped: the consumer is a full-text search index, which wants prose, not
+#: headings.
+#:
 #: Joining `article_id` on (pmid, source_file) — the same key `abs` uses —
 #: confines the identifiers to the article's *latest* version, so a DOI or PMCID
 #: that only ever appeared on a superseded version does not leak into the export.
 _LATEST_METADATA_SQL = """
 WITH abs AS (
     SELECT pmid, source_file, string_agg(text, ' ' ORDER BY seq) AS abstract
-    FROM abstract_text
+    FROM abstract_text a
+    -- Restrict to the latest versions *before* aggregating: without this the
+    -- group-by spans the entire version history and throws the superseded
+    -- rows away in the join below, which dominates the export's peak RSS.
+    WHERE EXISTS (
+        SELECT 1 FROM _latest_snapshot la
+        WHERE la.pmid = a.pmid AND la.source_file = a.source_file
+    )
     GROUP BY pmid, source_file
 ),
 ids AS (
     SELECT pmid, source_file, list_sort(list_distinct(list(
         CASE id_type WHEN 'doi' THEN 'doi:' ELSE 'PMC:' END || id_value
     ))) AS identifiers
-    FROM article_id
+    FROM article_id ai
     WHERE id_type IN ('doi', 'pmc')
+      -- Same reason as `abs` above: restrict before aggregating, so the
+      -- group-by does not span the whole version history.
+      AND EXISTS (
+          SELECT 1 FROM _latest_snapshot la
+          WHERE la.pmid = ai.pmid AND la.source_file = ai.source_file
+      )
     GROUP BY pmid, source_file
 )
 SELECT

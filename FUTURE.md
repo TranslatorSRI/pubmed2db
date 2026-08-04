@@ -26,26 +26,82 @@ below are deliberately deferred.
 
 ## Upstream dependency (`cthoyt/pubmed-downloader`)
 
+The dependency is pinned `<0.1` because we call private APIs (`_extract_article`,
+`_ensure_urls`); re-test before raising the ceiling.
+
 - **Revert the custom journal parser** in `load._parse_journal_overview` once
   `pubmed_downloader.catalog.process_journal_overview()` no longer requires
   `start_year`/`end_year` (broken in ≤ 0.0.14 — those fields aren't in
-  `J_Entrez.txt`). Then we can go back to using the library's `Journal` model
+  `J_Entrez.txt`, filed at https://github.com/cthoyt/pubmed-downloader/pull/16).
+  Then we can go back to using the library's `Journal` model
   directly. See `CLAUDE.md`.
-- **`reference_citation` is always empty.** `_extract_article` builds
-  `cites_pubmed_ids` from `medline_citation.findall(".//ReferenceList/Reference")`,
-  but `ReferenceList` lives under `PubmedData`, a sibling of `MedlineCitation`,
-  so the search never matches: 0 rows loaded from 14,201 real articles whose
-  records carry hundreds of references each. Fix alongside `parse._xrefs` by
-  reading `PubmedData/ReferenceList/Reference/ArticleIdList/ArticleId[@IdType='pubmed']`
-  ourselves, and decide whether the citation graph is wanted at full scale
-  (it is a large table — ~444 rows for one article).
-- **Report the `xrefs` bug upstream.** `_extract_article` uses
-  `.//ArticleIdList/ArticleId` under `PubmedData`, which also matches
-  `ReferenceList/Reference/ArticleIdList` and so attributes every cited
-  reference's DOI/PMCID to the citing article. Worked around in `parse._xrefs`;
-  the one-character fix upstream is anchoring the path to the direct child.
-- Consider whether any of our additions (raw `PubDate` components,
-  `DeleteCitation` handling) are worth contributing upstream after all.
+- **Revert `parse._cited_pmids`** once upstream finds references. `_extract_article`
+  searches `medline_citation.findall(".//ReferenceList/Reference")`, but PubMed
+  nests `<ReferenceList>` under `<PubmedData>`, so `Article.cites_pubmed_ids` is
+  **always empty** on real data — `reference_citation` would never receive a row.
+  We search the whole `PubmedArticle` element instead, which matches either
+  placement. `test_cited_pmids_found_under_pubmed_data` pins the upstream
+  behaviour and will fail when it's fixed.
+- **Revert `parse._article_ids`** once upstream stops over-collecting. It gathers
+  `pubmed_data.findall(".//ArticleIdList/ArticleId")`, and that `.//` descends into
+  `<ReferenceList>`, so every *cited* reference's DOI/PMID is attributed to the
+  citing article — silently wrong rows in `article_id`, proportional to reference
+  count. We use the direct `PubmedData/ArticleIdList/ArticleId` path (and drop the
+  redundant `pubmed` self-ID). `test_article_ids_exclude_reference_ids` pins it.
+- **Decide whether the citation graph is wanted at full scale.** Now that
+  `reference_citation` actually receives rows, it becomes one of the largest
+  tables in the database — one real article contributed ~444 of them. If nothing
+  downstream consumes it, consider dropping the table rather than carrying it
+  through every load and Parquet export.
+
+### TODO: investigate the two reference bugs before reporting them upstream
+
+Nothing has been filed against `cthoyt/pubmed-downloader` for either, and nothing
+should be until the open items below are answered. (The journal-model fix is the
+exception: already filed as https://github.com/cthoyt/pubmed-downloader/pull/16.)
+
+Real-data evidence gathered on the `add-doi-and-pmcids` branch, which found the
+`article_id` bug independently:
+
+- [x] **`article_id` contamination is real and large.** PMID:41136637 alone
+  contributed 426 cited references' DOIs alongside its own.
+- [x] **`reference_citation` really is always empty.** 0 rows from 14,201 real
+  articles whose records carry hundreds of references between them — so the
+  failure is total, not a partial-match edge case.
+
+Still open:
+
+- [ ] **Confirm `<ReferenceList>` placement across release years.** The 14,201-article
+  sample shows the current layout puts it under `<PubmedData>`; verify it was never
+  under `<MedlineCitation>` in older baselines. If both placements occur
+  historically, upstream's selector isn't simply wrong and the report changes shape.
+- [ ] **Audit upstream's other `.//` selectors for the same over-reach.** Partly
+  done — auditing found `cites_pubmed_ids` as the second instance. Still unchecked:
+  `pubmed_data.findall(".//History/PubMedPubDate")` (looks safe only because
+  `<Reference>` has no `<History>` — confirm), and the abstract/MeSH/author
+  selectors. There may be one report to file, not two.
+- [ ] **Check which versions are affected.** We only tested 0.0.14. Establish the
+  range before claiming one in a report.
+- [ ] **Validate our replacements against real data**, not just the fixture:
+  references carrying multiple `pubmed` `ArticleId`s, `CommentsCorrections`
+  entries, and any non-numeric PMID text that `_cited_pmids` would silently drop.
+- [ ] **Then decide: report upstream, or keep the workaround local.** Only after
+  the above. Also worth deciding at that point whether our other additions (raw
+  `PubDate` components, `DeleteCitation` handling) are worth contributing.
+
+### TODO: existing databases carry the bad rows
+
+`article_id` rows written before the fix are still wrong, and `reference_citation`
+is still empty, in any database loaded with the previous code. Neither is
+corrected by a normal incremental run — `needs_load` only re-parses files whose
+checksum moved.
+
+- [ ] Decide whether to re-load affected files with `load --force` (a full
+  re-parse, roughly a baseline's worth of time) or to rebuild from scratch, and
+  note the answer in the README's "Re-running after a gap" section. Note that
+  `load --force` alone does *not* migrate `reference_citation.cited_pmid` from
+  `TEXT` to `BIGINT`: `schema.sql` uses `CREATE TABLE IF NOT EXISTS`, so only a
+  fresh database picks up the new column type.
 
 ## Scale & performance (full PubMed is ~38M articles, ~1500+ files)
 
@@ -63,6 +119,10 @@ below are deliberately deferred.
 - **`latest_article` view** runs a window over the entire `article` table on every
   read. At full scale, consider an index on `article(pmid, file_order_key)` or
   materializing the latest set into a table before export.
+- **JSON export's global sort** (`ORDER BY la.pmid`) sorts the whole latest set to
+  keep round-robin sharding deterministic. Sharding on `pmid % shards` would remove
+  it; measure first, since restricting the abstract aggregation to the latest
+  snapshot already cut into the same peak. Tracked in issue #8.
 - **No indexes** are created on the big per-version tables yet (kept lean for bulk
   load). Add them if interactive querying of the DB becomes a use case.
 
@@ -83,9 +143,11 @@ below are deliberately deferred.
 
 ## Misc
 
-- **MD5 verification** (`download --verify`) recomputes the local digest for every
-  file. Since PubMed files are immutable, this rarely catches anything; consider
-  defaulting it off for speed on large syncs.
+- **MD5 verification — done.** `download --verify` now hashes only files that are
+  new or whose published checksum moved, so re-syncing an unchanged baseline costs
+  no local I/O and verification can stay on by default. It no longer detects
+  corruption that appears *after* a successful download; if that ever matters, add
+  an explicit `--reverify` sweep rather than re-hashing on every run.
 - **DeleteCitation re-add edge case** is handled (delete then later re-add) by the
   `latest_article` view comparing max delete order vs the latest article order, but
   is only covered by synthetic fixtures — worth confirming against real data if it

@@ -97,8 +97,10 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         SELECT
             count(*),
             count(*) FILTER (WHERE downloaded_at IS NOT NULL),
-            count(*) FILTER (WHERE kind = 'baseline'),
-            count(*) FILTER (WHERE kind = 'update'),
+            -- Filtered on downloaded_at so these read as a breakdown of the
+            -- downloaded count they're printed next to, not of known files.
+            count(*) FILTER (WHERE kind = 'baseline' AND downloaded_at IS NOT NULL),
+            count(*) FILTER (WHERE kind = 'update' AND downloaded_at IS NOT NULL),
             max(downloaded_at),
             count(*) FILTER (WHERE processed_at IS NOT NULL),
             max(processed_at)

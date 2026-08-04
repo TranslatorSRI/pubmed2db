@@ -116,12 +116,17 @@ Only DOIs and PMCIDs are promoted into this field. Any other `ArticleId` type
 PubMed supplies (`pii`, `mid`, …) is still loaded and is available in the
 `article_id` table and the Parquet export.
 
-> **Databases built before this feature need a `load --force`.** The identifiers
-> come from the `article_id` table, and until now that table was populated by an
+> **Databases built before this feature need rebuilding.** The identifiers come
+> from the `article_id` table, and until now that table was populated by an
 > upstream parser that also swept up every *cited reference's* DOI and PMCID (see
 > `CLAUDE.md`). Loading is idempotent, so re-running it simply replaces each
 > file's rows — but nothing detects the stale data automatically, because the
 > files themselves have not changed:
+>
+> Note that `load --force` refreshes the *rows* but not the *schema*:
+> `schema.sql` uses `CREATE TABLE IF NOT EXISTS`, so an existing database keeps
+> `reference_citation.cited_pmid` as `TEXT` rather than the current `BIGINT`.
+> Build a fresh database if you want that column typed correctly.
 >
 > ```bash
 > uv run pubmed2db --data-dir data load --force
@@ -209,17 +214,22 @@ original one. Check with `status` before starting: if `pending_files` is in the
 thousands rather than the dozens, a new baseline has landed, and building a
 fresh database from it is cheaper than growing the old one.
 
-`download --no-verify` skips re-hashing already-downloaded files. Verification
-is on by default and MD5s every local `.xml.gz` on every run, which is the main
-cost of re-running `download` over a complete baseline; `--no-verify` still
-fetches the `.md5` sidecars, so a changed published checksum is still detected.
+Verification is on by default, but only hashes files that are new or whose
+published checksum changed — re-running `download` over an unchanged baseline
+costs no local I/O. Corruption happens at download time, which stays covered.
+`--no-verify` skips the hashing entirely; either way the `.md5` sidecars are
+still fetched, so a changed published checksum is always detected.
 
 ## Notes
 
-- We reuse `pubmed-downloader` **as-is** for downloading and XML parsing, but parse
-  the NLM journal-overview file ourselves: that library's
-  `catalog.process_journal_overview()` (≤ 0.0.14) requires `start_year`/`end_year`
-  fields that the real `J_Entrez.txt` does not contain, so it raises on live data.
+- We reuse `pubmed-downloader` **as-is** for downloading and XML parsing, but work
+  around three bugs in it (≤ 0.0.14), all tracked in [`FUTURE.md`](./FUTURE.md):
+  `catalog.process_journal_overview()` requires `start_year`/`end_year` fields the
+  real `J_Entrez.txt` does not contain, so it raises on live data; its reference
+  extraction looks under `MedlineCitation` for a `<ReferenceList>` that PubMed puts
+  under `<PubmedData>`, so it never finds one; and its article-ID extraction
+  descends into that `<ReferenceList>`, attributing every cited reference's DOI to
+  the citing article. We parse all three ourselves.
 - This tool is intended to eventually replace the PubMed download in
   [Babel](https://github.com/NCATSTranslator/Babel) (`createcompendia/publications.py`).
 

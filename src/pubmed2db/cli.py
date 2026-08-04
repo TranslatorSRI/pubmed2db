@@ -8,6 +8,7 @@ from contextlib import closing
 from pathlib import Path
 
 import click
+from click.core import ParameterSource
 
 from . import __version__
 from .db import connect
@@ -29,7 +30,7 @@ def _sync_options(f):
     """Shared ``--baseline/--updates/--limit/--verify`` options for ``download``
     and ``update``, which both call :func:`pubmed2db.download.sync`."""
     f = click.option("--verify/--no-verify", default=True, help="Verify downloaded files against MD5.")(f)
-    f = click.option("--limit", type=int, default=None, help="Only sync the first N files (testing).")(f)
+    f = click.option("--limit", type=int, default=None, help="Only sync the newest N files (testing).")(f)
     f = click.option("--updates/--no-updates", default=True, help="Sync update files.")(f)
     f = click.option("--baseline/--no-baseline", default=True, help="Sync baseline files.")(f)
     return f
@@ -142,8 +143,12 @@ def load(ctx: click.Context, force: bool) -> None:
             raise click.ClickException(
                 "No downloaded files found; run `pubmed2db download` first."
             )
-        loaded = load_files(con, files, force=force)
+        loaded, failed = load_files(con, files, force=force)
         click.echo(f"Loaded {loaded} of {len(files)} file(s).")
+        if failed:
+            raise click.ClickException(
+                f"{len(failed)} file(s) failed to load: {', '.join(failed)}"
+            )
 
 
 @main.command()
@@ -168,6 +173,16 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int, gzip_output: boo
     from .export import export_json, export_parquet
     from .status import export_readiness
     from .util import peak_rss_gib
+
+    # Flags that only apply to the other format are silently inert otherwise,
+    # which is an expensive thing to discover after a 20-minute export.
+    for option, applies_to in (("shards", "json"), ("gzip_output", "json"), ("latest", "parquet")):
+        if fmt != applies_to and ctx.get_parameter_source(option) == ParameterSource.COMMANDLINE:
+            click.echo(
+                f"Warning: --{option.replace('_output', '')} only applies to "
+                f"--format {applies_to}; ignoring it.",
+                err=True,
+            )
 
     with closing(_connect(ctx)) as con:
         readiness = export_readiness(con)
@@ -381,8 +396,12 @@ def update(
         # run's sync() happened to return, so previously-downloaded-but-not-yet
         # loaded files aren't silently skipped.
         files = _local_files()
-        loaded = load_files(con, files, force=force)
+        loaded, failed = load_files(con, files, force=force)
         click.echo(f"Loaded {loaded} of {len(files)} file(s).")
+        if failed:
+            raise click.ClickException(
+                f"{len(failed)} file(s) failed to load: {', '.join(failed)}"
+            )
 
 
 if __name__ == "__main__":

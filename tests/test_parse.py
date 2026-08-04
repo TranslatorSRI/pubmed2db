@@ -37,33 +37,62 @@ def test_extracts_rich_fields(gz_fixture):
         ("RESULTS", "Second section of the abstract."),
     ]
     assert {(h.mesh_id, h.major) for h in article.headings} == {("D000818", False), ("D006801", True)}
-    assert {(x.prefix, x.identifier) for x in article.xrefs} == {
-        ("doi", "10.1038/example1001"),
-        ("pmc", "PMC1234567"),
-    }
     assert article.journal.nlm_catalog_id == "0410462"
 
 
-def test_xrefs_exclude_cited_references(gz_fixture):
+def test_article_ids_exclude_reference_ids(gz_fixture):
+    from pubmed2db.parse import parse_file
+
+    parsed = parse_file(gz_fixture("pubmed25n0001"))
+    article = next(pa for pa in parsed.articles if pa.pubmed == 1001)
+
+    # The article's own IDs only -- not the DOI of the reference it cites, and
+    # not its own PMID (already the `pmid` column).
+    assert set(article.article_ids) == {
+        ("doi", "10.1038/example1001"),
+        ("pmc", "PMC1234567"),
+    }
+    # Upstream's `.//ArticleIdList/ArticleId` descends into ReferenceList and
+    # picks up the cited reference's DOI. When this stops holding, upstream has
+    # fixed it and _article_ids can go. See FUTURE.md.
+    assert ("doi", "10.1000/nopmid") in {(x.prefix, x.identifier) for x in article.article.xrefs}
+
+
+def test_cited_pmids_found_under_pubmed_data(gz_fixture):
+    from pubmed2db.parse import parse_file
+
+    parsed = parse_file(gz_fixture("pubmed25n0001"))
+    article = next(pa for pa in parsed.articles if pa.pubmed == 1001)
+
+    # Deduplicated; the DOI-only reference contributes nothing.
+    assert article.cited_pmids == [9001]
+    # Upstream searches MedlineCitation for ReferenceList, which real PubMed
+    # nests under PubmedData -- hence our own extraction. When this assertion
+    # starts failing, upstream has fixed it and _cited_pmids can go. See FUTURE.md.
+    assert article.article.cites_pubmed_ids == []
+
+
+def test_article_ids_exclude_cited_references(gz_fixture):
     """A cited reference's ArticleIdList must not become the article's own.
 
     Upstream's `_extract_article` searches `.//ArticleIdList/ArticleId` under
     `PubmedData`, which also matches `ReferenceList/Reference/ArticleIdList`;
-    `parse._xrefs` anchors to the direct child instead.
+    `parse._article_ids` anchors to the direct child instead. This covers the
+    update file, where v2 carries a *different* PMCID than v1.
     """
     from pubmed2db.parse import parse_file
 
     parsed = parse_file(gz_fixture("pubmed25n0002"))
-    article = next(pa.article for pa in parsed.articles if pa.pubmed == 1001)
+    article = next(pa for pa in parsed.articles if pa.pubmed == 1001)
 
-    assert {(x.prefix, x.identifier) for x in article.xrefs} == {
+    assert set(article.article_ids) == {
         ("doi", "10.1038/example1001"),
         ("pmc", "PMC7654321"),
         ("pii", "S0140-6736(20)30183-5"),
     }
     # The cited paper's identifiers are absent, and so is our own PMID.
-    assert not any(x.identifier.startswith("10.9999/") for x in article.xrefs)
-    assert not any(x.prefix == "pubmed" for x in article.xrefs)
+    assert not any(value.startswith("10.9999/") for _, value in article.article_ids)
+    assert not any(id_type == "pubmed" for id_type, _ in article.article_ids)
 
 
 def test_collects_delete_citation(gz_fixture):

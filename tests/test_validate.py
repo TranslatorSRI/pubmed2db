@@ -171,7 +171,7 @@ def test_field_validation_flags_identifier_mismatch(export_dir, loaded_con, monk
 def test_efetch_identifiers_exclude_cited_references(monkeypatch):
     """validate reads the article's own ArticleIdList, not its references'.
 
-    The mirror of `test_xrefs_exclude_cited_references` on the parse side — if
+    The mirror of `test_article_ids_exclude_cited_references` on the parse side — if
     validate over-matched the way upstream's parser did, every sampled record
     with references would be reported as a mismatch against a correct export.
     """
