@@ -25,6 +25,19 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
   `J_Entrez.txt`, filed at https://github.com/cthoyt/pubmed-downloader/pull/16).
   Then we can go back to using the library's `Journal` model
   directly. See `CLAUDE.md`.
+- **Revert `parse._cited_pmids`** once upstream finds references. `_extract_article`
+  searches `medline_citation.findall(".//ReferenceList/Reference")`, but PubMed
+  nests `<ReferenceList>` under `<PubmedData>`, so `Article.cites_pubmed_ids` is
+  **always empty** on real data — `reference_citation` would never receive a row.
+  We search the whole `PubmedArticle` element instead, which matches either
+  placement. `test_cited_pmids_found_under_pubmed_data` pins the upstream
+  behaviour and will fail when it's fixed.
+- **Revert `parse._article_ids`** once upstream stops over-collecting. It gathers
+  `pubmed_data.findall(".//ArticleIdList/ArticleId")`, and that `.//` descends into
+  `<ReferenceList>`, so every *cited* reference's DOI/PMID is attributed to the
+  citing article — silently wrong rows in `article_id`, proportional to reference
+  count. We use the direct `PubmedData/ArticleIdList/ArticleId` path (and drop the
+  redundant `pubmed` self-ID). `test_article_ids_exclude_reference_ids` pins it.
 - Consider whether any of our additions (raw `PubDate` components,
   `DeleteCitation` handling, the two fixes above) are worth contributing upstream
   after all — the reference/article-ID ones are plain bugs and should be, alongside

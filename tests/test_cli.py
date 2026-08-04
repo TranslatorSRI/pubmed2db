@@ -61,6 +61,25 @@ def test_cli_export_json(tmp_path, gz_fixture):
     assert docs["PMID:1001"]["pub_month"] == "Mar"
 
 
+def test_cli_export_warns_on_wrong_format_flag(tmp_path, gz_fixture):
+    from pubmed2db.db import connect
+
+    db_path = tmp_path / "cli.duckdb"
+    con = connect(db_path)
+    _build_db(con, gz_fixture)
+    con.close()
+
+    result = CliRunner().invoke(
+        main,
+        ["--db", str(db_path), "export", "--format", "parquet",
+         "--out", str(tmp_path / "out"), "--shards", "4"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "--shards only applies to --format json" in result.output
+    # An unmentioned flag left at its default stays silent.
+    assert "--latest" not in result.output
+
+
 def test_cli_export_parquet(tmp_path, gz_fixture):
     from pubmed2db.db import connect
 

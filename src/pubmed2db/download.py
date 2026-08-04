@@ -75,7 +75,9 @@ def _sync_kind(
     # Always refresh the remote listing so newly published updatefiles appear.
     urls = _ensure_urls(base_url, list_cache, force=True)
     if limit is not None:
-        urls = urls[:limit]
+        # The listing is chronological, so the *newest* N is the tail — that's
+        # what's useful for testing (recent updatefiles), and what the docs say.
+        urls = urls[-limit:]
 
     MD5_DIR.mkdir(parents=True, exist_ok=True)
     results: list[tuple[Path, str]] = []
@@ -99,7 +101,11 @@ def _sync_kind(
 
         path = Path(ensure_module.ensure(url=url))
 
-        if verify and published_md5 is not None:
+        # Only hash files we just fetched or whose published checksum moved:
+        # re-hashing an unchanged, already-verified corpus costs tens of GiB of
+        # I/O per sync and, since PubMed files are immutable, never catches
+        # anything. Corruption happens at download time, which is still covered.
+        if verify and published_md5 is not None and changed:
             actual = file_md5(path)
             if actual != published_md5:
                 logger.warning(
