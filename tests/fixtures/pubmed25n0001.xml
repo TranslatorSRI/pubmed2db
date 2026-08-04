@@ -35,11 +35,23 @@
             <LastName>Smith</LastName>
             <ForeName>Jane</ForeName>
             <Initials>J</Initials>
+            <Identifier Source="ORCID">0000-0002-1825-0097</Identifier>
             <AffiliationInfo>
               <Affiliation>Department of Testing, Example University.</Affiliation>
             </AffiliationInfo>
           </Author>
+          <Author ValidYN="Y">
+            <CollectiveName>The Example Study Group</CollectiveName>
+          </Author>
         </AuthorList>
+        <GrantList CompleteYN="Y">
+          <Grant>
+            <GrantID>R01 GM123456</GrantID>
+            <Acronym>GM</Acronym>
+            <Agency>NIGMS NIH HHS</Agency>
+            <Country>United States</Country>
+          </Grant>
+        </GrantList>
         <PublicationTypeList>
           <PublicationType UI="D016428">Journal Article</PublicationType>
         </PublicationTypeList>
