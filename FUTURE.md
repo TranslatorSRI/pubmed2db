@@ -126,7 +126,12 @@ still has a populated `reference_citation` table, which nothing will clear.
   in `<MedlineDate>` ("1998 Spring", "1978 Jul-Aug", "1998 Dec-1999 Jan"). The
   export now recovers the leading 4-digit year via `export._year_from_medline_date`,
   which a full-corpus `validate` run showed was the single largest source of
-  export/Entrez disagreement (18 of 20 sampled mismatches). `pub_month`/`pub_day`
+  export/Entrez disagreement (18 of 20 sampled mismatches). Confirmed against the
+  archival XML rather than inferred: `pubmed26n0005.xml.gz` holds PMID 152567 as
+  `<MedlineDate>1978 Jul-Aug</MedlineDate>` with no `<Year>` element, and **3,625
+  of that file's 30,000 records (12%)** are the same shape — 127 distinct date
+  strings, every one of which yields a year, none disagreeing with any other
+  4-digit run in the string. `pub_month`/`pub_day`
   are deliberately still empty: a range has no single month, and inventing one
   would put a wrong value where there is currently an honest blank. Revisit only
   if a consumer needs an approximate month more than it needs correctness.
