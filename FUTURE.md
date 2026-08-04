@@ -19,7 +19,8 @@ below are deliberately deferred.
 - **Revert the custom journal parser** in `load._parse_journal_overview` once
   `pubmed_downloader.catalog.process_journal_overview()` no longer requires
   `start_year`/`end_year` (broken in ≤ 0.0.14 — those fields aren't in
-  `J_Entrez.txt`). Then we can go back to using the library's `Journal` model
+  `J_Entrez.txt`, filed at https://github.com/cthoyt/pubmed-downloader/pull/16).
+  Then we can go back to using the library's `Journal` model
   directly. See `CLAUDE.md`.
 - Consider whether any of our additions (raw `PubDate` components,
   `DeleteCitation` handling) are worth contributing upstream after all.
