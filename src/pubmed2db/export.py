@@ -10,6 +10,7 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -76,6 +77,26 @@ def _s(value: object) -> str:
     return "" if value is None else str(value)
 
 
+_MEDLINE_YEAR_RE = re.compile(r"^\s*(\d{4})")
+
+
+def _year_from_medline_date(raw: str | None) -> str:
+    """Leading 4-digit year of a free-text ``MedlineDate``, or ``""``.
+
+    Records whose ``PubDate`` is a range or a season carry no ``<Year>`` element
+    — PubMed puts the whole thing in ``<MedlineDate>`` ("1978 Jul-Aug", "1998
+    Spring", "1998 Dec-1999 Jan", "1999-2000"). We store that verbatim for
+    fidelity, which left ``pub_year`` blank in the export for every such record.
+    The leading year is unambiguous in all of those shapes, so it is safe to
+    recover; the month is not (a range has no single month), so ``pub_month``
+    and ``pub_day`` stay empty rather than gaining a value we invented.
+    """
+    if not raw:
+        return ""
+    match = _MEDLINE_YEAR_RE.match(raw)
+    return match.group(1) if match else ""
+
+
 #: Abstract section ``label``s ("BACKGROUND", "METHODS", ...) are deliberately
 #: dropped: the consumer is a full-text search index, which wants prose, not
 #: headings.
@@ -120,6 +141,7 @@ SELECT
     la.pub_year,
     la.pub_month,
     la.pub_day,
+    la.medline_date,
     abs.abstract,
     ids.identifiers
 FROM _latest_snapshot la
@@ -133,7 +155,7 @@ ORDER BY la.pmid
 def _document(row: tuple) -> dict[str, str | list[str]]:
     (
         pmid, journal_name, journal_abbrev, title, volume, issue,
-        year, month, day, abstract, identifiers,
+        year, month, day, medline_date, abstract, identifiers,
     ) = row
     return {
         "id": f"PMID:{pmid}",
@@ -145,7 +167,9 @@ def _document(row: tuple) -> dict[str, str | list[str]]:
         "article_title": _s(title),
         "volume": _s(volume),
         "issue": _s(issue),
-        "pub_year": _s(year),
+        # Falls back to the year inside a free-text MedlineDate, which is the
+        # only place these records carry one. See _year_from_medline_date.
+        "pub_year": _s(year) or _year_from_medline_date(medline_date),
         "pub_month": month_to_abbrev(month),
         "pub_day": _s(day),
         "abstract": _s(abstract),

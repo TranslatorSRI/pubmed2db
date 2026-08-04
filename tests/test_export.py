@@ -27,6 +27,26 @@ def test_month_to_abbrev(raw, expected):
     assert month_to_abbrev(raw) == expected
 
 
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("1998 Spring", "1998"),
+        ("1978 Jul-Aug", "1978"),
+        ("1998 Dec-1999 Jan", "1998"),   # leading year wins on a cross-year range
+        ("1999-2000", "1999"),
+        ("  2001 Winter", "2001"),
+        ("n.d.", ""),                     # no year to recover
+        ("Spring 1998", ""),              # year not leading; don't guess
+        (None, ""),
+        ("", ""),
+    ],
+)
+def test_year_from_medline_date(raw, expected):
+    from pubmed2db.export import _year_from_medline_date
+
+    assert _year_from_medline_date(raw) == expected
+
+
 def _read_ndjson(paths):
     docs = []
     for path in paths:
@@ -69,8 +89,9 @@ def test_json_export_empty_string_not_null(loaded_con, tmp_path):
     three = docs["PMID:1003"]
     # No DOI or PMCID: the record still carries its own PMID, never null.
     assert three["identifiers"] == ["PMID:1003"]
-    # MedlineDate-only article: missing fields are empty strings, never null.
-    assert three["pub_year"] == ""
+    # MedlineDate-only article ("1998 Spring"): the year is recovered from the
+    # free-text date, but month/day stay empty -- a season has no single month.
+    assert three["pub_year"] == "1998"
     assert three["pub_month"] == ""
     assert three["pub_day"] == ""
     assert three["issue"] == ""

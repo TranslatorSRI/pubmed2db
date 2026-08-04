@@ -89,15 +89,36 @@ Parquet (PubMed field names, for downloadable queries).
   DuckDB database and a previous report are *optional* inputs that sharpen the
   coverage/deletion checks and are left blank in the report when absent. Every
   network call funnels through `validate._eutils` (one monkeypatchable seam, so
-  tests stay offline). The report leads with `errors`/`warnings` arrays that are
-  empty on a clean run; the process exits non-zero on errors so it can gate an
-  HPC pipeline. "Expected" is always defined by the exporter itself, never
-  restated: the field comparison imports `month_to_abbrev` from `export`, and
-  `EXPECTED_FIELDS` is derived by calling `export._document` on a placeholder row
-  so the record shape cannot drift out of sync. `test_expected_fields_matches_spec`
-  additionally locks those eleven names, since they are an external contract with
-  Node Annotator / ElasticSearch. `identifiers` is the one list-valued field, so
-  `check_fields` compares it as a set rather than through the string path.
+  tests stay offline). The process exits non-zero on errors so it can gate an HPC
+  pipeline.
+- **A `validate` mismatch is not evidence about what we parsed.** efetch output is
+  a *rendering*, not the archival XML: PubMed serves PMID 152567 as
+  `<Year>1978</Year><Season>Jul-Aug</Season>`, while the baseline file it was
+  loaded from holds `<MedlineDate>1978 Jul-Aug</MedlineDate>` and no `<Year>` at
+  all. Diagnosing a field mismatch from efetch alone will therefore point at the
+  wrong layer. Download the baseline file containing the PMID and read the raw
+  element before changing any parsing or export code.
+- **Every check is recorded, not just the failures.** `Report.record` appends a
+  `Check` (name, expectation, status, observed) for passing checks too, and
+  `errors`/`warnings`/`skipped_checks` are *projections* of that list rather than
+  separately maintained arrays — so they cannot drift from it, and stdout can
+  enumerate what was verified rather than only what broke. `format_summary` is a
+  pure renderer over the report dict, which means anything printed is provably in
+  the archived `validation_report.json`. `skip` (evidence obtainable — pass a
+  flag, go online) and `n/a` (nothing to evidence) are deliberately distinct, so
+  `skipped_checks` stays an actionable to-do list. "Expected" is always defined by the exporter itself, never
+  restated: the field comparison imports `month_to_abbrev` *and*
+  `_year_from_medline_date` from `export`, so any normalization the export
+  applies is applied to the efetch side too — otherwise every record the export
+  normalizes reads as a mismatch. `EXPECTED_FIELDS` is derived by calling
+  `export._document` on a placeholder row, and the row's *arity* is discovered
+  rather than hardcoded, since it changes whenever the export query selects
+  another column — `identifiers` and `medline_date` each widened it once already.
+  `test_expected_fields_matches_spec` additionally locks the eleven field names,
+  since they are an external contract with Node Annotator / ElasticSearch.
+  `identifiers` is the one list-valued field, so `check_fields` compares it as a
+  set rather than through the string path, and `export.ID_PREFIXES` is the single
+  place CURIE casing is written down.
 - **PMID-set drift needs a sidecar, not a bigger report.** The report stores
   counts, never millions of PMIDs, so `--manifest` writes a sorted gzipped
   `pmids.txt.gz` from the set the structure check already holds and

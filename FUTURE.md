@@ -131,9 +131,20 @@ still has a populated `reference_citation` table, which nothing will clear.
 
 ## Data fidelity
 
-- **`MedlineDate` ranges** (e.g. "1998 Spring", "1998 Dec-1999 Jan") currently
-  yield empty `pub_year`/`pub_month`/`pub_day` in the JSON export. Could parse a
-  leading 4-digit year out of `medline_date` to populate `pub_year`.
+- **`MedlineDate` ranges — `pub_year` done, month/day still blank.** Records whose
+  `PubDate` is a season or a range carry no `<Year>`; PubMed puts the whole thing
+  in `<MedlineDate>` ("1998 Spring", "1978 Jul-Aug", "1998 Dec-1999 Jan"). The
+  export now recovers the leading 4-digit year via `export._year_from_medline_date`,
+  which a full-corpus `validate` run showed was the single largest source of
+  export/Entrez disagreement (18 of 20 sampled mismatches). Confirmed against the
+  archival XML rather than inferred: `pubmed26n0005.xml.gz` holds PMID 152567 as
+  `<MedlineDate>1978 Jul-Aug</MedlineDate>` with no `<Year>` element, and **3,625
+  of that file's 30,000 records (12%)** are the same shape — 127 distinct date
+  strings, every one of which yields a year, none disagreeing with any other
+  4-digit run in the string. `pub_month`/`pub_day`
+  are deliberately still empty: a range has no single month, and inventing one
+  would put a wrong value where there is currently an honest blank. Revisit only
+  if a consumer needs an approximate month more than it needs correctness.
 - **`ELocationID` DOIs are not read.** The exported `identifiers` come from
   `PubmedData/ArticleIdList` only — the same place Babel reads, and the
   authoritative one. A DOI can also appear as
