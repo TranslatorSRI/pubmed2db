@@ -38,11 +38,49 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
   citing article — silently wrong rows in `article_id`, proportional to reference
   count. We use the direct `PubmedData/ArticleIdList/ArticleId` path (and drop the
   redundant `pubmed` self-ID). `test_article_ids_exclude_reference_ids` pins it.
-- Consider whether any of our additions (raw `PubDate` components,
-  `DeleteCitation` handling, the two fixes above) are worth contributing upstream
-  after all — the reference/article-ID ones are plain bugs and should be, alongside
-  the journal-model fix already filed as
-  https://github.com/cthoyt/pubmed-downloader/pull/16.
+### TODO: investigate the two reference bugs before reporting them upstream
+
+Both were found while writing a fixture, and the evidence so far is a synthetic
+XML file plus the PubMed DTD — not real data. Nothing has been filed against
+`cthoyt/pubmed-downloader` for either, and nothing should be until these are
+answered. (The journal-model fix is the exception: already filed as
+https://github.com/cthoyt/pubmed-downloader/pull/16.)
+
+- [ ] **Confirm `<ReferenceList>` placement across the real corpus.** We assert it
+  lives under `<PubmedData>`; verify against actual baseline files, across several
+  release years, that it never appears under `<MedlineCitation>`. If both
+  placements occur historically, upstream's selector isn't simply wrong and the
+  report changes shape. Also count how many articles carry references at all — if
+  it's a small fraction, the impact claim needs tempering.
+- [ ] **Quantify the `article_id` contamination on real data.** Load a few files
+  with the pre-fix code and count how many `article_id` rows came from cited
+  references rather than the article itself. A concrete ratio makes the report
+  credible and tells us how badly existing databases are affected.
+- [ ] **Audit upstream's other `.//` selectors for the same over-reach.**
+  `_extract_article` uses descendant-or-self searches in several places; the
+  article-ID bug is one instance of a pattern. `pubmed_data.findall(".//History/PubMedPubDate")`
+  looks safe only because `<Reference>` has no `<History>` — confirm that, and
+  check the abstract/MeSH/author selectors too. There may be one report to file,
+  not two.
+- [ ] **Check which versions are affected.** We only tested 0.0.14. Establish the
+  range before claiming one in a report.
+- [ ] **Validate our replacements against real data**, not just the fixture:
+  references carrying multiple `pubmed` `ArticleId`s, `CommentsCorrections`
+  entries, and any non-numeric PMID text that `_cited_pmids` would silently drop.
+- [ ] **Then decide: report upstream, or keep the workaround local.** Only after
+  the above. Also worth deciding at that point whether our other additions (raw
+  `PubDate` components, `DeleteCitation` handling) are worth contributing.
+
+### TODO: existing databases carry the bad rows
+
+`article_id` rows written before the fix are still wrong, and `reference_citation`
+is still empty, in any database loaded with the previous code. Neither is
+corrected by a normal incremental run — `needs_load` only re-parses files whose
+checksum moved.
+
+- [ ] Decide whether to re-load affected files with `load --force` (a full
+  re-parse, roughly a baseline's worth of time) or to rebuild from scratch, and
+  note the answer in the README's "Re-running after a gap" section.
 
 ## Scale & performance (full PubMed is ~38M articles, ~1500+ files)
 
@@ -60,6 +98,10 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
 - **`latest_article` view** runs a window over the entire `article` table on every
   read. At full scale, consider an index on `article(pmid, file_order_key)` or
   materializing the latest set into a table before export.
+- **JSON export's global sort** (`ORDER BY la.pmid`) sorts the whole latest set to
+  keep round-robin sharding deterministic. Sharding on `pmid % shards` would remove
+  it; measure first, since restricting the abstract aggregation to the latest
+  snapshot already cut into the same peak. Tracked in issue #8.
 - **No indexes** are created on the big per-version tables yet (kept lean for bulk
   load). Add them if interactive querying of the DB becomes a use case.
 
