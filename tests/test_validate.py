@@ -255,3 +255,119 @@ def test_unexplained_drop_is_an_error(export_dir, loaded_con, tmp_path):
     assert drops["unexplained"] == [4242]
     assert report["status"] == "fail"
     assert any(e["code"] == "unexplained_drops" for e in report["errors"])
+
+
+# --------------------------------------------------------------------------- #
+# Named checks, statuses, and the rendered summary
+# --------------------------------------------------------------------------- #
+
+
+def test_every_check_is_enumerated_and_arrays_are_projections(export_dir):
+    """checks_run lists passing checks too, and the legacy arrays derive from it."""
+    report = validate.run_validation(export_dir, online=False)
+
+    names = {c["name"] for c in report["checks_run"]}
+    assert {"json-parse", "pmid-unique", "vs-entrez", "core-fields", "deleted-gone"} <= names
+    # Passing checks are recorded, which is the whole point.
+    assert any(c["status"] == "pass" for c in report["checks_run"])
+
+    # errors/warnings/skipped_checks are projections, so they cannot disagree.
+    def codes(status):
+        return [c["code"] for c in report["checks_run"] if c["status"] == status and c["code"]]
+
+    assert [e["code"] for e in report["errors"]] == codes("fail")
+    assert [w["code"] for w in report["warnings"]] == codes("warn")
+    assert len(report["skipped_checks"]) == sum(
+        1 for c in report["checks_run"] if c["status"] == "skip"
+    )
+
+
+def test_na_is_distinct_from_skip(loaded_con, export_dir):
+    """A check with nothing to verify is n/a, and stays out of skipped_checks.
+
+    `skipped_checks` is a to-do list for the reviewer — things they could get by
+    passing a flag. "the database has no deletions to sample" is not actionable,
+    so it must not land there.
+    """
+    loaded_con.execute("DELETE FROM deleted_pmid")
+    report = validate.run_validation(export_dir, con=loaded_con, online=False)
+
+    by_name = {c["name"]: c for c in report["checks_run"]}
+    assert by_name["deleted-absent"]["status"] == "n/a"
+    assert not any("deleted-absent" in s for s in report["skipped_checks"])
+    # ...whereas a genuinely skipped check does appear there.
+    assert by_name["vs-entrez"]["status"] == "skip"
+    assert any("vs-entrez" in s for s in report["skipped_checks"])
+
+
+@pytest.mark.parametrize(
+    "mismatch,expected",
+    [
+        ({"field": "pub_year", "exported": "", "entrez": "1978"}, "exported_blank"),
+        ({"field": "issue", "exported": "Suppl", "entrez": ""}, "entrez_blank"),
+        ({"field": "volume", "exported": "12", "entrez": "13"}, "values_differ"),
+        ({"field": "abstract", "similarity": 0.4}, "low_similarity"),
+    ],
+)
+def test_mismatch_kind_classification(mismatch, expected):
+    assert validate._mismatch_kind(mismatch) == expected
+
+
+def test_group_mismatches_tallies_by_field_and_kind():
+    grouped = validate.group_mismatches([
+        {"field": "pub_year", "exported": "", "entrez": "1978"},
+        {"field": "pub_year", "exported": "", "entrez": "1975"},
+        {"field": "volume", "exported": "12", "entrez": "13"},
+    ])
+    assert grouped["by_field"] == {"pub_year": 2, "volume": 1}
+    assert grouped["by_kind"]["exported_blank"] == 2
+    assert grouped["by_kind"]["values_differ"] == 1
+    # One worked example per kind, so a reader sees the shape of each.
+    assert set(grouped["examples"]) == {"exported_blank", "values_differ"}
+
+
+def test_summary_always_reports_the_incorrect_data_count():
+    """The `values_differ` line prints even at zero — that zero is the verdict.
+
+    "20 fields disagreed" is unactionable; "20 blank, 0 wrong" says the export is
+    incomplete but not corrupt, which is the call a reviewer actually has to make.
+    """
+    grouped = validate.group_mismatches([
+        {"field": "pub_year", "exported": "", "entrez": "1978"},
+    ])
+    check = {
+        "name": "core-fields", "section": "field accuracy", "status": "warn",
+        "expectation": "x", "observed": "y", "code": "field_mismatches",
+        "count": 1, "see": "checks.field_validation.mismatches", "detail": grouped,
+    }
+    lines = "\n".join(validate._mismatch_detail(check))
+    assert "1 exported blank where Entrez has a value (missing data)" in lines
+    assert "0 exported a different value (incorrect data)" in lines
+
+
+def test_summary_flags_truncated_example_lists():
+    """A capped example list must say so rather than implying it is complete."""
+    grouped = validate.group_mismatches(
+        [{"field": "pub_year", "exported": "", "entrez": "1978"}] * 20
+    )
+    check = {
+        "name": "core-fields", "section": "field accuracy", "status": "warn",
+        "expectation": "x", "observed": "y", "code": "field_mismatches",
+        "count": 43, "see": None, "detail": grouped,
+    }
+    assert "(20 of 43 shown)" in "\n".join(validate._mismatch_detail(check))
+
+
+def test_summary_lists_sections_skips_and_gaps(export_dir):
+    report = validate.run_validation(export_dir, online=False)
+    out = validate.format_summary(report)
+
+    for heading in ("STRUCTURE", "COVERAGE", "FIELD ACCURACY", "DELETIONS", "NOT CHECKED"):
+        assert heading in out
+    # Skipped checks were previously invisible on stdout entirely.
+    assert "[skip]" in out
+    assert "no --previous-report" in out
+    # Passing checks are shown with their expectation, not just counted.
+    assert "every line parses as JSON" in out
+    # The derived half of NOT CHECKED tracks CORE_FIELDS/SOFT_FIELDS.
+    assert "journal_name" in out and "article_title" in out

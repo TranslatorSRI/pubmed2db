@@ -72,9 +72,17 @@ Parquet (PubMed field names, for downloadable queries).
   DuckDB database and a previous report are *optional* inputs that sharpen the
   coverage/deletion checks and are left blank in the report when absent. Every
   network call funnels through `validate._eutils` (one monkeypatchable seam, so
-  tests stay offline). The report leads with `errors`/`warnings` arrays that are
-  empty on a clean run; the process exits non-zero on errors so it can gate an
-  HPC pipeline. "Expected" is always defined by the exporter itself, never
+  tests stay offline). The process exits non-zero on errors so it can gate an HPC
+  pipeline.
+- **Every check is recorded, not just the failures.** `Report.record` appends a
+  `Check` (name, expectation, status, observed) for passing checks too, and
+  `errors`/`warnings`/`skipped_checks` are *projections* of that list rather than
+  separately maintained arrays — so they cannot drift from it, and stdout can
+  enumerate what was verified rather than only what broke. `format_summary` is a
+  pure renderer over the report dict, which means anything printed is provably in
+  the archived `validation_report.json`. `skip` (evidence obtainable — pass a
+  flag, go online) and `n/a` (nothing to evidence) are deliberately distinct, so
+  `skipped_checks` stays an actionable to-do list. "Expected" is always defined by the exporter itself, never
   restated: the field comparison imports `month_to_abbrev` from `export`, and
   `EXPECTED_FIELDS` is derived by calling `export._document` on a placeholder row
   so the record shape cannot drift out of sync. `test_expected_fields_matches_spec`
