@@ -122,10 +122,15 @@ still has a populated `reference_citation` table, which nothing will clear.
 - **`latest_article` view** runs a window over the entire `article` table on every
   read. At full scale, consider an index on `article(pmid, file_order_key)` or
   materializing the latest set into a table before export.
-- **JSON export's global sort** (`ORDER BY la.pmid`) sorts the whole latest set to
-  keep round-robin sharding deterministic. Sharding on `pmid % shards` would remove
-  it; measure first, since restricting the abstract aggregation to the latest
-  snapshot already cut into the same peak. Tracked in issue #8.
+- **JSON export throughput — done.** The export was a single Python loop calling
+  `json.dumps` per row behind a full `ORDER BY la.pmid`; the sort delayed the
+  first written row by ~3 minutes of an 18-minute run and was the job's
+  peak-memory event, and the loop then serialized 40.9M documents on one core
+  while the other seven idled. DuckDB now writes the NDJSON itself
+  (`COPY ... FORMAT JSON`, one file per writer thread) with no sort: 3x faster
+  end-to-end on a 2M-document benchmark (112.9s → 35.5s), byte-identical record
+  sets. Closes issue #8. **Still to record from a cluster run:** the new peak
+  RSS, which decides whether `--mem=256G` can come down.
 - **No indexes** are created on the big per-version tables yet (kept lean for bulk
   load). Add them if interactive querying of the DB becomes a use case.
 

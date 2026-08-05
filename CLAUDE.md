@@ -87,6 +87,34 @@ Parquet (PubMed field names, for downloadable queries).
   a climbing per-file "peak" is not evidence of a leak; `current_rss_gib` is the
   one that can fall. Before diagnosing loader memory, read
   `slurm/README.md` → "Running `load`: how much memory?".
+- **DuckDB writes the JSON, Python does not.** `export_json` is one
+  `COPY (...) TO <dir> (FORMAT JSON, PER_THREAD_OUTPUT true)`, not a
+  `fetchmany` loop calling `json.dumps` per row: the old loop spent ~80% of the
+  export's wall time serializing on a single core while the other seven idled
+  (measured 17.7k docs/s; the same corpus through `COPY` runs at 56.2k). Two
+  consequences worth knowing before editing:
+  - **`_JSON_FIELDS` is the record definition** — output name → SQL expression,
+    in emitted order — so the DocumentMetadataAPI names, the
+    empty-string-not-null rule and the field order live in exactly one place,
+    and `validate` imports `JSON_FIELDS` from it. `month_to_abbrev` and
+    `_year_from_medline_date` still exist as Python, because `validate` needs
+    them for the efetch side; `_PUB_MONTH_SQL`/`_PUB_YEAR_SQL` are their SQL
+    twins and `test_month_sql_matches_month_to_abbrev` /
+    `test_pub_year_sql_matches_year_from_medline_date` pin the pairs together
+    over the edge cases (`"0"`, `"Sept"`, out-of-range, whitespace). A
+    divergence there makes every normalized record read as a PubMed mismatch.
+  - **`--shards N` is now a *maximum*, not a count.** One file per writer
+    thread is what `PER_THREAD_OUTPUT` gives, so `shards` caps the COPY's
+    thread count (restored afterwards) and a small dataset can use fewer.
+    DuckDB *appends* to that directory rather than clearing it, so
+    `export_json` deletes its own `pubmed_metadata_*` files first — otherwise a
+    shorter run leaves a previous run's shards to be read as current.
+- **The JSON export does not sort (issue #8).** `ORDER BY la.pmid` materialized
+  all 40.9M rows before the first could be written — ~3 minutes of a 18-minute
+  run, and the export's peak-memory event. Shard membership no longer depends on
+  scan order (each thread owns a file), and nothing downstream consumes the
+  order: the ingest is an ElasticSearch bulk load and `validate` sorts its own
+  PMID manifest.
 - **Columnar bulk load.** `load._insert_batch` registers each file's rows as an
   Arrow table and inserts them via `INSERT ... SELECT`, not row-by-row
   `executemany` (which ran at ~2.5k rows/s and made load ~20 min/file). This is
@@ -118,10 +146,9 @@ Parquet (PubMed field names, for downloadable queries).
   restated: the field comparison imports `month_to_abbrev` *and*
   `_year_from_medline_date` from `export`, so any normalization the export
   applies is applied to the efetch side too — otherwise every record the export
-  normalizes reads as a mismatch. `EXPECTED_FIELDS` is derived by calling
-  `export._document` on a placeholder row, and the row's *arity* is discovered
-  rather than hardcoded, since it changes whenever the export query selects
-  another column — `identifiers` and `medline_date` each widened it once already.
+  normalizes reads as a mismatch. `EXPECTED_FIELDS` is `frozenset(export.JSON_FIELDS)`
+  — the exporter's own field list, which its `COPY` projection is built from, so
+  the record shape here cannot drift from what shipped.
   `test_expected_fields_matches_spec` additionally locks the eleven field names,
   since they are an external contract with Node Annotator / ElasticSearch.
   `identifiers` is the one list-valued field, so `check_fields` compares it as a

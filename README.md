@@ -85,6 +85,23 @@ uv run pubmed2db --data-dir data validate data/json --email you@example.com
 `--data-dir data` is the default, so omitting it gives the same result.
 The DuckDB database is stored as `<data-dir>/pubmed.duckdb`; override with `--db`.
 
+### How the JSON export is written
+
+DuckDB writes the NDJSON itself — a single `COPY ... (FORMAT JSON)` whose
+projection is built from `export._JSON_FIELDS`, rather than Python serializing
+row by row. The serialization therefore runs in C++ across every thread (3x
+faster on a 2M-document benchmark), and two things follow:
+
+- **`--shards N` is a maximum, not a count.** Output is one file per writer
+  thread, so `--shards` caps that statement's threads; a small dataset can be
+  written by fewer. Omit it to use DuckDB's own thread count.
+- **Records are not in PMID order.** The export no longer sorts — that sort cost
+  ~3 minutes and most of the peak memory of a full run. Nothing downstream needs
+  the order; `validate` builds its own sorted PMID manifest.
+
+Re-running an export first deletes the `pubmed_metadata_*` files already in the
+output directory, so a shorter run cannot leave a previous run's shards behind.
+
 ### Identifiers in the JSON export
 
 Alongside the DocumentMetadataAPI fields, each JSON record carries an
