@@ -216,25 +216,43 @@ connection is opened only if the database exists and has articles, and is used
 for counts and a `deleted_pmid` sample, so the group-level `--memory-limit`
 matters far less here than it does for `load`.
 
-**Measured on a full-corpus run** (40,901,984 records in 16 shards, no API key):
-**10m 51s, peak RSS 5.2 GiB.** So 16 GB is roughly 3× headroom, which is the
-margin to keep if you pass `--previous-manifest`: that manifest is read into a
-second PMID set of comparable size. Both figures are in every report
-(`duration`, `peak_rss_gib`) — size the next run from those, not from this note.
+**Measured on full-corpus runs:**
+
+| Run | Records | Shards | Wall time | Peak RSS |
+| --- | --- | --- | --- | --- |
+| earlier (no API key) | 40,901,984 | 16 | 10m 51s | 5.2 GiB |
+| 2026-08-05 (API key) | 40,923,261 | 16, 52.0 GiB | **7m 57s** | **5.182 GiB** |
+
+So 16 GB is roughly 3× headroom, which is the margin to keep if you pass
+`--previous-manifest`: that manifest is read into a second PMID set of
+comparable size. Both figures are in every report (`duration`,
+`peak_rss_gib`) — size the next run from those, not from this note. (The
+2026-08-05 run was submitted with `--mem=256G --time=06:00:00`, copied from the
+export. It used 2% of that memory and 2% of the time; there is no reason to hold
+a big node for this job.)
+
+Nearly all of it is one thing: **7m 38s of that 7m 57s is the shard read.** Every
+Entrez check together took 19 seconds. The read is a single-threaded
+`json.loads` per line — 89k records/s, ~116 MiB/s — so if this job ever needs to
+be faster, that pass is the only place worth touching (issue #13).
 
 The log tells you the same while it runs. The start line confirms what was picked
 up before any of the slow work (the key itself is never logged, here or in the
 report), the shard read reports progress once a minute, and each phase after it
 is announced — which is what distinguishes "still reading shards" from "hung on
-an NCBI call", since only the first is local (line shapes; sizes illustrative):
+an NCBI call", since only the first is local:
 
 ```
-INFO pubmed2db.validate: starting validation: 16 shard(s) in data/json, 42.3 GiB · database available · online with an NCBI API key (10 req/s)
+INFO pubmed2db.validate: starting validation: 16 shard(s) in data/json, 52.0 GiB · database available · online with an NCBI API key (10 req/s)
 INFO pubmed2db.validate: reading shards (structure check)...
-INFO pubmed2db.validate: progress: 12,480,391 record(s), shard 5/16, 30.4% of 42.3 GiB read · elapsed 3m 04s · RSS 3.1 GiB · ~7m 02s remaining
-INFO pubmed2db.validate: read 40,901,984 record(s) in 9m 58s (peak RSS 5.2 GiB)
-INFO pubmed2db.validate: validation finished in 10m 51s (peak RSS 5.2 GiB)
+INFO pubmed2db.validate: progress: 21,667,845 record(s), shard 9/16, 52.2% of 52.0 GiB read · elapsed 4m 00s · RSS 1.7 GiB · ~3m 39s remaining
+INFO pubmed2db.validate: read 40,923,261 record(s) in 7m 38s (peak RSS 4.3 GiB)
+INFO pubmed2db.validate: checking coverage...
+INFO pubmed2db.validate: validation finished in 7m 57s (peak RSS 5.2 GiB)
 ```
+
+(That run's RSS climbed 0.5 → 2.2 GiB while the peak reached 4.3: the gap is the
+PMID set reallocating as it doubles, not a second copy of anything.)
 
 (Progress is measured in bytes of shard consumed, not records: the record count
 is what that pass is computing. So the percentage tracks the compressed size on
@@ -248,7 +266,8 @@ Notes on running it under Slurm specifically:
   a truthful `skipped_checks` list), then re-run online where there is egress.
 - **Set `NCBI_EMAIL`, and `NCBI_API_KEY` if you have one.** Requests are
   self-throttled to 3/s without a key, 10/s with one; the sample is small
-  (`--sample-size` per shard) so this is minutes, not hours, but a shared cluster
+  (`--sample-size` is **per shard**, so a 16-shard export at the default samples
+  240 records) so this is minutes, not hours, but a shared cluster
   IP is exactly the case NCBI blocks for anonymous hammering.
 - **Exit status is the gate**: `0` pass, `1` errors, `2` for warnings under
   `--fail-on-warn`. A batch script with `set -e` therefore stops on a bad export
