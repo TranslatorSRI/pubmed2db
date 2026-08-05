@@ -21,7 +21,9 @@ from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
 logger = logging.getLogger(__name__)
 
 #: Minimum gap between progress log lines, so large exports don't spam the log.
-_PROGRESS_INTERVAL_S = 10.0
+#: A full corpus export runs ~15 min, so a minute between lines still gives a
+#: dozen-odd data points to watch RSS and the rate on.
+_PROGRESS_INTERVAL_S = 60.0
 
 #: Child tables whose rows belong to a specific article version (pmid, source_file).
 _VERSIONED_CHILDREN = (
