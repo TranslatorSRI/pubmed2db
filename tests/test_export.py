@@ -135,3 +135,25 @@ def test_parquet_all_keeps_history(loaded_con, tmp_path):
     ).fetchone()[0]
     # All versions: 1001 (x2), 1002, 1003.
     assert n_article == 4
+
+
+def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog):
+    """The JSON export's progress branch only fires after 10 s of real work.
+
+    That means it never executes in the suite, so a mismatched %-format arg there
+    would first surface partway through a 20-minute production run. Force the
+    interval to zero and assert the line actually renders.
+    """
+    import logging
+
+    from pubmed2db import export as ex
+
+    monkeypatch.setattr(ex, "_PROGRESS_INTERVAL_S", 0.0)
+    with caplog.at_level(logging.INFO, logger="pubmed2db.export"):
+        ex.export_json(loaded_con, tmp_path / "json", batch_size=1)
+
+    progress = [r.getMessage() for r in caplog.records if "progress:" in r.getMessage()]
+    assert progress, "expected at least one progress line"
+    line = progress[0]
+    for fragment in ("documents", "docs/s", "elapsed", "RSS", "remaining"):
+        assert fragment in line, line

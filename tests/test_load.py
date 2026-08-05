@@ -127,3 +127,40 @@ def test_source_file_registry_counts(loaded_con):
         ("pubmed25n0001.xml.gz", "baseline", 3, 0),
         ("pubmed25n0002.xml.gz", "update", 1, 1),
     ]
+
+
+def test_load_progress_line_reports_rate_and_elapsed(con, gz_fixture, caplog):
+    """The progress line must carry what sizes the next srun, not just an ETA.
+
+    Also pins the last line ending in a bare "done": eta_str returns the literal
+    string "done" when nothing remains, which read as "~done to go" before the
+    caller special-cased it.
+    """
+    import logging
+
+    from pubmed2db.load import load_files
+
+    files = [(gz_fixture("pubmed25n0001"), "baseline"),
+             (gz_fixture("pubmed25n0002"), "update")]
+    with caplog.at_level(logging.INFO, logger="pubmed2db.load"):
+        load_files(con, files)
+
+    progress = [r.getMessage() for r in caplog.records if "progress:" in r.getMessage()]
+    assert len(progress) == 2
+    for fragment in ("files this run", "remaining", "s/file", "elapsed"):
+        assert fragment in progress[0], progress[0]
+    assert progress[0].endswith("to go")
+    assert progress[-1].endswith("done") and "~done" not in progress[-1]
+
+
+def test_load_logs_current_rss_alongside_the_peak(con, gz_fixture, caplog):
+    """Both figures are logged: the high-water peak, and RSS as it stands now."""
+    import logging
+
+    from pubmed2db.load import load_file
+
+    with caplog.at_level(logging.INFO, logger="pubmed2db.load"):
+        load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
+
+    line = next(m for m in (r.getMessage() for r in caplog.records) if "loaded " in m)
+    assert "RSS " in line and "peak " in line, line

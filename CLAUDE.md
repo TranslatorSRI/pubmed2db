@@ -79,6 +79,14 @@ Parquet (PubMed field names, for downloadable queries).
   `status` command reports the same signals (`status.summarize`); the only
   recorded timestamp is `journals`' last refresh (`pipeline_run`), since it leaves
   no other trace — download/load recency stays derived from `source_file`.
+- **Two memory numbers mislead, and both have bitten.** DuckDB sizes `threads`
+  from the machine's core count and `memory_limit` from its *physical RAM* — it
+  cannot see a Slurm cgroup, so on a cluster node both default far above the
+  allocation and a long load caches its way into an OOM kill. And
+  `util.peak_rss_gib` is `ru_maxrss`, a high-water mark that only ever rises, so
+  a climbing per-file "peak" is not evidence of a leak; `current_rss_gib` is the
+  one that can fall. Before diagnosing loader memory, read
+  `slurm/README.md` → "Running `load`: how much memory?".
 - **Columnar bulk load.** `load._insert_batch` registers each file's rows as an
   Arrow table and inserts them via `INSERT ... SELECT`, not row-by-row
   `executemany` (which ran at ~2.5k rows/s and made load ~20 min/file). This is
