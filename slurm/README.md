@@ -25,6 +25,14 @@ srun --mem=256G --cpus-per-task=8 --time=02:00:00 \
   uv run pubmed2db export --format json --out data/json --shards 16
 ```
 
+Then check what shipped — small job, but it needs internet
+(see [Running `validate`](#running-validate)):
+
+```bash
+srun --mem=16G --time=02:00:00 \
+  uv run pubmed2db --data-dir data validate data/json --email you@example.org
+```
+
 ## Running `load`: how much memory? (`--mem`)
 
 **Short answer: `--mem=64G` with `PUBMED2DB_DUCKDB_MEMORY_LIMIT` set below it.
@@ -93,7 +101,8 @@ DuckDB spilling (see `--temp-dir`) or a memory limit set so low that it thrashes
 Three independent ways, in rough order of convenience:
 
 1. **The progress log lines** — per file for `load` (current RSS, high-water
-   peak, rate, elapsed and ETA), every 10 s with an ETA for the JSON export. The simplest in-process signal,
+   peak, rate, elapsed and ETA), once a minute with an ETA for the JSON export.
+   The simplest in-process signal,
    no Slurm tooling needed, and the only one of the three available on `ht1`.
 
 2. **`sstat` while it runs** / **`sacct` after** — live or historical MaxRSS:
@@ -150,11 +159,11 @@ and is why this needs a big node; do not copy the loader's 64 GB. Time is the
 cheap dimension: two hours is generous margin on 23 minutes.
 
 Both `export_json` and `export_parquet` log peak RSS on completion, and JSON
-logs progress with an ETA every 10 s, so a real run tells you what to request
+logs progress with an ETA once a minute, so a real run tells you what to request
 next time:
 
 ```
-INFO pubmed2db.export: progress: 33385000/40901984 documents (81.6%), ~4m 14s remaining
+INFO pubmed2db.export: progress: 33,385,000/40,901,984 documents (81.6%) · 29.8k docs/s · elapsed 18m 40s · RSS 187.2 GiB · ~4m 14s remaining
 INFO pubmed2db.export: exported 40901984 documents to 16 shard(s) in data/json (peak RSS 201.1 GiB)
 ```
 
@@ -186,6 +195,49 @@ Notes on the knobs:
 - **Grab the memory before the run, not during.** Slurm will not grow `--mem`
   mid-job, so an under-requested export gets OOM-killed partway through with
   nothing to show for it.
+
+## Running `validate`
+
+**Short answer: `--mem=16G --time=02:00:00`, as its own job right after the
+export, on a node that can reach the internet. Nothing like the export's 256 GB —
+`validate` never touches `latest_article`.**
+
+```bash
+srun --mem=16G --time=02:00:00 \
+  uv run pubmed2db --data-dir data validate data/json \
+    --manifest data/json/pmids.txt.gz \
+    --email you@example.org
+```
+
+It reads the *export*, not the database: every line of every shard is
+`json.loads`-ed once (gzipped shards are decompressed on the fly), and the only
+thing held for the whole run is a Python set of every exported PMID — **~3 GiB at
+40.9M records**, doubled if you pass `--previous-manifest`, since that manifest is
+read into a second set. The DuckDB connection is opened only if the database
+exists and has articles, and is used for counts and a `deleted_pmid` sample, so
+the group-level `--memory-limit` matters far less here than it does for `load`.
+
+Neither figure is measured on the full corpus yet — the estimate is the single
+pass over the shards plus the set — so read the real ones back out of the report
+it writes (`duration`, `peak_rss_gib`) and size the next run from those.
+
+Notes on running it under Slurm specifically:
+
+- **The online checks need outbound HTTPS to `eutils.ncbi.nlm.nih.gov`.** If the
+  compute node has no egress, the coverage/field/deletion checks fail rather than
+  quietly skipping. Run `--offline` on the node (structure + DB checks only, and
+  a truthful `skipped_checks` list), then re-run online where there is egress.
+- **Set `NCBI_EMAIL`, and `NCBI_API_KEY` if you have one.** Requests are
+  self-throttled to 3/s without a key, 10/s with one; the sample is small
+  (`--sample-size` per shard) so this is minutes, not hours, but a shared cluster
+  IP is exactly the case NCBI blocks for anonymous hammering.
+- **Exit status is the gate**: `0` pass, `1` errors, `2` for warnings under
+  `--fail-on-warn`. A batch script with `set -e` therefore stops on a bad export
+  instead of publishing it.
+- **Keep the manifest between runs.** `--manifest` writes a sorted gzipped PMID
+  list next to the export; passing it to the next run as `--previous-manifest`
+  (along with `--previous-report`) is what catches an export that has the same
+  record count but silently lost records.
 
 ## DuckDB tuning: `--threads`, `--memory-limit` and `--temp-dir`
 
