@@ -211,15 +211,34 @@ srun --mem=16G --time=02:00:00 \
 
 It reads the *export*, not the database: every line of every shard is
 `json.loads`-ed once (gzipped shards are decompressed on the fly), and the only
-thing held for the whole run is a Python set of every exported PMID — **~3 GiB at
-40.9M records**, doubled if you pass `--previous-manifest`, since that manifest is
-read into a second set. The DuckDB connection is opened only if the database
-exists and has articles, and is used for counts and a `deleted_pmid` sample, so
-the group-level `--memory-limit` matters far less here than it does for `load`.
+thing held for the whole run is a Python set of every exported PMID. The DuckDB
+connection is opened only if the database exists and has articles, and is used
+for counts and a `deleted_pmid` sample, so the group-level `--memory-limit`
+matters far less here than it does for `load`.
 
-Neither figure is measured on the full corpus yet — the estimate is the single
-pass over the shards plus the set — so read the real ones back out of the report
-it writes (`duration`, `peak_rss_gib`) and size the next run from those.
+**Measured on a full-corpus run** (40,901,984 records in 16 shards, no API key):
+**10m 51s, peak RSS 5.2 GiB.** So 16 GB is roughly 3× headroom, which is the
+margin to keep if you pass `--previous-manifest`: that manifest is read into a
+second PMID set of comparable size. Both figures are in every report
+(`duration`, `peak_rss_gib`) — size the next run from those, not from this note.
+
+The log tells you the same while it runs. The start line confirms what was picked
+up before any of the slow work (the key itself is never logged, here or in the
+report), the shard read reports progress once a minute, and each phase after it
+is announced — which is what distinguishes "still reading shards" from "hung on
+an NCBI call", since only the first is local (line shapes; sizes illustrative):
+
+```
+INFO pubmed2db.validate: starting validation: 16 shard(s) in data/json, 42.3 GiB · database available · online with an NCBI API key (10 req/s)
+INFO pubmed2db.validate: reading shards (structure check)...
+INFO pubmed2db.validate: progress: 12,480,391 record(s), shard 5/16, 30.4% of 42.3 GiB read · elapsed 3m 04s · RSS 3.1 GiB · ~7m 02s remaining
+INFO pubmed2db.validate: read 40,901,984 record(s) in 9m 58s (peak RSS 5.2 GiB)
+INFO pubmed2db.validate: validation finished in 10m 51s (peak RSS 5.2 GiB)
+```
+
+(Progress is measured in bytes of shard consumed, not records: the record count
+is what that pass is computing. So the percentage tracks the compressed size on
+disk, and it works for a single-shard export as well as sixteen.)
 
 Notes on running it under Slurm specifically:
 

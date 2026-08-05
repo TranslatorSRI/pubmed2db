@@ -166,6 +166,12 @@ fails on warnings) so it can gate an HPC run; pass `--offline` to skip the
 network checks. Set `--email` (or `NCBI_EMAIL`) and optionally `--api-key` (or
 `NCBI_API_KEY`, which raises the rate limit) for the API checks.
 
+A long run narrates itself: one start line naming the shards and confirming
+whether the database and an API key were picked up (never the key itself), a
+progress line with an ETA once a minute while the shards are read, and a line
+per phase after that — so a run waiting on NCBI is distinguishable from one
+still reading. Peak RSS is logged at the end and stored in the report.
+
 Stdout is a test report: every check is listed with what it expected and what it
 saw, so a reviewer can tell what was verified, what was skipped, and what is not
 covered at all. Abridged, from a full-corpus run:
