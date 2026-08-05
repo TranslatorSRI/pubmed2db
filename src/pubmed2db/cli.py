@@ -69,6 +69,16 @@ def _sync_options(f):
         "scratch for large exports). Env: PUBMED2DB_DUCKDB_TEMP_DIR."
     ),
 )
+@click.option(
+    "--memory-limit",
+    default=None,
+    envvar="PUBMED2DB_DUCKDB_MEMORY_LIMIT",
+    help=(
+        "Cap DuckDB's buffer pool, e.g. '48GB' (default: ~80% of the machine's "
+        "physical RAM, which ignores a smaller --mem and invites an OOM kill on "
+        "a long load). Env: PUBMED2DB_DUCKDB_MEMORY_LIMIT."
+    ),
+)
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging.")
 @click.pass_context
 def main(
@@ -77,6 +87,7 @@ def main(
     db: str | None,
     threads: int | None,
     temp_dir: str | None,
+    memory_limit: str | None,
     verbose: bool,
 ) -> None:
     """Download, store, and export PubMed abstracts."""
@@ -93,13 +104,17 @@ def main(
     )
     ctx.obj["threads"] = threads
     ctx.obj["temp_dir"] = temp_dir
+    ctx.obj["memory_limit"] = memory_limit
     ctx.obj["verbose"] = verbose
 
 
 def _connect(ctx: click.Context):
     """Open the database with the group-level DuckDB tuning options applied."""
     return connect(
-        ctx.obj["db"], threads=ctx.obj["threads"], temp_directory=ctx.obj["temp_dir"]
+        ctx.obj["db"],
+        threads=ctx.obj["threads"],
+        temp_directory=ctx.obj["temp_dir"],
+        memory_limit=ctx.obj["memory_limit"],
     )
 
 

@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 
+import pytest
 from click.testing import CliRunner
 
 from pubmed2db.cli import main
@@ -155,20 +156,55 @@ def test_record_run_roundtrip(tmp_path):
 
 
 def test_connect_applies_duckdb_tuning(tmp_path):
-    """`connect` passes `threads`/`temp_directory` through to DuckDB."""
+    """`connect` passes `threads`/`memory_limit`/`temp_directory` to DuckDB."""
     from pubmed2db.db import connect
 
     spill = tmp_path / "spill"
-    con = connect(tmp_path / "tuned.duckdb", threads=2, temp_directory=spill)
+    con = connect(
+        tmp_path / "tuned.duckdb", threads=2, temp_directory=spill, memory_limit="1GB"
+    )
     try:
         assert con.execute("SELECT current_setting('threads')").fetchone()[0] == 2
         assert con.execute("SELECT current_setting('temp_directory')").fetchone()[0] == str(spill)
+        # DuckDB reports the limit back in its own units ("953.6 MiB" for 1GB).
+        assert _as_bytes(_setting(con, "memory_limit")) == pytest.approx(10**9, rel=0.01)
     finally:
         con.close()
 
 
+def _setting(con, name: str) -> str:
+    return con.execute(f"SELECT current_setting('{name}')").fetchone()[0]
+
+
+def _as_bytes(value: str) -> float:
+    """Parse DuckDB's '953.6 MiB' / '12.7 GiB' back into a number."""
+    number, unit = value.split()
+    return float(number) * {"KiB": 1024, "MiB": 1024**2, "GiB": 1024**3}[unit]
+
+
+def test_connect_memory_limit_is_below_machine_default(tmp_path):
+    """An explicit limit must actually shrink the default, not sit alongside it.
+
+    Left alone DuckDB sets this from the *machine's* physical RAM, which on a
+    cluster node is far above the Slurm --mem the process really has -- the
+    reason a long load's memory climbs until it is OOM-killed.
+    """
+    from pubmed2db.db import connect
+
+    default_con = connect(tmp_path / "default.duckdb")
+    capped_con = connect(tmp_path / "capped.duckdb", memory_limit="1GB")
+    try:
+        default = _as_bytes(_setting(default_con, "memory_limit"))
+        capped = _as_bytes(_setting(capped_con, "memory_limit"))
+        assert capped < default
+        assert capped == pytest.approx(10**9, rel=0.01)
+    finally:
+        default_con.close()
+        capped_con.close()
+
+
 def test_cli_threads_and_temp_dir_options(tmp_path, gz_fixture):
-    """The group-level `--threads`/`--temp-dir` options reach the connection."""
+    """The group-level DuckDB tuning options reach the connection."""
     from pubmed2db.db import connect
 
     db_path = tmp_path / "cli.duckdb"
@@ -178,7 +214,8 @@ def test_cli_threads_and_temp_dir_options(tmp_path, gz_fixture):
 
     result = CliRunner().invoke(
         main,
-        ["--db", str(db_path), "--threads", "2", "--temp-dir", str(tmp_path / "spill"), "status"],
+        ["--db", str(db_path), "--threads", "2", "--memory-limit", "1GB",
+         "--temp-dir", str(tmp_path / "spill"), "status"],
     )
     assert result.exit_code == 0, result.output
     assert "Export:    ready" in result.output

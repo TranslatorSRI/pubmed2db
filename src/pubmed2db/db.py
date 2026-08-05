@@ -36,6 +36,7 @@ def connect(
     *,
     threads: int | None = None,
     temp_directory: str | Path | None = None,
+    memory_limit: str | None = None,
 ) -> duckdb.DuckDBPyConnection:
     """Open (creating if needed) the DuckDB database and ensure the schema.
 
@@ -43,6 +44,12 @@ def connect(
     machine's core count and so oversubscribes a Slurm allocation smaller than
     the node. ``temp_directory`` is where DuckDB spills when a query exceeds its
     memory budget — worth pointing at local scratch for `export`.
+
+    ``memory_limit`` (e.g. ``"48GB"``) caps DuckDB's buffer pool. It has the same
+    problem ``threads`` does, and it matters more: left alone DuckDB sets the
+    limit to ~80% of the *machine's* physical RAM, so on a large node it will
+    happily cache its way past a much smaller ``--mem`` cgroup and be OOM-killed.
+    Set it below your allocation on any long load.
     """
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -51,6 +58,8 @@ def connect(
         config["threads"] = threads
     if temp_directory is not None:
         config["temp_directory"] = str(temp_directory)
+    if memory_limit is not None:
+        config["memory_limit"] = memory_limit
     con = duckdb.connect(str(path), config=config)
     init_schema(con)
     return con

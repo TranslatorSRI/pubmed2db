@@ -16,7 +16,7 @@ from pathlib import Path
 
 import duckdb
 
-from .util import eta_str, peak_rss_gib
+from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
 
@@ -236,10 +236,18 @@ def export_json(
             if now - last_log >= _PROGRESS_INTERVAL_S and total:
                 elapsed = now - run_start
                 remaining = total - index
-                eta = eta_str(elapsed, index, remaining)
+                # Rate and current RSS alongside the ETA: the export is the job
+                # that gets OOM-killed, so watching RSS climb during the run is
+                # what tells you the next --mem, and the rate sizes --time.
+                current = current_rss_gib()
                 logger.info(
-                    "progress: %d/%d documents (%.1f%%), ~%s remaining",
-                    index, total, 100 * index / total, eta,
+                    "progress: %s/%s documents (%.1f%%) · %.1fk docs/s · "
+                    "elapsed %s · RSS %s · ~%s remaining",
+                    f"{index:,}", f"{total:,}", 100 * index / total,
+                    index / elapsed / 1000 if elapsed else 0.0,
+                    fmt_duration(elapsed),
+                    "n/a" if current is None else f"{current:.1f} GiB",
+                    eta_str(elapsed, index, remaining),
                 )
                 last_log = now
     finally:
