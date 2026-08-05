@@ -483,3 +483,44 @@ def test_medline_date_year_is_not_a_false_mismatch(export_dir, loaded_con, monke
     assert fetched[1003]["pub_year"] == "1998"
     assert [m for m in report["checks"]["field_validation"]["mismatches"]
             if m["field"] == "pub_year"] == []
+
+
+def test_start_line_reports_api_key_state_without_the_key(export_dir, monkeypatch, caplog):
+    """The one thing a run is silently misconfigured on is the API key.
+
+    Reported once, up front, so a rate-limited run is diagnosable from the log
+    rather than from the 3-vs-10 req/s pace. The key itself never appears.
+    """
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
+    with caplog.at_level("INFO", logger="pubmed2db.validate"):
+        validate.run_validation(export_dir, api_key="sekrit", email="me@example.com")
+
+    start = next(m for m in caplog.messages if m.startswith("starting validation"))
+    assert "online with an NCBI API key" in start
+    assert "sekrit" not in "\n".join(caplog.messages)
+
+    caplog.clear()
+    with caplog.at_level("INFO", logger="pubmed2db.validate"):
+        validate.run_validation(export_dir, email="me@example.com")
+    assert "online without an NCBI API key" in "\n".join(caplog.messages)
+
+
+def test_progress_lines_and_peak_rss_are_logged(export_dir, monkeypatch, caplog):
+    """Progress must report an ETA over gzipped shards too, where the readable
+    byte count (uncompressed) is not the one `st_size` measures."""
+    import gzip
+
+    for shard in export_dir.glob("*.ndjson"):
+        with shard.open("rb") as src, gzip.open(f"{shard}.gz", "wb") as dst:
+            dst.write(src.read())
+        shard.unlink()
+
+    monkeypatch.setattr(validate, "_PROGRESS_INTERVAL_S", 0.0)
+    with caplog.at_level("INFO", logger="pubmed2db.validate"):
+        report = validate.run_validation(export_dir, online=False)
+
+    assert report["checks"]["structure"]["records_total"] == 2
+    progress = [m for m in caplog.messages if m.startswith("progress:")]
+    assert progress and "remaining" in progress[0]
+    assert any(m.startswith("validation finished in") and "peak RSS" in m
+               for m in caplog.messages)
