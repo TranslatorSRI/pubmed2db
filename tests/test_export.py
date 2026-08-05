@@ -100,12 +100,40 @@ def test_json_export_empty_string_not_null(loaded_con, tmp_path):
 
 
 def test_json_sharding(loaded_con, tmp_path):
+    """`shards` is a cap on writer threads, so it is a maximum, not a promise.
+
+    DuckDB writes one file per thread that produced rows, and two fixture
+    records will not occupy two threads -- what must hold is that no more than
+    the requested number of shards appears and that no record is lost.
+    """
     from pubmed2db.export import export_json
 
+    before = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
     paths = export_json(loaded_con, tmp_path / "json", shards=2)
-    assert len(paths) == 2
-    docs = _read_ndjson(paths)
-    assert set(docs) == {"PMID:1001", "PMID:1003"}
+    assert 1 <= len(paths) <= 2
+    assert _read_ndjson(paths).keys() == {"PMID:1001", "PMID:1003"}
+    # The thread cap applies to that COPY only; a later query gets the
+    # connection's own parallelism back.
+    assert loaded_con.execute("SELECT current_setting('threads')").fetchone()[0] == before
+
+
+def test_json_export_replaces_a_previous_run(loaded_con, tmp_path):
+    """A shard from an earlier run must not survive into this one's output.
+
+    DuckDB appends to a per-thread output directory rather than clearing it, so
+    a run that produces fewer files than its predecessor would otherwise leave
+    stale records behind for `validate` (and the ingest) to read as current.
+    """
+    from pubmed2db.export import export_json
+
+    out = tmp_path / "json"
+    out.mkdir()
+    stale = out / "pubmed_metadata_99.ndjson"
+    stale.write_text(json.dumps({"id": "PMID:404"}) + "\n")
+
+    paths = export_json(loaded_con, out)
+    assert not stale.exists()
+    assert _read_ndjson(paths).keys() == {"PMID:1001", "PMID:1003"}
 
 
 def test_parquet_latest_filters_versions(loaded_con, tmp_path):
@@ -137,23 +165,55 @@ def test_parquet_all_keeps_history(loaded_con, tmp_path):
     assert n_article == 4
 
 
-def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog):
-    """The JSON export's progress branch only fires after 10 s of real work.
-
-    That means it never executes in the suite, so a mismatched %-format arg there
-    would first surface partway through a 20-minute production run. Force the
-    interval to zero and assert the line actually renders.
-    """
+def test_writing_progress_line_renders(tmp_path, caplog):
+    """The heartbeat only fires a minute into a real export, so it never runs in
+    the suite -- and a mismatched %-format arg there would first surface partway
+    through a production run. Render one line directly."""
     import logging
+    import time
 
     from pubmed2db import export as ex
 
-    monkeypatch.setattr(ex, "_PROGRESS_INTERVAL_S", 0.0)
+    out = tmp_path / "json"
+    out.mkdir()
+    (out / "pubmed_metadata_0.ndjson").write_bytes(b"x" * 4096)
     with caplog.at_level(logging.INFO, logger="pubmed2db.export"):
-        ex.export_json(loaded_con, tmp_path / "json", batch_size=1)
+        ex._log_writing_progress(out, time.monotonic() - 5)
 
-    progress = [r.getMessage() for r in caplog.records if "progress:" in r.getMessage()]
-    assert progress, "expected at least one progress line"
-    line = progress[0]
-    for fragment in ("documents", "docs/s", "elapsed", "RSS", "remaining"):
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("writing:"))
+    for fragment in ("GiB across 1 shard(s)", "MiB/s", "elapsed", "RSS"):
         assert fragment in line, line
+
+
+#: Month and MedlineDate spellings the two implementations must agree on --
+#: the parametrized cases above plus the edges an index-based SQL lookup can
+#: get wrong (0, out of range, whitespace, non-numeric).
+_MONTH_INPUTS = ["3", "03", " 3 ", "Mar", "March", "Sept", "SEPTEMBER", "sep",
+                 "Spring", "13", "0", "99999999999999999999", "", "  ", None]
+_MEDLINE_INPUTS = ["1998 Spring", "1978 Jul-Aug", "1998 Dec-1999 Jan", "1999-2000",
+                   "  2001 Winter", "n.d.", "Spring 1998", "12345", "", None]
+
+
+def test_month_sql_matches_month_to_abbrev(con):
+    """The export normalizes months in SQL; `validate` normalizes efetch's side
+    with the Python function. If they disagree, every record the export
+    normalizes reads as a mismatch against PubMed."""
+    from pubmed2db.export import _PUB_MONTH_SQL, month_to_abbrev
+
+    for raw in _MONTH_INPUTS:
+        got = con.execute(
+            f"SELECT {_PUB_MONTH_SQL} FROM (SELECT ? AS pub_month) la", [raw]
+        ).fetchone()[0]
+        assert got == month_to_abbrev(raw), f"pub_month={raw!r}"
+
+
+def test_pub_year_sql_matches_year_from_medline_date(con):
+    """Same contract for the MedlineDate year fallback."""
+    from pubmed2db.export import _PUB_YEAR_SQL, _year_from_medline_date
+
+    for raw in _MEDLINE_INPUTS:
+        got = con.execute(
+            f"SELECT {_PUB_YEAR_SQL} FROM (SELECT NULL AS pub_year, ? AS medline_date) la",
+            [raw],
+        ).fetchone()[0]
+        assert got == _year_from_medline_date(raw), f"medline_date={raw!r}"

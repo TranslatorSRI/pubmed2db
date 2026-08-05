@@ -7,7 +7,7 @@ phase** (fast, deterministic, no network) and an **online phase** (sampled
 Entrez eutils cross-checks):
 
 1. **structure** — every line parses as JSON and matches the exporter's 11-field
-   record shape (:func:`pubmed2db.export._document`); PMIDs are unique.
+   record shape (:data:`pubmed2db.export.JSON_FIELDS`); PMIDs are unique.
 2. **coverage** — how much of PubMed we exported, against *two* denominators:
    the live Entrez total (portable) and the local ``latest_article`` count
    (authoritative — a shortfall means the export silently dropped rows). Drift
@@ -47,7 +47,7 @@ import duckdb
 import requests
 from lxml import etree
 
-from .export import ID_PREFIXES, _document, _year_from_medline_date, month_to_abbrev
+from .export import ID_PREFIXES, JSON_FIELDS, _year_from_medline_date, month_to_abbrev
 from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
@@ -55,25 +55,12 @@ logger = logging.getLogger(__name__)
 #: NCBI E-utilities base URL.
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 
-def _expected_fields() -> frozenset[str]:
-    """Exactly the keys :func:`pubmed2db.export._document` emits.
-
-    Derived from the exporter itself so the record shape cannot drift. The
-    placeholder row only has to be the right *arity* — ``_document`` names the
-    keys, not the values — but that arity is itself a drift surface: it changes
-    whenever the export query selects another column, and a hardcoded one turns
-    an unrelated export change into an import-time crash here. So find it by
-    asking, rather than by remembering.
-    """
-    for arity in range(1, 64):
-        try:
-            return frozenset(_document((0,) + (None,) * (arity - 1)))
-        except ValueError:
-            continue  # wrong number of values to unpack; try the next width
-    raise RuntimeError("could not determine export._document's row arity")
-
-
-EXPECTED_FIELDS = _expected_fields()
+#: Exactly the fields the exporter emits, taken from the exporter's own field
+#: list (:data:`pubmed2db.export.JSON_FIELDS`, which the export's ``COPY``
+#: projection is built from) so the record shape here cannot drift from what
+#: shipped. ``test_expected_fields_matches_spec`` locks the names themselves,
+#: since they are an external contract with Node Annotator / ElasticSearch.
+EXPECTED_FIELDS = frozenset(JSON_FIELDS)
 
 #: Fields compared strictly against Entrez; a high mismatch rate here is an error.
 CORE_FIELDS = ("article_title", "volume", "issue", "pub_year", "pub_month", "pub_day")

@@ -175,7 +175,16 @@ def load(ctx: click.Context, force: bool) -> None:
     help="Export format.",
 )
 @click.option("--out", required=True, type=click.Path(file_okay=False), help="Output directory.")
-@click.option("--shards", type=int, default=1, show_default=True, help="JSON: number of NDJSON shards.")
+@click.option(
+    "--shards",
+    type=int,
+    default=None,
+    help=(
+        "JSON: maximum number of NDJSON shards (default: one per DuckDB "
+        "thread). DuckDB writes one file per writer thread, so this also caps "
+        "the export's write parallelism; a small dataset may use fewer."
+    ),
+)
 @click.option("--gzip/--no-gzip", "gzip_output", default=False, help="JSON: gzip each shard as it's written.")
 @click.option(
     "--latest/--all",
@@ -183,7 +192,7 @@ def load(ctx: click.Context, force: bool) -> None:
     help="Parquet: export only the latest version (default) or full history.",
 )
 @click.pass_context
-def export(ctx: click.Context, fmt: str, out: str, shards: int, gzip_output: bool, latest: bool) -> None:
+def export(ctx: click.Context, fmt: str, out: str, shards: int | None, gzip_output: bool, latest: bool) -> None:
     """Export the latest abstracts to JSON, or the database to Parquet."""
     from .export import export_json, export_parquet
     from .status import export_readiness
