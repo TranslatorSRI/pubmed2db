@@ -109,6 +109,9 @@ Parquet (PubMed field names, for downloadable queries).
     DuckDB *appends* to that directory rather than clearing it, so
     `export_json` deletes its own `pubmed_metadata_*` files first — otherwise a
     shorter run leaves a previous run's shards to be read as current.
+    `PARTITION_BY (pmid % shards)` would restore an exact count, but **DuckDB
+    ≤ 1.5.4 rejects `PARTITION_BY` for `FORMAT JSON`** (`Binder Error: Unknown
+    option`), so don't reach for it without checking again first.
 - **The JSON export does not sort (issue #8).** `ORDER BY la.pmid` materialized
   all 40.9M rows before the first could be written — ~3 minutes of a 18-minute
   run, and the export's peak-memory event. Shard membership no longer depends on

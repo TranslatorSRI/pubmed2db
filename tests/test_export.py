@@ -217,3 +217,23 @@ def test_pub_year_sql_matches_year_from_medline_date(con):
             [raw],
         ).fetchone()[0]
         assert got == _year_from_medline_date(raw), f"medline_date={raw!r}"
+
+
+def test_json_export_writes_utf8_not_escapes(loaded_con, tmp_path):
+    """Non-ASCII must reach the file as UTF-8, not as \\uXXXX escapes.
+
+    The Python writer said so explicitly (`ensure_ascii=False`); DuckDB's JSON
+    writer does it by default, which is a behavior nothing else here would
+    notice changing.
+    """
+    from pubmed2db.export import export_json
+
+    loaded_con.execute(
+        "UPDATE article SET article_title = 'Étude sur les protéines — a test'"
+        " WHERE pmid = 1003"
+    )
+    paths = export_json(loaded_con, tmp_path / "json")
+    raw = b"".join(p.read_bytes() for p in paths)
+    assert "Étude sur les protéines — a test".encode() in raw
+    assert rb"\u00c9" not in raw.lower()   # not json.dumps(ensure_ascii=True)'s form
+    assert _read_ndjson(paths)["PMID:1003"]["article_title"].startswith("Étude")
