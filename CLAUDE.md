@@ -131,6 +131,26 @@ Parquet (PubMed field names, for downloadable queries).
   blank for these records, as the spec example has it. Note the split: the
   `MedlineDate` half is export-only and needs no reload, the `<Season>` half only
   takes effect for files loaded after the change.
+- **`pub_date` is the fidelity guarantee; the three parsed date fields are
+  conveniences.** No arrangement of `pub_year`/`pub_month`/`pub_day` represents a
+  cross-year `MedlineDate` — `"1998 Dec-1999 Jan"` (PMID:10188493) splits into a
+  `pub_month` holding a year. So the export ships a twelfth field carrying
+  PubMed's own string verbatim on **every** record, exactly as NCBI `esummary`'s
+  `pubdate` does. Consumers rendering a citation read `pub_date`; consumers
+  sorting or filtering read `pub_year`; neither parses the other. `_PUB_DATE_SQL`
+  takes `medline_date` whole when present, else assembles
+  `year + normalize_month(month) + day` — and note it calls
+  `_normalize_month_sql('la.pub_month')`, **not** `_PUB_MONTH_SQL`, which would
+  fold the `MedlineDate` back into a branch that only runs when there isn't one.
+  The two renderings PubMed serves must converge on one string (efetch's
+  `<Year>1994</Year><Season>Sep-Dec</Season>` and the baseline's
+  `<MedlineDate>1994 Sep-Dec</MedlineDate>` both give `"1994 Sep-Dec"`); that is
+  what lets `validate` compare the field at all, and
+  `test_pub_date_matches_ncbi_pubdate` pins it to esummary's real output.
+  `pub_year` takes the **leading** year of a range, against the semantic argument
+  for the trailing one — see `_year_from_medline_date`'s docstring, which records
+  why and the evidence (NCBI's `sortpubdate` agrees; cross-year ranges are ~0.07%
+  of PubMed).
 - **The JSON export does not sort (issue #8).** `ORDER BY la.pmid` materialized
   all 40.9M rows before the first could be written — ~3 minutes of a 18-minute
   run, and the export's peak-memory event. Shard membership no longer depends on
@@ -174,7 +194,7 @@ Parquet (PubMed field names, for downloadable queries).
   `EXPECTED_FIELDS` is `frozenset(export.JSON_FIELDS)`
   — the exporter's own field list, which its `COPY` projection is built from, so
   the record shape here cannot drift from what shipped.
-  `test_expected_fields_matches_spec` additionally locks the eleven field names,
+  `test_expected_fields_matches_spec` additionally locks the twelve field names,
   since they are an external contract with Node Annotator / ElasticSearch.
   `identifiers` is the one list-valued field, so `check_fields` compares it as a
   set rather than through the string path, and `export.ID_PREFIXES` is the single

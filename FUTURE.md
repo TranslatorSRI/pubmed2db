@@ -156,6 +156,15 @@ still has a populated `reference_citation` table, which nothing will clear.
   far has been the `<MedlineDate>` form in the baseline and the `<Season>`
   rendering only from efetch. `zgrep -c "<Season>"` over a baseline file would
   settle it; if the answer is zero, that half of the change is pure insurance.
+- **No `sortpubdate` equivalent.** NCBI `esummary` ships *two* date
+  representations: `pubdate`, the verbatim string (which we now mirror as
+  `pub_date`), and `sortpubdate`, a normalized `YYYY/MM/DD` sort key. We took only
+  the first, because nothing downstream range-filters yet — the ElasticSearch
+  ingest indexes `pub_year`. Add the second if a consumer ever needs ordering or
+  a date range, rather than making them parse `pub_year` + `pub_month`; note
+  NCBI's own answer for an unparseable range is to fall back to January of the
+  leading year (`"1998 Dec-1999 Jan"` → `1998/01/01`), i.e. it drops precision
+  rather than guessing.
 - **`ELocationID` DOIs are not read.** The exported `identifiers` come from
   `PubmedData/ArticleIdList` only — the same place Babel reads, and the
   authoritative one. A DOI can also appear as
