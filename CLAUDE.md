@@ -96,13 +96,15 @@ Parquet (PubMed field names, for downloadable queries).
   - **`_JSON_FIELDS` is the record definition** — output name → SQL expression,
     in emitted order — so the DocumentMetadataAPI names, the
     empty-string-not-null rule and the field order live in exactly one place,
-    and `validate` imports `JSON_FIELDS` from it. `month_to_abbrev` and
+    and `validate` imports `JSON_FIELDS` from it. `pub_month` and
     `_year_from_medline_date` still exist as Python, because `validate` needs
     them for the efetch side; `_PUB_MONTH_SQL`/`_PUB_YEAR_SQL` are their SQL
-    twins and `test_month_sql_matches_month_to_abbrev` /
+    twins and `test_pub_month_sql_matches_python` /
     `test_pub_year_sql_matches_year_from_medline_date` pin the pairs together
-    over the edge cases (`"0"`, `"Sept"`, out-of-range, whitespace). A
-    divergence there makes every normalized record read as a PubMed mismatch.
+    over the edge cases (`"0"`, `"Sept"`, out-of-range, whitespace, non-ASCII).
+    A divergence there makes every normalized record read as a PubMed mismatch.
+    The month test iterates the **cross product** of month × MedlineDate inputs,
+    because `_PUB_MONTH_SQL` falls through from one source to the other.
   - **`--shards N` is now a *maximum*, not a count.** One file per writer
     thread is what `PER_THREAD_OUTPUT` gives, so `shards` caps the COPY's
     thread count (restored afterwards) and a small dataset can use fewer.
@@ -112,6 +114,23 @@ Parquet (PubMed field names, for downloadable queries).
     `PARTITION_BY (pmid % shards)` would restore an exact count, but **DuckDB
     ≤ 1.5.4 rejects `PARTITION_BY` for `FORMAT JSON`** (`Binder Error: Unknown
     option`), so don't reach for it without checking again first.
+- **`pub_month` passes approximate months through; only month *names* are
+  normalized (issue #14).** The DocumentMetadataAPI spec contradicts itself: its
+  prose says "capitalized three-letter abbreviations", but its own worked example
+  for PMID:8000234 emits `"pub_month": "Sep-Dec"`. We follow the example.
+  `export.normalize_month` folds a month name (`"03"`, `"March"`, `"Sept"`,
+  `"sep"` → `"Mar"`/`"Sep"`) and returns everything else verbatim (`"Spring"`,
+  `"Sep-Dec"`); only an out-of-range *number* becomes `""`. The `raw.isalpha()`
+  guard is load-bearing — without it the 3-character prefix match silently
+  truncated `"Sep-Dec"` to `"Sep"`. Two sources feed it, and PubMed uses all
+  three renderings for the same record: `<Season>` shares the `pub_month` column
+  with `<Month>` (the DTD makes them exclusive, so no schema column and no
+  migration), and `_month_from_medline_date` recovers the text after a
+  `MedlineDate`'s leading year — whose mandatory *whitespace* is what stops
+  `"1999-2000"` (a year range, no month) yielding `"-2000"`. `pub_day` stays
+  blank for these records, as the spec example has it. Note the split: the
+  `MedlineDate` half is export-only and needs no reload, the `<Season>` half only
+  takes effect for files loaded after the change.
 - **The JSON export does not sort (issue #8).** `ORDER BY la.pmid` materialized
   all 40.9M rows before the first could be written — ~3 minutes of a 18-minute
   run, and the export's peak-memory event. Shard membership no longer depends on
@@ -146,10 +165,13 @@ Parquet (PubMed field names, for downloadable queries).
   the archived `validation_report.json`. `skip` (evidence obtainable — pass a
   flag, go online) and `n/a` (nothing to evidence) are deliberately distinct, so
   `skipped_checks` stays an actionable to-do list. "Expected" is always defined by the exporter itself, never
-  restated: the field comparison imports `month_to_abbrev` *and*
-  `_year_from_medline_date` from `export`, so any normalization the export
-  applies is applied to the efetch side too — otherwise every record the export
-  normalizes reads as a mismatch. `EXPECTED_FIELDS` is `frozenset(export.JSON_FIELDS)`
+  restated: the field comparison imports `pub_month`, `_year_from_medline_date`
+  *and* `_MONTH_ABBR` from `export`, so any normalization the export applies is
+  applied to the efetch side too — otherwise every record the export
+  normalizes reads as a mismatch. (`_MONTH_ABBR` rather than
+  `calendar.month_abbr`, which is `LC_TIME`-dependent: under a non-English
+  locale the whole `month-format` check would have warned on every record.)
+  `EXPECTED_FIELDS` is `frozenset(export.JSON_FIELDS)`
   — the exporter's own field list, which its `COPY` projection is built from, so
   the record shape here cannot drift from what shipped.
   `test_expected_fields_matches_spec` additionally locks the eleven field names,
