@@ -53,6 +53,34 @@ def test_month_from_medline_date(raw, expected):
     assert _month_from_medline_date(raw) == expected
 
 
+@pytest.mark.parametrize(
+    "label,args,expected",
+    [
+        # (year, month_or_season, day, medline_date) -> NCBI esummary's `pubdate`.
+        ("PMID:30690000", ("2019", "Mar", "15", None), "2019 Mar 15"),
+        # The same record, both ways PubMed serves it -- these MUST converge.
+        ("PMID:8000234 via efetch <Season>", ("1994", "Sep-Dec", None, None), "1994 Sep-Dec"),
+        ("PMID:8000234 via <MedlineDate>", (None, None, None, "1994 Sep-Dec"), "1994 Sep-Dec"),
+        ("PMID:10188493 cross-year", (None, None, None, "1998 Dec-1999 Jan"),
+         "1998 Dec-1999 Jan"),
+        ("year only", ("2019", None, None, None), "2019"),
+        ("numeric month normalizes", ("2019", "03", "15", None), "2019 Mar 15"),
+        ("no date at all", (None, None, None, None), ""),
+    ],
+)
+def test_pub_date_matches_ncbi_pubdate(label, args, expected):
+    """`pub_date` reproduces NCBI esummary's `pubdate` for every shape.
+
+    That equivalence is the whole point of the field: the three parsed date
+    fields cannot represent a cross-year range, and NCBI solved it by shipping
+    one verbatim string alongside them. Expectations here are the real values
+    esummary returns for those PMIDs.
+    """
+    from pubmed2db.export import pub_date
+
+    assert pub_date(*args) == expected, label
+
+
 def test_pub_month_prefers_the_column_over_the_medline_date():
     """The MedlineDate is a fallback, not an override."""
     from pubmed2db.export import pub_month
@@ -114,6 +142,7 @@ def test_json_export_uses_spec_fields(loaded_con, tmp_path):
         "pub_year": "2020",
         "pub_month": "Mar",
         "pub_day": "16",
+        "pub_date": "2020 Mar 16",
         "abstract": "The revised abstract for article one.",
     }
 
@@ -131,6 +160,9 @@ def test_json_export_empty_string_not_null(loaded_con, tmp_path):
     assert three["pub_year"] == "1998"
     assert three["pub_month"] == "Spring"
     assert three["pub_day"] == ""
+    # ...and pub_date carries the MedlineDate whole, which is the one field
+    # guaranteed to reproduce PubMed regardless of how the parts split up.
+    assert three["pub_date"] == "1998 Spring"
     assert three["issue"] == ""
     assert three["abstract"] == ""
     assert all(value is not None for value in three.values())
@@ -252,6 +284,36 @@ def test_pub_month_sql_matches_python(con):
                 [month, medline],
             ).fetchone()[0]
             assert got == pub_month(month, medline), f"{month=!r} {medline=!r}"
+
+
+#: Years and days to pair with the month/MedlineDate lists above. Kept small --
+#: the pub_date parity test is a 4-way cross product.
+_YEAR_INPUTS = ["2019", "", "  ", None]
+_DAY_INPUTS = ["15", "", None]
+
+
+def test_pub_date_sql_matches_python(con):
+    """Same twin contract as pub_month, over all four date inputs.
+
+    A 4-way cross product because `pub_date` switches on the MedlineDate and
+    assembles from the other three, so a disagreement can hide in any pairing --
+    notably an absent month leaving a double space in one implementation but not
+    the other.
+    """
+    from pubmed2db.export import _PUB_DATE_SQL, pub_date
+
+    for year in _YEAR_INPUTS:
+        for month in _MONTH_INPUTS:
+            for day in _DAY_INPUTS:
+                for medline in _MEDLINE_INPUTS:
+                    got = con.execute(
+                        f"SELECT {_PUB_DATE_SQL} FROM (SELECT ? AS pub_year, ? AS pub_month,"
+                        " ? AS pub_day, ? AS medline_date) la",
+                        [year, month, day, medline],
+                    ).fetchone()[0]
+                    assert got == pub_date(year, month, day, medline), (
+                        f"{year=!r} {month=!r} {day=!r} {medline=!r}"
+                    )
 
 
 def test_pub_year_sql_matches_year_from_medline_date(con):

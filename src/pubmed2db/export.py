@@ -88,15 +88,43 @@ _MEDLINE_YEAR_RE = re.compile(r"^\s*(\d{4})")
 
 
 def _year_from_medline_date(raw: str | None) -> str:
-    """Leading 4-digit year of a free-text ``MedlineDate``, or ``""``.
+    """**Leading** 4-digit year of a free-text ``MedlineDate``, or ``""``.
 
     Records whose ``PubDate`` is a range or a season carry no ``<Year>`` element
     — PubMed puts the whole thing in ``<MedlineDate>`` ("1978 Jul-Aug", "1998
     Spring", "1998 Dec-1999 Jan", "1999-2000"). We store that verbatim for
     fidelity, which left ``pub_year`` blank in the export for every such record.
-    The leading year is unambiguous in all of those shapes, so it is safe to
-    recover; ``pub_day`` stays empty, since a range has no single day. The month
-    half is recovered separately by :func:`_month_from_medline_date`.
+    ``pub_day`` stays empty, since a range has no single day. The month half is
+    recovered separately by :func:`_month_from_medline_date`.
+
+    **Why the leading year, when a range spans two?**
+
+    ==========================  ========  ===============================
+    ``MedlineDate``             we emit   NCBI ``esummary.sortpubdate``
+    ==========================  ========  ===============================
+    ``"1994 Sep-Dec"``          1994      ``1994/09/01``
+    ``"1998 Dec-1999 Jan"``     1998      ``1998/01/01``
+    ``"1997 Dec-1998 Jan"``     1997      ``1997/01/01``
+    ``"1987-1988"``             1987      ``1987/01/01``
+    ==========================  ========  ===============================
+
+    There is a real argument for the **trailing** year: "1998 Dec-1999 Jan"
+    describes an issue that mostly reached readers in January 1999, so 1999 is
+    arguably when it was published. We chose 1998 anyway, because agreeing with
+    PubMed matters more than being semantically nicer in isolation:
+
+    1. NCBI's own ``sortpubdate`` takes the leading year in every cross-year
+       shape (right-hand column above) — a consumer joining our ``pub_year``
+       against anything derived from Entrez would disagree with it otherwise.
+    2. Every *other* shape already uses the leading year, and it is the only
+       year present in most of them. A trailing-year rule would have to fire
+       only when two years appear, making one rare shape behave unlike the rest.
+    3. Cross-year ranges are ~0.07% of PubMed (4 of 5,773 sampled records, and
+       three of those were bare "1987-1988" year ranges), so the inconsistency
+       would buy very little and cost a special case forever.
+
+    The fidelity escape hatch is :func:`pub_date`, which carries the whole
+    string verbatim — a consumer that needs "1999" can see it there.
     """
     if not raw:
         return ""
@@ -132,6 +160,45 @@ def pub_month(month: str | None, medline_date: str | None = None) -> str:
     mismatch against PubMed.
     """
     return normalize_month(month) or normalize_month(_month_from_medline_date(medline_date))
+
+
+def pub_date(
+    year: str | None,
+    month: str | None,
+    day: str | None,
+    medline_date: str | None,
+) -> str:
+    """PubMed's own publication-date string, verbatim where it exists.
+
+    ``pub_year``/``pub_month``/``pub_day`` are best-effort *parsed* fields and
+    cannot represent every ``PubDate``: a cross-year range ("1998 Dec-1999 Jan",
+    issue #14) has no single month, and splitting it puts a year inside
+    ``pub_month``. This field is the fidelity guarantee instead — one string that
+    always reproduces what PubMed says, on every record, so a consumer rendering
+    a citation never has to reassemble one. Sorting and filtering still use
+    ``pub_year``.
+
+    Deliberately identical to NCBI ``esummary``'s ``pubdate``, which solves the
+    same problem the same way::
+
+        "1998 Dec-1999 Jan"  (MedlineDate)   -> "1998 Dec-1999 Jan"
+        1994 + <Season>Sep-Dec               -> "1994 Sep-Dec"
+        2019 + Mar + 15                      -> "2019 Mar 15"
+        2019 (year only)                     -> "2019"
+
+    Note the second and first lines converge: PubMed serves the *same* record as
+    ``<Year>+<Season>`` from efetch and as a bare ``<MedlineDate>`` in the
+    baseline, and both must produce one string — otherwise ``validate`` reads
+    every such record as a mismatch. The month is normalized on the assembled
+    path for the same reason, and so the output matches NCBI's "2019 Mar 15".
+
+    The Python twin of :data:`_PUB_DATE_SQL`, pinned by
+    ``test_pub_date_sql_matches_python``.
+    """
+    if medline_date and medline_date.strip():
+        return medline_date.strip()
+    parts = ((year or "").strip(), normalize_month(month), (day or "").strip())
+    return " ".join(part for part in parts if part)
 
 
 _MONTHS_SQL = "[" + ", ".join(f"'{m}'" for m in _MONTH_ABBR) + "]"
@@ -173,6 +240,20 @@ _PUB_MONTH_SQL = (
     f"{_normalize_month_sql(_MEDLINE_MONTH_SQL)})"
 )
 
+#: ``pub_date``'s logic as SQL. Note ``_normalize_month_sql`` is applied to
+#: ``la.pub_month`` *alone*, not to ``_PUB_MONTH_SQL``: the latter already folds
+#: the ``MedlineDate`` back in, which would double-count it on the branch that
+#: only runs when there is no ``MedlineDate``. ``concat_ws`` skips NULLs, which
+#: is what the ``NULLIF(..., '')`` wrappers are for — an absent month must not
+#: leave a double space behind.
+_PUB_DATE_SQL = f"""CASE
+        WHEN trim(COALESCE(la.medline_date, '')) <> '' THEN trim(la.medline_date)
+        ELSE trim(concat_ws(' ',
+            NULLIF(trim(COALESCE(la.pub_year, '')), ''),
+            NULLIF({_normalize_month_sql('la.pub_month')}, ''),
+            NULLIF(trim(COALESCE(la.pub_day, '')), '')))
+    END"""
+
 #: ``_year_from_medline_date``'s fallback, same pattern, same pinning test
 #: (``test_pub_year_sql_matches_year_from_medline_date``). ``regexp_extract``
 #: returns ``''`` when nothing matches, which is already the spec's value.
@@ -205,6 +286,9 @@ _JSON_FIELDS: tuple[tuple[str, str], ...] = (
     # for PMID:8000234 emits "Sep-Dec" (issue #14). See normalize_month.
     ("pub_month", _PUB_MONTH_SQL),
     ("pub_day", "COALESCE(la.pub_day, '')"),
+    # PubMed's own date string, verbatim -- the three fields above are parsed
+    # conveniences and cannot represent a cross-year range. See pub_date.
+    ("pub_date", _PUB_DATE_SQL),
     ("abstract", "COALESCE(abs.abstract, '')"),
 )
 

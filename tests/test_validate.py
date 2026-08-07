@@ -104,7 +104,7 @@ def _valid_doc():
         "identifiers": ["PMID:9"],
         "journal_name": "", "journal_abbrev": "", "article_title": "",
         "volume": "", "issue": "", "pub_year": "", "pub_month": "",
-        "pub_day": "", "abstract": "",
+        "pub_day": "", "pub_date": "", "abstract": "",
     }
 
 
@@ -243,10 +243,10 @@ def test_cli_validate_fails_on_error(export_dir):
 def test_expected_fields_matches_spec():
     """EXPECTED_FIELDS derives from the exporter; lock it to the shipped spec.
 
-    The 11 exported field names are an external contract (Node Annotator /
+    The 12 exported field names are an external contract (Node Annotator /
     ElasticSearch consume them), so changing the export shape should trip a test
     rather than silently re-define what validate accepts. Nine of them are the
-    DocumentMetadataAPI spec's; `id` and `identifiers` are our extensions.
+    DocumentMetadataAPI spec's; `id`, `identifiers` and `pub_date` are ours.
     """
     assert set(validate.EXPECTED_FIELDS) == {
         "id",
@@ -259,6 +259,7 @@ def test_expected_fields_matches_spec():
         "pub_year",
         "pub_month",
         "pub_day",
+        "pub_date",
         "abstract",
     }
 
@@ -505,8 +506,11 @@ def test_season_rendering_is_not_a_false_mismatch(export_dir, loaded_con, monkey
 
     fetched = validate.efetch_documents([1003], api_key=None, email=None)
     assert (fetched[1003]["pub_year"], fetched[1003]["pub_month"]) == ("1998", "Spring")
+    # The convergence that makes pub_date checkable: assembled from <Year>+<Season>
+    # here, taken whole from <MedlineDate> in the export, one string either way.
+    assert fetched[1003]["pub_date"] == "1998 Spring"
     assert [m for m in report["checks"]["field_validation"]["mismatches"]
-            if m["field"] in ("pub_year", "pub_month")] == []
+            if m["field"] in ("pub_year", "pub_month", "pub_date")] == []
 
 
 def test_start_line_reports_api_key_state_without_the_key(export_dir, monkeypatch, caplog):

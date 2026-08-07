@@ -6,7 +6,7 @@ archived alongside the export. It runs four checks, split into an **offline
 phase** (fast, deterministic, no network) and an **online phase** (sampled
 Entrez eutils cross-checks):
 
-1. **structure** — every line parses as JSON and matches the exporter's 11-field
+1. **structure** — every line parses as JSON and matches the exporter's 12-field
    record shape (:data:`pubmed2db.export.JSON_FIELDS`); PMIDs are unique.
 2. **coverage** — how much of PubMed we exported, against *two* denominators:
    the live Entrez total (portable) and the local ``latest_article`` count
@@ -51,6 +51,7 @@ from .export import (
     ID_PREFIXES,
     JSON_FIELDS,
     _year_from_medline_date,
+    pub_date,
     pub_month,
 )
 from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
@@ -68,7 +69,8 @@ EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 EXPECTED_FIELDS = frozenset(JSON_FIELDS)
 
 #: Fields compared strictly against Entrez; a high mismatch rate here is an error.
-CORE_FIELDS = ("article_title", "volume", "issue", "pub_year", "pub_month", "pub_day")
+CORE_FIELDS = ("article_title", "volume", "issue",
+               "pub_year", "pub_month", "pub_day", "pub_date")
 
 #: Fields sourced from the NLM Catalog dimension, not the article XML, so a
 #: mismatch vs. efetch is informational (the two sources can legitimately differ).
@@ -626,6 +628,16 @@ def efetch_documents(
                     _text(pub, "MedlineDate") if pub is not None else None,
                 ),
                 "pub_day": _text(pub, "Day") if pub is not None else "",
+                # Assembled from whichever rendering came back, by the exporter's
+                # own function. This is the strongest of the date comparisons:
+                # efetch's <Year>+<Season> and the baseline's bare <MedlineDate>
+                # describe the same record, so both sides must land on one string.
+                "pub_date": pub_date(
+                    _text(pub, "Year"),
+                    (pub.findtext("Month") or pub.findtext("Season")),
+                    _text(pub, "Day"),
+                    _text(pub, "MedlineDate"),
+                ) if pub is not None else "",
                 "abstract": _normalize(abstract),
             }
     return docs
