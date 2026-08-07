@@ -481,8 +481,32 @@ def test_medline_date_year_is_not_a_false_mismatch(export_dir, loaded_con, monke
 
     fetched = validate.efetch_documents([1003], api_key=None, email=None)
     assert fetched[1003]["pub_year"] == "1998"
+    # Same recovery for the month half, which the export now also ships.
+    assert fetched[1003]["pub_month"] == "Spring"
     assert [m for m in report["checks"]["field_validation"]["mismatches"]
-            if m["field"] == "pub_year"] == []
+            if m["field"] in ("pub_year", "pub_month")] == []
+
+
+def test_season_rendering_is_not_a_false_mismatch(export_dir, loaded_con, monkeypatch):
+    """The <Year>+<Season> rendering must compare equal to the MedlineDate form.
+
+    efetch serves PMID:8000234 as <Year>1994</Year><Season>Sep-Dec</Season>
+    where the baseline holds <MedlineDate>1994 Sep-Dec</MedlineDate> (issue #14).
+    Both sides go through export.pub_month, so the two renderings of the same
+    record must agree -- otherwise fixing the export just moves the disagreement.
+    """
+    seasonal = dict(_EFETCH)
+    seasonal[1003] = _EFETCH[1003].replace(
+        "<MedlineDate>1998 Spring</MedlineDate>",
+        "<Year>1998</Year><Season>Spring</Season>",
+    )
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(seasonal))
+    report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
+
+    fetched = validate.efetch_documents([1003], api_key=None, email=None)
+    assert (fetched[1003]["pub_year"], fetched[1003]["pub_month"]) == ("1998", "Spring")
+    assert [m for m in report["checks"]["field_validation"]["mismatches"]
+            if m["field"] in ("pub_year", "pub_month")] == []
 
 
 def test_start_line_reports_api_key_state_without_the_key(export_dir, monkeypatch, caplog):

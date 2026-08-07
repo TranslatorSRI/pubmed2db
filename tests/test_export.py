@@ -15,16 +15,52 @@ import pytest
         ("Mar", "Mar"),
         ("March", "Mar"),
         ("Sept", "Sep"),
-        ("Spring", ""),
-        ("13", ""),
+        ("sep", "Sep"),
+        # Approximate months pass through verbatim (issue #14). "Sep-Dec" is the
+        # case the old 3-char prefix match silently truncated to "Sep".
+        ("Sep-Dec", "Sep-Dec"),
+        ("Jul-Aug", "Jul-Aug"),
+        ("Spring", "Spring"),
+        ("13", ""),         # a number that isn't a month is garbage, not a season
         (None, ""),
         ("", ""),
     ],
 )
-def test_month_to_abbrev(raw, expected):
-    from pubmed2db.export import month_to_abbrev
+def test_normalize_month(raw, expected):
+    from pubmed2db.export import normalize_month
 
-    assert month_to_abbrev(raw) == expected
+    assert normalize_month(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("1994 Sep-Dec", "Sep-Dec"),      # the DocumentMetadataAPI example, PMID:8000234
+        ("1998 Spring", "Spring"),
+        ("1978 Jul-Aug", "Jul-Aug"),
+        ("1998 Dec-1999 Jan", "Dec-1999 Jan"),  # verbatim; we don't invent "Dec-Jan"
+        ("  2001 Winter", "Winter"),
+        ("1999-2000", ""),                # a year range has no month; not "-2000"
+        ("n.d.", ""),
+        ("Spring 1998", ""),              # year not leading; don't guess
+        (None, ""),
+        ("", ""),
+    ],
+)
+def test_month_from_medline_date(raw, expected):
+    from pubmed2db.export import _month_from_medline_date
+
+    assert _month_from_medline_date(raw) == expected
+
+
+def test_pub_month_prefers_the_column_over_the_medline_date():
+    """The MedlineDate is a fallback, not an override."""
+    from pubmed2db.export import pub_month
+
+    assert pub_month("Mar", "1998 Spring") == "Mar"
+    assert pub_month(None, "1994 Sep-Dec") == "Sep-Dec"
+    assert pub_month("Sep-Dec", None) == "Sep-Dec"   # efetch's <Season> form
+    assert pub_month(None, None) == ""
 
 
 @pytest.mark.parametrize(
@@ -89,10 +125,11 @@ def test_json_export_empty_string_not_null(loaded_con, tmp_path):
     three = docs["PMID:1003"]
     # No DOI or PMCID: the record still carries its own PMID, never null.
     assert three["identifiers"] == ["PMID:1003"]
-    # MedlineDate-only article ("1998 Spring"): the year is recovered from the
-    # free-text date, but month/day stay empty -- a season has no single month.
+    # MedlineDate-only article ("1998 Spring"): both the year and the season are
+    # recovered from the free-text date. pub_day stays empty -- a season has no
+    # single day, and the spec's own PMID:8000234 example leaves it blank.
     assert three["pub_year"] == "1998"
-    assert three["pub_month"] == ""
+    assert three["pub_month"] == "Spring"
     assert three["pub_day"] == ""
     assert three["issue"] == ""
     assert three["abstract"] == ""
@@ -187,24 +224,34 @@ def test_writing_progress_line_renders(tmp_path, caplog):
 
 #: Month and MedlineDate spellings the two implementations must agree on --
 #: the parametrized cases above plus the edges an index-based SQL lookup can
-#: get wrong (0, out of range, whitespace, non-numeric).
+#: get wrong (0, out of range, whitespace, non-numeric) and a non-ASCII spelling
+#: (Python's `str.isalpha()` is Unicode-aware; RE2's `[A-Za-z]` would not be).
 _MONTH_INPUTS = ["3", "03", " 3 ", "Mar", "March", "Sept", "SEPTEMBER", "sep",
-                 "Spring", "13", "0", "99999999999999999999", "", "  ", None]
-_MEDLINE_INPUTS = ["1998 Spring", "1978 Jul-Aug", "1998 Dec-1999 Jan", "1999-2000",
+                 "Spring", "Sep-Dec", "Winter", "Frühling",
+                 "13", "0", "99999999999999999999", "", "  ", None]
+_MEDLINE_INPUTS = ["1998 Spring", "1994 Sep-Dec", "1978 Jul-Aug", "1998 September",
+                   "1998 Dec-1999 Jan", "1999-2000",
                    "  2001 Winter", "n.d.", "Spring 1998", "12345", "", None]
 
 
-def test_month_sql_matches_month_to_abbrev(con):
-    """The export normalizes months in SQL; `validate` normalizes efetch's side
-    with the Python function. If they disagree, every record the export
-    normalizes reads as a mismatch against PubMed."""
-    from pubmed2db.export import _PUB_MONTH_SQL, month_to_abbrev
+def test_pub_month_sql_matches_python(con):
+    """The export builds pub_month in SQL; `validate` builds efetch's side with
+    the Python function. If they disagree, every record the export normalizes
+    reads as a mismatch against PubMed.
 
-    for raw in _MONTH_INPUTS:
-        got = con.execute(
-            f"SELECT {_PUB_MONTH_SQL} FROM (SELECT ? AS pub_month) la", [raw]
-        ).fetchone()[0]
-        assert got == month_to_abbrev(raw), f"pub_month={raw!r}"
+    The full cross product, not each input alone: the SQL falls through from the
+    column to the MedlineDate, so the two sources interact.
+    """
+    from pubmed2db.export import _PUB_MONTH_SQL, pub_month
+
+    for month in _MONTH_INPUTS:
+        for medline in _MEDLINE_INPUTS:
+            got = con.execute(
+                f"SELECT {_PUB_MONTH_SQL} "
+                "FROM (SELECT ? AS pub_month, ? AS medline_date) la",
+                [month, medline],
+            ).fetchone()[0]
+            assert got == pub_month(month, medline), f"{month=!r} {medline=!r}"
 
 
 def test_pub_year_sql_matches_year_from_medline_date(con):
