@@ -26,6 +26,26 @@ def test_parses_all_articles_and_raw_dates(gz_fixture):
     assert medline.medline_date == "1998 Spring"
 
 
+def test_season_is_read_as_the_month():
+    """`<Season>` shares the month's slot -- the DTD makes the two exclusive.
+
+    Inline XML rather than a fourth fixture article, which would ripple through
+    the record counts asserted in test_export, test_cli and test_validate. This
+    is the form efetch serves PMID:8000234 in (issue #14); dropping it exported
+    an empty pub_month.
+    """
+    from lxml import etree
+
+    from pubmed2db.parse import _raw_pubdate
+
+    element = etree.fromstring(
+        "<PubmedArticle><MedlineCitation><Article><Journal><JournalIssue>"
+        "<PubDate><Year>1994</Year><Season>Sep-Dec</Season></PubDate>"
+        "</JournalIssue></Journal></Article></MedlineCitation></PubmedArticle>"
+    )
+    assert _raw_pubdate(element) == ("1994", "Sep-Dec", None, None)
+
+
 def test_extracts_rich_fields(gz_fixture):
     from pubmed2db.parse import parse_file
 
