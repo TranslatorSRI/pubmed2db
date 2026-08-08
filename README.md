@@ -98,6 +98,11 @@ faster on a 2M-document benchmark), and two things follow:
 - **Records are not in PMID order.** The export no longer sorts — that sort cost
   ~3 minutes and most of the peak memory of a full run. Nothing downstream needs
   the order; `validate` builds its own sorted PMID manifest.
+- **Shards are gzipped** (`pubmed_metadata_0.ndjson.gz`) unless you pass
+  `--no-gzip`. NDJSON compresses ~4-5x — a full corpus goes from ~52 GiB to
+  ~12 — and each shard is compressed as it is written, so there is no second
+  pass. `validate <dir>` reads either form with no flag, and `zcat` still works
+  line by line.
 
 Re-running an export first deletes the `pubmed_metadata_*` files already in the
 output directory, so a shorter run cannot leave a previous run's shards behind.

@@ -52,9 +52,10 @@ def test_cli_export_json(tmp_path, gz_fixture):
     )
     assert result.exit_code == 0, result.output
 
+    # No --gzip flag: shards are compressed by default.
     docs = {}
-    for path in out_dir.glob("*.ndjson"):
-        with path.open() as handle:
+    for path in out_dir.glob("*.ndjson.gz"):
+        with gzip.open(path, "rt") as handle:
             for line in handle:
                 doc = json.loads(line)
                 docs[doc["id"]] = doc
@@ -237,22 +238,22 @@ def test_cli_load_scans_download_directory(staged_download):
         con.close()
 
 
-def test_cli_export_json_gzip(staged_download):
-    """`export --gzip` writes compressed shards that still round-trip as NDJSON."""
+def test_cli_export_json_no_gzip(staged_download):
+    """`export --no-gzip` opts out of the default compression, writing plain NDJSON."""
     db_path = staged_download / "cli.duckdb"
     load_result = _run_cli("--data-dir", str(staged_download), "--db", str(db_path), "load")
     assert load_result.returncode == 0, load_result.stdout + load_result.stderr
 
     out_dir = staged_download / "out"
     result = _run_cli(
-        "--db", str(db_path), "export", "--format", "json", "--out", str(out_dir), "--gzip"
+        "--db", str(db_path), "export", "--format", "json", "--out", str(out_dir), "--no-gzip"
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
-    paths = list(out_dir.glob("*.ndjson.gz"))
+    assert not list(out_dir.glob("*.ndjson.gz"))
+    paths = list(out_dir.glob("*.ndjson"))
     assert paths
-    with gzip.open(paths[0], "rt") as handle:
-        docs = [json.loads(line) for line in handle]
+    docs = [json.loads(line) for path in paths for line in path.open()]
     assert {doc["id"] for doc in docs} == {"PMID:1001", "PMID:1003"}
 
 
@@ -273,4 +274,25 @@ def test_cli_export_warns_when_journals_missing(tmp_path, gz_fixture):
     )
     assert result.exit_code == 0, result.output
     assert "journals" in result.output.lower()
-    assert list(out_dir.glob("*.ndjson"))  # export still happened
+    assert list(out_dir.glob("*.ndjson.gz"))  # export still happened
+
+
+def test_cli_export_then_validate_needs_no_flags(staged_download):
+    """The default export is gzipped, and `validate` must read it as-is.
+
+    Compression is only a safe default if the checker downstream does not have
+    to be told about it -- so this runs the two commands exactly as the docs
+    do, with no --gzip on one side and nothing on the other.
+    """
+    db_path = staged_download / "cli.duckdb"
+    assert _run_cli("--data-dir", str(staged_download), "--db", str(db_path), "load").returncode == 0
+
+    out_dir = staged_download / "out"
+    export = _run_cli("--db", str(db_path), "export", "--format", "json", "--out", str(out_dir))
+    assert export.returncode == 0, export.stdout + export.stderr
+    assert list(out_dir.glob("*.ndjson.gz"))
+
+    validate = _run_cli("--db", str(db_path), "validate", str(out_dir), "--offline")
+    assert validate.returncode == 0, validate.stdout + validate.stderr
+    assert "Validation PASS" in validate.stdout
+    assert "2 record(s)" in validate.stdout

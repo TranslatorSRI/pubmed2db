@@ -202,9 +202,12 @@ Notes on the knobs:
   writes one file per writer thread, so `--shards` caps the thread count for
   that statement; a run can produce fewer files than asked for, never more.
   Match it to `--cpus-per-task` rather than to the ingest's ideal file count —
-  the two are the same number now. Same for `--gzip`, which compresses each
-  shard as it is written (no separate re-read pass) and costs CPU rather than
-  memory.
+  the two are the same number now.
+- **Shards are gzipped by default.** `--gzip` is on unless you pass
+  `--no-gzip`; compression happens as each shard is written (no separate
+  re-read pass) and costs CPU rather than memory. A full corpus lands at
+  roughly 12 GiB rather than 52, which is the same reduction in what the next
+  `validate` has to read back — and `validate` needs no flag to read it.
 - **CPUs now help the writing too.** DuckDB parallelizes the snapshot, the
   `string_agg` and — since the `COPY` rewrite — the JSON serialization across
   cores, which is where the 3x came from. `--cpus-per-task 8` is what the

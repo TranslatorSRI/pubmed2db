@@ -185,7 +185,16 @@ def load(ctx: click.Context, force: bool) -> None:
         "the export's write parallelism; a small dataset may use fewer."
     ),
 )
-@click.option("--gzip/--no-gzip", "gzip_output", default=False, help="JSON: gzip each shard as it's written.")
+@click.option(
+    "--gzip/--no-gzip",
+    "gzip_output",
+    default=True,
+    show_default=True,
+    help=(
+        "JSON: gzip each shard as it's written. NDJSON compresses ~4-5x, and "
+        "`validate` reads either form without being told which."
+    ),
+)
 @click.option(
     "--latest/--all",
     default=True,

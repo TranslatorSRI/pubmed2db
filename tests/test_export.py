@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 
 import pytest
@@ -47,10 +48,17 @@ def test_year_from_medline_date(raw, expected):
     assert _year_from_medline_date(raw) == expected
 
 
+def _open_shard(path):
+    """Open a shard whichever way it was written -- gzip is the default now."""
+    if path.name.endswith(".gz"):
+        return gzip.open(path, "rt", encoding="utf-8")
+    return path.open(encoding="utf-8")
+
+
 def _read_ndjson(paths):
     docs = []
     for path in paths:
-        with path.open() as handle:
+        with _open_shard(path) as handle:
             docs.extend(json.loads(line) for line in handle)
     return {doc["id"]: doc for doc in docs}
 
@@ -128,6 +136,8 @@ def test_json_export_replaces_a_previous_run(loaded_con, tmp_path):
 
     out = tmp_path / "json"
     out.mkdir()
+    # Written uncompressed on purpose: a run that flips --gzip must clear the
+    # other form too, or both are left for `validate` to read as one export.
     stale = out / "pubmed_metadata_99.ndjson"
     stale.write_text(json.dumps({"id": "PMID:404"}) + "\n")
 
@@ -233,7 +243,7 @@ def test_json_export_writes_utf8_not_escapes(loaded_con, tmp_path):
         " WHERE pmid = 1003"
     )
     paths = export_json(loaded_con, tmp_path / "json")
-    raw = b"".join(p.read_bytes() for p in paths)
+    raw = b"".join(gzip.decompress(p.read_bytes()) for p in paths)
     assert "Étude sur les protéines — a test".encode() in raw
     assert rb"\u00c9" not in raw.lower()   # not json.dumps(ensure_ascii=True)'s form
     assert _read_ndjson(paths)["PMID:1003"]["article_title"].startswith("Étude")

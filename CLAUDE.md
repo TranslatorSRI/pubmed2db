@@ -112,6 +112,14 @@ Parquet (PubMed field names, for downloadable queries).
     `PARTITION_BY (pmid % shards)` would restore an exact count, but **DuckDB
     ≤ 1.5.4 rejects `PARTITION_BY` for `FORMAT JSON`** (`Binder Error: Unknown
     option`), so don't reach for it without checking again first.
+- **Gzip is the export's default, and `validate` must not need telling.** NDJSON
+  compresses ~4-5x (~52 GiB of full-corpus shards to ~12), DuckDB compresses
+  each shard as it writes it, and `validate.find_shards` matches
+  `.ndjson`/`.ndjson.gz` alike while `check_structure` opens through a raw
+  handle so its byte-progress denominator stays the *compressed* size either
+  way. `test_cli_export_then_validate_needs_no_flags` runs both commands with
+  no flags, because a compressed default is only safe while the checker
+  downstream stays flag-free.
 - **The JSON export does not sort (issue #8).** `ORDER BY la.pmid` materialized
   all 40.9M rows before the first could be written — ~3 minutes of a 18-minute
   run, and the export's peak-memory event. Shard membership no longer depends on

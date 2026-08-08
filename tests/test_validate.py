@@ -6,6 +6,7 @@ monkeypatch with canned einfo/efetch responses so nothing touches the wire.
 
 from __future__ import annotations
 
+import gzip
 import json
 
 import pytest
@@ -69,12 +70,29 @@ def _fake_eutils_factory(articles, *, entrez_count=2):
 
 @pytest.fixture
 def export_dir(loaded_con, tmp_path):
-    """A real NDJSON export of the loaded fixtures (PMIDs 1001, 1003)."""
+    """A real export of the loaded fixtures (PMIDs 1001, 1003).
+
+    Gzipped, because that is what `export` writes by default -- and `validate`
+    is supposed to read the default form with no flag saying so.
+    """
     from pubmed2db.export import export_json
 
     out = tmp_path / "export"
     export_json(loaded_con, out)
     return out
+
+
+def _append_to_shard(export_dir, *lines: str) -> None:
+    """Append raw lines to one shard, whichever way it was written.
+
+    Appending to a gzip shard writes a second member; readers concatenate them
+    transparently, which is itself worth exercising -- a real export appended to
+    by a fixing script would look exactly like this.
+    """
+    shard = next(iter(sorted(export_dir.glob("pubmed_metadata_*"))))
+    opener = gzip.open if shard.name.endswith(".gz") else open
+    with opener(shard, "at", encoding="utf-8") as handle:
+        handle.writelines(line + "\n" for line in lines)
 
 
 def test_offline_structure_passes(export_dir):
@@ -85,12 +103,13 @@ def test_offline_structure_passes(export_dir):
 
 
 def test_malformed_and_structural_errors(export_dir):
-    shard = next(export_dir.glob("*.ndjson"))
-    with shard.open("a") as handle:
-        handle.write("{not json}\n")
-        handle.write(json.dumps({"id": "PMID:1001"}) + "\n")  # duplicate + missing fields
-        handle.write(json.dumps({**_valid_doc(), "id": "1099"}) + "\n")  # bad id
-        handle.write(json.dumps({**_valid_doc(), "id": "PMID:1200", "volume": None}) + "\n")
+    _append_to_shard(
+        export_dir,
+        "{not json}",
+        json.dumps({"id": "PMID:1001"}),                                    # duplicate + missing fields
+        json.dumps({**_valid_doc(), "id": "1099"}),                         # bad id
+        json.dumps({**_valid_doc(), "id": "PMID:1200", "volume": None}),
+    )
 
     report = validate.run_validation(export_dir, online=False)
     codes = {e["code"] for e in report["errors"]}
@@ -230,9 +249,7 @@ def test_cli_validate_fails_on_error(export_dir):
 
     from pubmed2db.cli import main
 
-    shard = next(export_dir.glob("*.ndjson"))
-    with shard.open("a") as handle:
-        handle.write("{broken\n")
+    _append_to_shard(export_dir, "{broken")
 
     no_db = str(export_dir.parent / "absent.duckdb")
     result = CliRunner().invoke(main, ["--db", no_db, "validate", str(export_dir), "--offline"])
@@ -506,14 +523,10 @@ def test_start_line_reports_api_key_state_without_the_key(export_dir, monkeypatc
 
 
 def test_progress_lines_and_peak_rss_are_logged(export_dir, monkeypatch, caplog):
-    """Progress must report an ETA over gzipped shards too, where the readable
-    byte count (uncompressed) is not the one `st_size` measures."""
-    import gzip
-
-    for shard in export_dir.glob("*.ndjson"):
-        with shard.open("rb") as src, gzip.open(f"{shard}.gz", "wb") as dst:
-            dst.write(src.read())
-        shard.unlink()
+    """Progress must report an ETA over the gzipped shards `export` writes by
+    default, where the readable byte count (uncompressed) is not the one
+    `st_size` measures -- the fixture is already in that form."""
+    assert all(p.name.endswith(".gz") for p in export_dir.glob("pubmed_metadata_*"))
 
     monkeypatch.setattr(validate, "_PROGRESS_INTERVAL_S", 0.0)
     with caplog.at_level("INFO", logger="pubmed2db.validate"):

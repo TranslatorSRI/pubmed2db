@@ -248,15 +248,17 @@ def export_json(
     out_dir: str | Path,
     *,
     shards: int | None = None,
-    gzip_output: bool = False,
+    gzip_output: bool = True,
 ) -> list[Path]:
     """Export the latest version of every abstract as sharded NDJSON.
 
     Each line is one document keyed by ``PMID:<id>`` using DocumentMetadataAPI
-    field names. With ``gzip_output=True`` each shard is compressed as it is
-    written (one pass, no separate re-read of the finished file), and the
-    output is still line-readable via ``zcat``. Returns the list of files
-    written.
+    field names. Shards are gzipped as they are written (one pass, no separate
+    re-read of the finished file) unless ``gzip_output=False``: NDJSON
+    compresses ~4-5x, which is the difference between shipping ~52 GiB and
+    ~12 GiB of a full corpus, and `validate` accepts either form without being
+    told which. The output stays line-readable via ``zcat``. Returns the list of
+    files written.
 
     DuckDB writes the JSON itself (``COPY ... (FORMAT JSON)``), one file per
     writer thread, rather than Python serializing row by row — the serialization
