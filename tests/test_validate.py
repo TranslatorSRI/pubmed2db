@@ -98,6 +98,38 @@ def test_malformed_and_structural_errors(export_dir):
     assert {"malformed_json", "missing_fields", "invalid_ids", "null_values", "duplicate_pmids"} <= codes
 
 
+@pytest.mark.parametrize(
+    "pub_month,warns",
+    [
+        ("Mar", False),             # an ordinary abbreviation
+        ("", False),                # absent, the empty-string convention
+        ("Spring", False),          # a season -- the export now passes these through
+        ("Sep-Dec", False),         # the DocumentMetadataAPI example's range
+        ("Jul-Aug", False),
+        ("Winter-Spring", False),   # a range of seasons
+        ("Dec-1999 Jan", True),     # cross-year: legitimate input, still worth seeing
+        ("3", True),                # unnormalized -- the export should never emit this
+        ("Marzipan", True),
+    ],
+)
+def test_month_format_accepts_what_the_export_can_emit(export_dir, pub_month, warns):
+    """The `month-format` check must accept every shape `export.pub_month` emits.
+
+    The check used to allow only the 12 abbreviations, which was right when the
+    export blanked everything else. Now that seasons and ranges pass through
+    (issue #14), a too-narrow set here would warn on every one of the ~7% of
+    records carrying them -- while a wide-open set would stop flagging anything.
+    So the odd-but-real "Dec-1999 Jan" is deliberately still a warning.
+    """
+    shard = next(export_dir.glob("*.ndjson"))
+    with shard.open("a") as handle:
+        handle.write(json.dumps({**_valid_doc(), "pub_month": pub_month}) + "\n")
+
+    report = validate.run_validation(export_dir, online=False)
+    warned = any(w["code"] == "invalid_months" for w in report["warnings"])
+    assert warned is warns, report["warnings"]
+
+
 def _valid_doc():
     return {
         "id": "PMID:9",

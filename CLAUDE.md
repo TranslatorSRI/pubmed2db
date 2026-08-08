@@ -176,6 +176,21 @@ Parquet (PubMed field names, for downloadable queries).
   all. Diagnosing a field mismatch from efetch alone will therefore point at the
   wrong layer. Download the baseline file containing the PMID and read the raw
   element before changing any parsing or export code.
+  **`esummary` is a third rendering, and the useful one for design questions.**
+  Where efetch re-serializes the XML, `esummary` shows NCBI's *own* normalization
+  decisions — `pubdate` ("1998 Dec-1999 Jan") and `sortpubdate` ("1998/01/01")
+  settled both the shape and the leading-year rule for `export.pub_date` faster
+  than any amount of arguing from the spec. Reach for it when the question is
+  "what should we emit?" rather than "what did we parse?".
+- **Measure PubMed by sampling PMIDs, not by downloading a baseline file.**
+  "How common is this shape?" is answerable in seconds: draw random integers from
+  `1..40_900_000`, hand 300 at a time to `esummary` (non-existent PMIDs simply
+  drop out of the response), and tally. ~6,000 sampled records took under a
+  minute and gave the numbers that decided two design calls this session — that
+  cross-year `MedlineDate` ranges are ~0.07% of the corpus (so a general
+  `pub_date` beat a special case), and that single-year ranges are ~7%
+  (so passing them through mattered). A 30 MB baseline download answers one file;
+  this answers the corpus, and needs no disk.
 - **Every check is recorded, not just the failures.** `Report.record` appends a
   `Check` (name, expectation, status, observed) for passing checks too, and
   `errors`/`warnings`/`skipped_checks` are *projections* of that list rather than
