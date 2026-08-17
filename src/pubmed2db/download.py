@@ -87,12 +87,17 @@ def _sync_kind(
             response.raise_for_status()
             published_md5 = parse_md5_text(response.text)
             _save_md5_sidecar(file_name, response.text)
+            if published_md5 is None:
+                logger.warning("no checksum in the md5 sidecar for %s", file_name)
         except requests.RequestException as exc:
-            # Keep the last-known checksum on a transient fetch failure, so it
-            # isn't wiped and the file isn't spuriously flagged as changed.
-            logger.warning(
-                "could not fetch md5 for %s: %s; keeping prior checksum", file_name, exc
-            )
+            logger.warning("could not fetch md5 for %s: %s", file_name, exc)
+            published_md5 = None
+
+        if published_md5 is None:
+            # Keep the last-known checksum whenever the sidecar is unusable — a
+            # transient failure, or an error page served with HTTP 200. Wiping it
+            # would flag every already-known file as changed, re-parsing the whole
+            # corpus on the next load, and keep doing so on every later sync.
             published_md5 = prior
 
         changed = prior is None or prior != published_md5

@@ -101,6 +101,33 @@ def test_sync_limit_takes_the_newest_files(con, monkeypatch, tmp_path):
     ]
 
 
+def test_unusable_md5_sidecar_keeps_prior_checksum(con, monkeypatch, tmp_path):
+    """An error page served with HTTP 200 must not wipe the stored checksum --
+    that would flag every known file as changed and re-parse the whole corpus."""
+    from pubmed2db.db import register_source_file
+
+    file_name = "pubmed25n0001.xml.gz"
+    register_source_file(con, file_name, kind="update", published_md5=_GOOD_MD5)
+    before = con.execute(
+        "SELECT downloaded_at FROM source_file WHERE file_name = ?", [file_name]
+    ).fetchone()[0]
+
+    _sync_kind(
+        con,
+        monkeypatch,
+        tmp_path,
+        urls=[f"https://example.invalid/updatefiles/{file_name}"],
+        body="<html>Service temporarily unavailable</html>",
+        registry={file_name: _GOOD_MD5},
+    )
+
+    md5, downloaded_at = con.execute(
+        "SELECT published_md5, downloaded_at FROM source_file WHERE file_name = ?", [file_name]
+    ).fetchone()
+    assert md5 == _GOOD_MD5
+    assert downloaded_at == before  # not spuriously flagged as re-downloaded
+
+
 def test_file_md5(tmp_path):
     import hashlib
 
