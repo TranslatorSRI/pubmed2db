@@ -60,16 +60,33 @@ class _FakeResponse:
         pass
 
 
-def _sync_kind(con, monkeypatch, tmp_path, *, urls, body, registry=None, limit=None):
+class _FakeEnsure:
+    """Stands in for a pystow module: skips by name, like the real ensure()."""
+
+    def __init__(self, path: Path, payload: bytes = b"fresh") -> None:
+        self.path = path
+        self.payload = payload
+        self.downloads = 0
+
+    def ensure(self, *, url: str) -> Path:
+        if not self.path.exists():
+            self.path.write_bytes(self.payload)
+            self.downloads += 1
+        return self.path
+
+
+def _sync_kind(con, monkeypatch, tmp_path, *, urls, body, registry=None, limit=None,
+               ensure_module=None, verify=False):
     """Run download._sync_kind against a fake listing/server."""
     from pubmed2db import download
 
-    blob = tmp_path / "blob.xml.gz"
-    blob.write_bytes(b"")
+    if ensure_module is None:
+        blob = tmp_path / "blob.xml.gz"
+        blob.write_bytes(b"")
+        ensure_module = _FakeEnsure(blob)
     monkeypatch.setattr(download, "MD5_DIR", tmp_path / "md5")
     monkeypatch.setattr(download, "_ensure_urls", lambda *a, **k: urls)
     monkeypatch.setattr(download.requests, "get", lambda *a, **k: _FakeResponse(body))
-    ensure_module = type("M", (), {"ensure": staticmethod(lambda *, url: blob)})()
 
     return download._sync_kind(
         con,
@@ -79,7 +96,7 @@ def _sync_kind(con, monkeypatch, tmp_path, *, urls, body, registry=None, limit=N
         ensure_module=ensure_module,
         registry=registry if registry is not None else {},
         limit=limit,
-        verify=False,
+        verify=verify,
     )
 
 
@@ -126,6 +143,53 @@ def test_unusable_md5_sidecar_keeps_prior_checksum(con, monkeypatch, tmp_path):
     ).fetchone()
     assert md5 == _GOOD_MD5
     assert downloaded_at == before  # not spuriously flagged as re-downloaded
+
+
+def test_changed_checksum_replaces_the_local_file(con, monkeypatch, tmp_path):
+    """ensure() skips by name, so a republished file needs its stale copy removed
+    first -- with --no-verify nothing else would notice the content is old."""
+    from pubmed2db.db import register_source_file
+
+    file_name = "pubmed25n0001.xml.gz"
+    old_md5 = "f" * 32
+    register_source_file(con, file_name, kind="update", published_md5=old_md5)
+
+    blob = tmp_path / file_name
+    blob.write_bytes(b"stale")
+    ensure_module = _FakeEnsure(blob, payload=b"fresh")
+
+    _sync_kind(
+        con,
+        monkeypatch,
+        tmp_path,
+        urls=[f"https://example.invalid/updatefiles/{file_name}"],
+        body=f"MD5(x)= {_GOOD_MD5}",
+        registry={file_name: old_md5},
+        ensure_module=ensure_module,
+    )
+
+    assert blob.read_bytes() == b"fresh"
+    assert ensure_module.downloads == 1
+
+
+def test_persistently_corrupt_file_is_not_registered(con, monkeypatch, tmp_path):
+    """A re-download that is also corrupt must not be recorded as verified."""
+    file_name = "pubmed25n0001.xml.gz"
+    blob = tmp_path / file_name
+    ensure_module = _FakeEnsure(blob, payload=b"corrupt")
+
+    results = _sync_kind(
+        con,
+        monkeypatch,
+        tmp_path,
+        urls=[f"https://example.invalid/updatefiles/{file_name}"],
+        body=f"MD5(x)= {_GOOD_MD5}",
+        ensure_module=ensure_module,
+        verify=True,
+    )
+
+    assert results == []
+    assert con.execute("SELECT count(*) FROM source_file").fetchone()[0] == 0
 
 
 def test_file_md5(tmp_path):

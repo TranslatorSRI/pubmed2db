@@ -104,6 +104,17 @@ def _sync_kind(
 
         path = Path(ensure_module.ensure(url=url))
 
+        # ensure() skips by file name, so a file republished under its old name
+        # would keep its stale bytes on disk: we would record the new checksum
+        # against the old content and never look again. Drop the local copy
+        # first, whether or not we go on to hash it. Only when we had a prior
+        # checksum to compare — a first sync over an existing cache must not
+        # re-download the whole corpus.
+        if prior is not None and published_md5 is not None and prior != published_md5:
+            logger.info("published md5 changed for %s; re-downloading", file_name)
+            path.unlink(missing_ok=True)
+            path = Path(ensure_module.ensure(url=url))
+
         # Only hash files we just fetched or whose published checksum moved:
         # re-hashing an unchanged, already-verified corpus costs tens of GiB of
         # I/O per sync and, since PubMed files are immutable, never catches
@@ -119,6 +130,18 @@ def _sync_kind(
                 )
                 path.unlink(missing_ok=True)
                 path = Path(ensure_module.ensure(url=url))
+                # A retry that is also corrupt must not be registered as good:
+                # leave the file as it was so a later sync tries again.
+                actual = file_md5(path)
+                if actual != published_md5:
+                    logger.error(
+                        "md5 still mismatched for %s after re-downloading "
+                        "(got %s, expected %s); leaving it unregistered",
+                        file_name,
+                        actual,
+                        published_md5,
+                    )
+                    continue
                 changed = True
 
         # Bump downloaded_at only when new/changed, so unchanged files are not
