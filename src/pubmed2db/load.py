@@ -377,6 +377,16 @@ def load_journals(con: duckdb.DuckDBPyConnection, *, force: bool = False) -> int
         for value, issn_type in issns:
             issn_rows.append((nlm_id, value, issn_type))
 
+    if not journals:
+        # A truncated download or an error page parses to nothing. Bail out
+        # before the DELETEs rather than replacing a good journal dimension with
+        # an empty one (and before executemany, which rejects an empty list).
+        logger.warning(
+            "journal overview %s yielded no journals; leaving the journal tables as they are",
+            path,
+        )
+        return 0
+
     con.execute("BEGIN TRANSACTION")
     try:
         con.execute("DELETE FROM journal")
@@ -396,7 +406,8 @@ def load_journals(con: duckdb.DuckDBPyConnection, *, force: bool = False) -> int
                 for nlm_id, rec in journals.items()
             ],
         )
-        con.executemany("INSERT INTO journal_issn VALUES (?,?,?)", issn_rows)
+        if issn_rows:
+            con.executemany("INSERT INTO journal_issn VALUES (?,?,?)", issn_rows)
         record_run(con, "journals")
         con.execute("COMMIT")
     except Exception:

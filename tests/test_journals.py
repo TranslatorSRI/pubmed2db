@@ -41,3 +41,20 @@ def test_load_journals(con, monkeypatch):
     assert con.execute(
         "SELECT count(*) FROM journal_issn WHERE nlm_catalog_id = '0410462'"
     ).fetchone()[0] == 2
+
+
+def test_load_journals_keeps_data_when_overview_is_empty(con, monkeypatch, tmp_path):
+    """A truncated download / error page must not wipe (or crash on) the tables."""
+    from pubmed2db.load import load_journals
+
+    monkeypatch.setattr(
+        catalog, "ensure_journal_overview", lambda **_: FIXTURES / "J_Entrez_sample.txt"
+    )
+    assert load_journals(con) == 2
+
+    empty = tmp_path / "J_Entrez_error.txt"
+    empty.write_text("<html>Service temporarily unavailable</html>\n")
+    monkeypatch.setattr(catalog, "ensure_journal_overview", lambda **_: empty)
+
+    assert load_journals(con) == 0
+    assert con.execute("SELECT count(*) FROM journal").fetchone()[0] == 2
