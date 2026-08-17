@@ -118,16 +118,34 @@ that are new or changed, and it cannot introduce duplicate data.
   later file recorded a `<DeleteCitation>` for it. Exports therefore see one row
   per PMID no matter how many versions are stored.
 
-**Watch for a new baseline year.** Each December PubMed publishes a fresh
-baseline (`pubmed26n*.xml.gz` after `pubmed25n*.xml.gz`), which is a complete
-re-issue of the corpus, not an increment. Downloading it makes ~1,300 files new
-at once, so the following `load` re-parses everything and the `article` table
-ends up holding a second full copy of every PMID. The result is still correct —
-`file_order_key` puts the newer year first, so `latest_article` resolves to it —
-but the database roughly doubles in size and the load takes as long as the
-original one. Check with `status` before starting: if `pending_files` is in the
-thousands rather than the dozens, a new baseline has landed, and building a
-fresh database from it is cheaper than growing the old one.
+**Watch for a new baseline year.** Around November–December PubMed publishes a
+fresh baseline for the *coming* year (`pubmed26n*.xml.gz` lands in late 2025,
+after `pubmed25n*.xml.gz`), which is a complete re-issue of the corpus, not an
+increment. Downloading it makes ~1,300 files new at once, so the following
+`load` re-parses everything and the `article` table ends up holding a second
+full copy of every PMID. The result is still correct — `file_order_key` puts the
+newer year first, so `latest_article` resolves to it — but the database roughly
+doubles in size and the load takes as long as the original one. `status` says so
+directly once a second baseline year is on disk, and `pending_files` in the
+thousands rather than the dozens is the same signal.
+
+**Prefer a fresh database at the year boundary**, for a reason beyond size: a
+grown database is *additive*. It can gain PMIDs but never lose them. A PMID that
+is in last year's baseline and absent from this year's, without a
+`<DeleteCitation>` ever reaching us — a missed updatefile, or a record PubMed
+drops quietly — keeps last year's row as its newest version and stays in every
+export from then on. A database built from the new baseline simply doesn't
+contain it.
+
+Either way, delete the previous year's files yourself:
+
+```bash
+rm data/pubmed/baseline/pubmed25n*.xml.gz data/pubmed/updates/pubmed25n*.xml.gz
+```
+
+`download` never removes anything. Once PubMed drops a file from its listing we
+stop hearing about it, so a full extra copy of the corpus sits in `data/` until
+you clear it.
 
 Verification is on by default, but only hashes files that are new or whose
 published checksum changed — re-running `download` over an unchanged baseline
