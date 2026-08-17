@@ -68,7 +68,7 @@ def _sync_kind(
     base_url: str,
     list_cache: Path,
     ensure_module,
-    registry: dict[str, dict],
+    registry: dict[str, str | None],
     limit: int | None,
     verify: bool,
 ) -> list[tuple[Path, str]]:

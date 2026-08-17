@@ -36,8 +36,9 @@ Parquet (PubMed field names, for downloadable queries).
   process pipeline, because we need things it drops or gets wrong: the **raw
   `PubDate` components** (so `MedlineDate`-only/partial dates keep full fidelity
   instead of being collapsed to a `datetime.date`), **`<DeleteCitation>`** PMIDs
-  (needed for latest-version selection), and **cited PMIDs + article IDs** (see the
-  upstream issues below).
+  (needed for latest-version selection), and **article IDs** (see the upstream
+  issues below). Cited PMIDs are extractable the same way, but `parse._cited_pmids`
+  is parked and never called — we store no citation graph.
 - **DB uses PubMed's own field names**; the DocumentMetadataAPI names
   (`journal_name`, `journal_abbrev`, `pub_month` as 3-letter abbrev, …) are
   applied **only** in the JSON export, with empty strings for missing values.
@@ -95,7 +96,7 @@ we also call private APIs (`_extract_article`, `_ensure_urls`).
 
 ```bash
 uv sync --extra dev
-uv run pytest          # 64 tests, no network
+uv run pytest          # no network needed
 ```
 
 Tests gzip the readable XML fixtures under `tests/fixtures/` into temp
