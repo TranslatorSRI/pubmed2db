@@ -54,6 +54,10 @@ downloaded PubMed files and the database. `pubmed-downloader` keeps its cache in
 a `pubmed/` subdirectory inside it (`data/pubmed/baseline/`,
 `data/pubmed/updates/`), so the layout under `data/` is managed automatically.
 
+Budget disk accordingly: the 2026 files alone are **51 GB of baseline and 13 GB
+of updates**, before the DuckDB database and any export. A new baseline year
+adds that much again — see [Re-running after a gap](#re-running-after-a-gap).
+
 ```bash
 # Download the baseline + update files to data/ (MD5-checked, incremental).
 uv run pubmed2db --data-dir data download
@@ -145,7 +149,7 @@ rm data/pubmed/baseline/pubmed25n*.xml.gz data/pubmed/updates/pubmed25n*.xml.gz
 
 `download` never removes anything. Once PubMed drops a file from its listing we
 stop hearing about it, so a full extra copy of the corpus sits in `data/` until
-you clear it.
+you clear it — for 2026 that is 51 GB of baseline plus 13 GB of updates.
 
 Verification is on by default, but only hashes files that are new or whose
 published checksum changed — re-running `download` over an unchanged baseline
