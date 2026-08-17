@@ -139,6 +139,28 @@ def test_cli_status_reports_pipeline_state(tmp_path, gz_fixture):
     assert "Export:    ready" in result.output
 
 
+def test_cli_status_flags_a_second_baseline_year(tmp_path, gz_fixture):
+    """A new baseline year stores every PMID twice; `status` should say so."""
+    from pubmed2db.db import connect, register_source_file
+
+    db_path = tmp_path / "cli.duckdb"
+    con = connect(db_path)
+    _build_db(con, gz_fixture)
+    register_source_file(con, "pubmed25n0001.xml.gz", kind="baseline")
+    con.close()
+
+    result = CliRunner().invoke(main, ["--db", str(db_path), "status"])
+    assert "baseline years" not in result.output
+
+    con = connect(db_path)
+    register_source_file(con, "pubmed26n0001.xml.gz", kind="baseline")
+    con.close()
+
+    result = CliRunner().invoke(main, ["--db", str(db_path), "status"])
+    assert "2 baseline years present (2025, 2026)" in result.output
+    assert "only 2026 is exported" in result.output
+
+
 def test_record_run_roundtrip(tmp_path):
     """`record_run` stamps a step and `last_run` reads it back."""
     from pubmed2db.db import connect, record_run

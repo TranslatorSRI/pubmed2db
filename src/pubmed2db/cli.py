@@ -236,6 +236,16 @@ def status(ctx: click.Context) -> None:
             f"downloaded ({s['baseline_files']} baseline, {s['update_files']} update)"
         )
         click.echo(f"           last download: {_fmt_ts(s['last_download'])}")
+        if len(s["baseline_years"]) > 1:
+            years = ", ".join(f"20{y:02d}" for y in s["baseline_years"])
+            click.echo(
+                f"           {len(s['baseline_years'])} baseline years present ({years}); "
+                f"only 20{s['baseline_years'][-1]:02d} is exported"
+            )
+            click.echo(
+                '           the older year(s) are dead weight — see the README\'s '
+                '"Re-running after a gap"'
+            )
         click.echo(
             f"Journals:  {s['journals']} loaded; "
             f"last refresh: {_fmt_ts(s['journals_refreshed'])}"
