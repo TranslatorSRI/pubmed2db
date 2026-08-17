@@ -273,8 +273,17 @@ def load_files(
     file loads in its own transaction, so a failure leaves no partial rows and
     no ``processed_at`` watermark — a later run retries it.
     """
-    ordered = sorted(files, key=lambda pk: parse_file_name(pk[0].name)[2])
-    to_load = [(p, k) for p, k in ordered if needs_load(con, p.name, force=force)]
+    # Filter before sorting: parse_file_name raises on anything that isn't a
+    # PubMed XML filename, and one stray file in the download directory must not
+    # abort the run before a single file is loaded.
+    keyed: list[tuple[int, Path, str]] = []
+    for path, kind in files:
+        try:
+            keyed.append((parse_file_name(path.name)[2], path, kind))
+        except ValueError:
+            logger.warning("ignoring %s: not a PubMed XML filename", path.name)
+    keyed.sort(key=lambda t: t[0])
+    to_load = [(p, k) for _, p, k in keyed if needs_load(con, p.name, force=force)]
     total = len(to_load)
     if total == 0:
         return 0, []

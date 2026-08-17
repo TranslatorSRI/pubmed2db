@@ -119,6 +119,17 @@ def test_bad_file_is_skipped_not_fatal(con, gz_fixture, tmp_path):
     assert needs_load(con, "pubmed25n0003.xml.gz") is True
 
 
+def test_unparseable_filename_is_ignored_not_fatal(con, gz_fixture, tmp_path):
+    """A stray file in the download directory must not abort the whole run."""
+    from pubmed2db.load import load_files
+
+    stray = tmp_path / "notes.xml.gz"
+    stray.write_bytes(b"")
+
+    assert load_files(con, [(stray, "update"), (gz_fixture("pubmed25n0001"), "baseline")]) == (1, [])
+    assert con.execute("SELECT count(*) FROM article").fetchone()[0] == 3
+
+
 def test_load_stamps_downloaded_at(con, gz_fixture):
     """Files obtained outside `download` (rsync/FTP) still get a downloaded_at,
     which the status arithmetic and needs_load both depend on."""
