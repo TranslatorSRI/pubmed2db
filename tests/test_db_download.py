@@ -192,6 +192,35 @@ def test_persistently_corrupt_file_is_not_registered(con, monkeypatch, tmp_path)
     assert con.execute("SELECT count(*) FROM source_file").fetchone()[0] == 0
 
 
+def test_verify_only_hashes_new_or_changed_files(con, monkeypatch, tmp_path):
+    """Re-hashing an unchanged corpus costs tens of GiB of I/O and, since PubMed
+    files are immutable, never catches anything."""
+    from pubmed2db import download
+    from pubmed2db.db import register_source_file
+
+    file_name = "pubmed25n0001.xml.gz"
+    register_source_file(con, file_name, kind="update", published_md5=_GOOD_MD5)
+    blob = tmp_path / file_name
+    blob.write_bytes(b"whatever")
+
+    hashed = []
+    monkeypatch.setattr(download, "file_md5", lambda p: hashed.append(p) or _GOOD_MD5)
+
+    kwargs = dict(
+        urls=[f"https://example.invalid/updatefiles/{file_name}"],
+        body=f"MD5(x)= {_GOOD_MD5}",
+        ensure_module=_FakeEnsure(blob),
+        verify=True,
+    )
+    # Unchanged: same checksum as the registry -> no hashing at all.
+    _sync_kind(con, monkeypatch, tmp_path, registry={file_name: _GOOD_MD5}, **kwargs)
+    assert hashed == []
+
+    # Unknown to the registry -> hashed once.
+    _sync_kind(con, monkeypatch, tmp_path, registry={}, **kwargs)
+    assert hashed == [blob]
+
+
 def test_file_md5(tmp_path):
     import hashlib
 

@@ -92,6 +92,16 @@ we also call private APIs (`_extract_article`, `_ensure_urls`).
   DOI/PMID to the citing article. `parse._article_ids` uses the direct
   `PubmedData/ArticleIdList/ArticleId` path instead.
 
+Two upstream *behaviours* (not bugs) are easy to assume backwards; both are
+pinned by tests in `tests/test_db_download.py`:
+
+- **`_ensure_urls` sorts the listing newest-first**, so `--limit N` takes the
+  head. It was once "fixed" to take the tail, which made `--limit` quietly fetch
+  the oldest files.
+- **`ensure()` skips by file name**, so a file republished under its old name
+  keeps its stale bytes. `download._sync_kind` unlinks the local copy whenever a
+  known published checksum moves, before calling `ensure()`.
+
 ## Development
 
 ```bash
