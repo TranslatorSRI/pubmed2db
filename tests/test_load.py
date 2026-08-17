@@ -119,6 +119,37 @@ def test_bad_file_is_skipped_not_fatal(con, gz_fixture, tmp_path):
     assert needs_load(con, "pubmed25n0003.xml.gz") is True
 
 
+def test_load_stamps_downloaded_at(con, gz_fixture):
+    """Files obtained outside `download` (rsync/FTP) still get a downloaded_at,
+    which the status arithmetic and needs_load both depend on."""
+    from pubmed2db.load import load_file, needs_load
+    from pubmed2db.status import summarize
+
+    load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
+
+    assert summarize(con)["downloaded_files"] == 1
+    assert needs_load(con, "pubmed25n0001.xml.gz") is False
+
+
+def test_load_does_not_overwrite_a_real_downloaded_at(con, gz_fixture):
+    """A re-download pending a load stays pending after an unrelated reload."""
+    from pubmed2db.db import register_source_file
+    from pubmed2db.load import load_file
+
+    path = gz_fixture("pubmed25n0001")
+    load_file(con, path, kind="baseline")
+    register_source_file(con, "pubmed25n0001.xml.gz", kind="baseline", published_md5="changed")
+    before = con.execute(
+        "SELECT downloaded_at FROM source_file WHERE file_name = 'pubmed25n0001.xml.gz'"
+    ).fetchone()[0]
+
+    load_file(con, path, kind="baseline")
+    after = con.execute(
+        "SELECT downloaded_at FROM source_file WHERE file_name = 'pubmed25n0001.xml.gz'"
+    ).fetchone()[0]
+    assert after == before
+
+
 def test_source_file_registry_counts(loaded_con):
     rows = loaded_con.execute(
         "SELECT file_name, kind, n_articles, n_deletions FROM source_file ORDER BY file_order_key"

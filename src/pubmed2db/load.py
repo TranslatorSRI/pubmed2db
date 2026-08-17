@@ -187,10 +187,15 @@ def load_parsed(
             """
             INSERT INTO source_file
                 (file_name, kind, year_yy, file_number, file_order_key,
-                 processed_at, n_articles, n_deletions)
-            VALUES (?, ?, ?, ?, ?, now(), ?, ?)
+                 downloaded_at, processed_at, n_articles, n_deletions)
+            VALUES (?, ?, ?, ?, ?, now(), now(), ?, ?)
             ON CONFLICT (file_name) DO UPDATE SET
                 kind = excluded.kind,
+                -- Files obtained outside `download` (rsync/FTP) have no
+                -- downloaded_at; stamp one so the status arithmetic and
+                -- needs_load's `downloaded_at IS NOT NULL` still work. A real
+                -- download's timestamp is never overwritten.
+                downloaded_at = COALESCE(source_file.downloaded_at, excluded.downloaded_at),
                 year_yy = excluded.year_yy,
                 file_number = excluded.file_number,
                 file_order_key = excluded.file_order_key,
