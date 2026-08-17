@@ -73,11 +73,9 @@ def _sync_kind(
     verify: bool,
 ) -> list[tuple[Path, str]]:
     # Always refresh the remote listing so newly published updatefiles appear.
-    urls = _ensure_urls(base_url, list_cache, force=True)
-    if limit is not None:
-        # The listing is chronological, so the *newest* N is the tail — that's
-        # what's useful for testing (recent updatefiles), and what the docs say.
-        urls = urls[-limit:]
+    # _ensure_urls sorts it newest-first, so the newest N — what's useful for
+    # testing — is the head. Slicing with None is the no-limit case.
+    urls = _ensure_urls(base_url, list_cache, force=True)[:limit]
 
     MD5_DIR.mkdir(parents=True, exist_ok=True)
     results: list[tuple[Path, str]] = []
