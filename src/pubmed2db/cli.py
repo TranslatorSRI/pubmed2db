@@ -144,7 +144,7 @@ def load(ctx: click.Context, force: bool) -> None:
                 "No downloaded files found; run `pubmed2db download` first."
             )
         loaded, failed = load_files(con, files, force=force)
-        click.echo(f"Loaded {loaded} of {len(files)} file(s).")
+        click.echo(f"Loaded {loaded} file(s); {len(files)} local file(s) checked.")
         if failed:
             raise click.ClickException(
                 f"{len(failed)} file(s) failed to load: {', '.join(failed)}"
@@ -285,7 +285,7 @@ def update(
         # loaded files aren't silently skipped.
         files = _local_files()
         loaded, failed = load_files(con, files, force=force)
-        click.echo(f"Loaded {loaded} of {len(files)} file(s).")
+        click.echo(f"Loaded {loaded} file(s); {len(files)} local file(s) checked.")
         if failed:
             raise click.ClickException(
                 f"{len(failed)} file(s) failed to load: {', '.join(failed)}"

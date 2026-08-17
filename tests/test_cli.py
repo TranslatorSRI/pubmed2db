@@ -189,7 +189,7 @@ def test_cli_load_scans_download_directory(staged_download):
     db_path = staged_download / "cli.duckdb"
     result = _run_cli("--data-dir", str(staged_download), "--db", str(db_path), "load")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "Loaded 2 of 2 file(s)." in result.stdout
+    assert "Loaded 2 file(s); 2 local file(s) checked." in result.stdout
 
     from pubmed2db.db import connect
 

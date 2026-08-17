@@ -50,9 +50,9 @@ export UV_CACHE_DIR=/path/to/writable/uv-cache
 ## Usage
 
 All commands share `--data-dir` (default `data/`), which sets the root for
-downloaded PubMed files and the database. `pubmed-downloader` creates its own
-`pubmed_downloader/` subdirectory inside it, so the layout under `data/` is
-managed automatically.
+downloaded PubMed files and the database. `pubmed-downloader` keeps its cache in
+a `pubmed/` subdirectory inside it (`data/pubmed/baseline/`,
+`data/pubmed/updates/`), so the layout under `data/` is managed automatically.
 
 ```bash
 # Download the baseline + update files to data/ (MD5-checked, incremental).
