@@ -103,6 +103,18 @@ def test_json_sharding(loaded_con, tmp_path):
     assert set(docs) == {"PMID:1001", "PMID:1003"}
 
 
+def test_reexport_removes_stale_shards(loaded_con, tmp_path):
+    """Shards from an earlier, wider (or gzipped) export must not survive: a
+    consumer globbing the directory would read two exports at once."""
+    from pubmed2db.export import export_json
+
+    out = tmp_path / "json"
+    export_json(loaded_con, out, shards=2)
+    export_json(loaded_con, out, shards=1, gzip_output=True)
+
+    assert sorted(p.name for p in out.iterdir()) == ["pubmed_metadata_00000.ndjson.gz"]
+
+
 def test_parquet_latest_filters_versions(loaded_con, tmp_path):
     from pubmed2db.export import export_parquet
 

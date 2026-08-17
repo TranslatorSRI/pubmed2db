@@ -180,6 +180,22 @@ def export_json(
     active_shards = min(shards, total) if total else 1
     suffix = ".ndjson.gz" if gzip_output else ".ndjson"
     paths = [out_dir / f"pubmed_metadata_{i:05d}{suffix}" for i in range(active_shards)]
+
+    # Re-exporting into the same directory with fewer shards, or with the other
+    # --gzip setting, would otherwise leave earlier shards behind: a consumer
+    # globbing the directory then reads a mix of two exports.
+    keep = set(paths)
+    stale = [
+        p
+        for pattern in ("pubmed_metadata_*.ndjson", "pubmed_metadata_*.ndjson.gz")
+        for p in out_dir.glob(pattern)
+        if p not in keep
+    ]
+    for path in stale:
+        path.unlink()
+    if stale:
+        logger.info("removed %d shard file(s) from a previous export", len(stale))
+
     opener = (lambda p: gzip.open(p, "wt", encoding="utf-8")) if gzip_output else (
         lambda p: p.open("w", encoding="utf-8")
     )
