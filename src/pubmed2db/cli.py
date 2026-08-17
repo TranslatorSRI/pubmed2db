@@ -30,7 +30,12 @@ def _sync_options(f):
     """Shared ``--baseline/--updates/--limit/--verify`` options for ``download``
     and ``update``, which both call :func:`pubmed2db.download.sync`."""
     f = click.option("--verify/--no-verify", default=True, help="Verify downloaded files against MD5.")(f)
-    f = click.option("--limit", type=int, default=None, help="Only sync the newest N files (testing).")(f)
+    f = click.option(
+        "--limit",
+        type=click.IntRange(min=1),
+        default=None,
+        help="Only sync the newest N files (testing).",
+    )(f)
     f = click.option("--updates/--no-updates", default=True, help="Sync update files.")(f)
     f = click.option("--baseline/--no-baseline", default=True, help="Sync baseline files.")(f)
     return f

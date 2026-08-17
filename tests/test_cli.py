@@ -184,6 +184,15 @@ def test_cli_threads_and_temp_dir_options(tmp_path, gz_fixture):
     assert "Export:    ready" in result.output
 
 
+def test_cli_rejects_a_non_positive_limit(tmp_path):
+    """`--limit 0` must not fall through to a full-corpus download."""
+    result = CliRunner().invoke(
+        main, ["--db", str(tmp_path / "cli.duckdb"), "download", "--limit", "0"]
+    )
+    assert result.exit_code != 0
+    assert "--limit" in result.output
+
+
 def test_cli_load_scans_download_directory(staged_download):
     """`load` with no explicit files finds them via its pystow directory scan."""
     db_path = staged_download / "cli.duckdb"
