@@ -149,7 +149,7 @@ def _sync_kind(
             file_name,
             kind=kind,
             published_md5=published_md5,
-            downloaded_at=changed,
+            mark_downloaded=changed,
         )
         results.append((path, kind))
 

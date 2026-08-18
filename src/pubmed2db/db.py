@@ -79,7 +79,7 @@ def register_source_file(
     *,
     kind: str,
     published_md5: str | None = None,
-    downloaded_at: bool = True,
+    mark_downloaded: bool = True,
 ) -> None:
     """Insert or update a row in the ``source_file`` registry.
 
@@ -87,7 +87,7 @@ def register_source_file(
     ``processed_at``/``n_articles`` from any prior load.
     """
     year_yy, file_number, order_key = parse_file_name(file_name)
-    ts = datetime.now(timezone.utc) if downloaded_at else None
+    ts = datetime.now(timezone.utc) if mark_downloaded else None
     con.execute(
         """
         INSERT INTO source_file
