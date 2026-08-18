@@ -57,7 +57,7 @@ def _sync_options(f):
 )
 @click.option(
     "--threads",
-    type=int,
+    type=click.IntRange(min=1),
     default=None,
     envvar="PUBMED2DB_THREADS",
     help=(
