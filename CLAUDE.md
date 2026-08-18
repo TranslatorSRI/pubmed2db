@@ -17,7 +17,7 @@ Parquet (PubMed field names, for downloadable queries).
 | `src/pubmed2db/db.py` | DuckDB connection, schema init, `source_file` registry, `parse_file_name` (filename → chronological `file_order_key`). |
 | `src/pubmed2db/schema.sql` | Normalized tables (PubMed field names) + `latest_article` view. |
 | `src/pubmed2db/download.py` | Reuses `pubmed_downloader` to fetch baseline/update files; adds `.md5` sidecar tracking. |
-| `src/pubmed2db/parse.py` | Self-driven XML iteration: calls cthoyt's `_extract_article` per record, plus raw `PubDate`, `DeleteCitation`, and article IDs. |
+| `src/pubmed2db/parse.py` | Self-driven XML iteration: calls `pubmed_downloader`'s `_extract_article` per record, plus raw `PubDate`, `DeleteCitation`, and article IDs. |
 | `src/pubmed2db/load.py` | Loads parsed files (full history, provenance-tagged), `latest`/delete logic, journal dimension. |
 | `src/pubmed2db/export.py` | JSON (spec fields, empty-string-not-null) + Parquet export. |
 | `src/pubmed2db/status.py` | Pipeline-readiness checks derived from DB state (drives the CLI's prerequisite errors/warnings). |
@@ -32,13 +32,14 @@ Parquet (PubMed field names, for downloadable queries).
   carries ~444 references, so at corpus scale it would have been the largest
   table here, for data no consumer wanted. `parse._cited_pmids` is parked
   (uncalled) with re-enabling instructions in its docstring.
-- **We drive the XML iteration ourselves** (`parse.py`) rather than using cthoyt's
-  process pipeline, because we need things it drops or gets wrong: the **raw
-  `PubDate` components** (so `MedlineDate`-only/partial dates keep full fidelity
-  instead of being collapsed to a `datetime.date`), **`<DeleteCitation>`** PMIDs
-  (needed for latest-version selection), and **article IDs** (see the upstream
-  issues below). Cited PMIDs are extractable the same way, but `parse._cited_pmids`
-  is parked and never called — we store no citation graph.
+- **We drive the XML iteration ourselves** (`parse.py`) rather than using the
+  `pubmed_downloader` process pipeline, because we need things it drops or
+  gets wrong: the **raw `PubDate` components** (so `MedlineDate`-only/partial
+  dates keep full fidelity instead of being collapsed to a `datetime.date`),
+  **`<DeleteCitation>`** PMIDs (needed for latest-version selection), and
+  **article IDs** (see the upstream issues below). Cited PMIDs are extractable
+  the same way, but `parse._cited_pmids` is parked and never called — we store
+  no citation graph.
 - **DB uses PubMed's own field names**; the DocumentMetadataAPI names
   (`journal_name`, `journal_abbrev`, `pub_month` as 3-letter abbrev, …) are
   applied **only** in the JSON export, with empty strings for missing values.

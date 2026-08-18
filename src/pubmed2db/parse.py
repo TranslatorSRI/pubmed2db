@@ -3,13 +3,15 @@
 We drive the XML iteration ourselves (rather than using
 ``pubmed_downloader.iterate_process_*``) for two reasons:
 
-1. We reuse cthoyt's :func:`pubmed_downloader.api._extract_article` for the rich
-   record (authors, MeSH, grants, citations, history, ...), called with all
-   grounders ``None`` so no heavy ``pyobo``/``orcid`` lookups happen.
-2. In the same pass we capture what cthoyt's pipeline drops or gets wrong: the
-   *raw* ``PubDate`` components (so ``MedlineDate``-only and partial dates
-   survive with full fidelity), ``<DeleteCitation>`` PMIDs (needed for
-   latest-version selection), and the article's own IDs (see
+1. We reuse the `pubmed_downloader library
+   <https://github.com/cthoyt/pubmed-downloader>`_'s
+   :func:`pubmed_downloader.api._extract_article` for the rich record (authors,
+   MeSH, grants, citations, history, ...), called with all grounders ``None``
+   so no heavy ``pyobo``/``orcid`` lookups happen.
+2. In the same pass we capture what that library's pipeline drops or gets
+   wrong: the *raw* ``PubDate`` components (so ``MedlineDate``-only and
+   partial dates survive with full fidelity), ``<DeleteCitation>`` PMIDs
+   (needed for latest-version selection), and the article's own IDs (see
    :func:`_article_ids`).
 
 :func:`_cited_pmids` is deliberately unused — see its docstring.
@@ -30,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ParsedArticle:
-    """A cthoyt :class:`Article` plus the raw fields we extract ourselves."""
+    """A ``pubmed_downloader`` :class:`Article` plus the fields we extract ourselves."""
 
     article: Article
     pmid_version: int | None = None

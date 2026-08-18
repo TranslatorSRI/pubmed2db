@@ -1,10 +1,11 @@
 """Download PubMed baseline and update files, with MD5 sidecar tracking.
 
-We reuse ``pubmed_downloader`` for the actual file transfers (pystow-backed,
-HTTP, skip-by-name). On top of that we fetch each ``<file>.md5`` sidecar, store
-the published checksum in the ``source_file`` registry, and bump
-``downloaded_at`` whenever a file is new or its checksum changed — which is what
-later triggers a reload in :func:`pubmed2db.load.needs_load`.
+We reuse the `pubmed_downloader library
+<https://github.com/cthoyt/pubmed-downloader>`_ for the actual file transfers
+(pystow-backed, HTTP, skip-by-name). On top of that we fetch each
+``<file>.md5`` sidecar, store the published checksum in the ``source_file``
+registry, and bump ``downloaded_at`` whenever a file is new or its checksum
+changed — which is what later triggers a reload in :func:`pubmed2db.load.needs_load`.
 
 PubMed files are normally immutable, so a checksum change is rare; verifying it
 is cheap insurance and the mechanism that lets a corrected file be picked up.
