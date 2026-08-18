@@ -119,7 +119,19 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         """
         SELECT
             (SELECT count(*) FROM article),
-            (SELECT count(*) FROM latest_article),
+            -- Same answer as count(*) FROM latest_article, but by aggregating
+            -- two columns instead of running that view's `SELECT a.*` window
+            -- over every column of every version — the query export.py
+            -- materializes once because it drives the export's peak RSS.
+            -- `status` advertises a cheap read-only snapshot; keep it one.
+            (
+                SELECT count(*)
+                FROM (SELECT pmid, max(file_order_key) AS ok FROM article GROUP BY pmid) a
+                LEFT JOIN (
+                    SELECT pmid, max(file_order_key) AS del_ok FROM deleted_pmid GROUP BY pmid
+                ) d USING (pmid)
+                WHERE d.del_ok IS NULL OR d.del_ok < a.ok
+            ),
             (SELECT count(*) FROM journal)
         """
     ).fetchone()

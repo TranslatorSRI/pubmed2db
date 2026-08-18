@@ -169,3 +169,13 @@ def test_source_file_registry_counts(loaded_con):
         ("pubmed25n0001.xml.gz", "baseline", 3, 0),
         ("pubmed25n0002.xml.gz", "update", 1, 1),
     ]
+
+
+def test_status_latest_count_matches_the_view(loaded_con):
+    """`status` counts latest documents with a cheaper aggregate than the
+    latest_article view (which is the export-sized query); they must agree --
+    including the fixtures' revised and deleted PMIDs."""
+    from pubmed2db.status import summarize
+
+    expected = loaded_con.execute("SELECT count(*) FROM latest_article").fetchone()[0]
+    assert summarize(loaded_con)["latest_documents"] == expected
