@@ -173,6 +173,18 @@ def parse_file(path: str | Path) -> ParsedFile:
             )
         )
 
+    # The DTD is `PubmedArticleSet ((PubmedArticle | PubmedBookArticle)+, ...)`,
+    # so Bookshelf citations can share these files. We parse journal citations
+    # only; say how many records that skipped rather than dropping them silently
+    # — the count is what issue #27 needs to decide whether to support them.
+    n_book_records = len(root.findall("PubmedBookArticle"))
+    if n_book_records:
+        logger.warning(
+            "%s: skipped %d PubmedBookArticle record(s); book citations are not parsed (see #27)",
+            path,
+            n_book_records,
+        )
+
     for pmid_tag in root.findall("DeleteCitation/PMID"):
         if pmid_tag.text and pmid_tag.text.strip().isdigit():
             result.deleted_pmids.append(int(pmid_tag.text.strip()))

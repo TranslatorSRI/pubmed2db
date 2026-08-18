@@ -107,3 +107,28 @@ def test_articles_dropped_by_the_extractor_are_counted(gz_fixture, monkeypatch):
 
     assert parsed.articles == []
     assert parsed.n_failed > 0
+
+
+def test_book_records_are_counted_not_dropped_silently(gz_fixture, caplog, tmp_path):
+    """PubmedBookArticle shares the file per the DTD; we parse journal citations
+    only, so the skip has to be visible (see issue #27)."""
+    import gzip
+
+    from pubmed2db.parse import parse_file
+
+    src = gz_fixture("pubmed25n0001")
+    with gzip.open(src, "rt", encoding="utf-8") as handle:
+        xml = handle.read()
+    book = (
+        "<PubmedBookArticle><BookDocument><PMID Version='1'>9001</PMID>"
+        "<ArticleTitle>A chapter</ArticleTitle></BookDocument></PubmedBookArticle>"
+    )
+    dst = tmp_path / "pubmed25n0003.xml.gz"
+    with gzip.open(dst, "wt", encoding="utf-8") as handle:
+        handle.write(xml.replace("</PubmedArticleSet>", book + "</PubmedArticleSet>"))
+
+    with caplog.at_level("WARNING"):
+        parsed = parse_file(dst)
+
+    assert 9001 not in {a.pubmed for a in parsed.articles}
+    assert "skipped 1 PubmedBookArticle record(s)" in caplog.text
