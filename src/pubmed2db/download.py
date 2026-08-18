@@ -28,15 +28,11 @@ from pubmed_downloader.api import (
     UPDATES_URL,
     _ensure_urls,
 )
-from pubmed_downloader.utils import MODULE
 from tqdm import tqdm
 
 from .db import register_source_file
 
 logger = logging.getLogger(__name__)
-
-#: Where we persist the fetched ``.md5`` sidecar files (separate from the data).
-MD5_DIR = Path(MODULE.base) / "md5"
 
 _MD5_RE = re.compile(r"\b([0-9a-fA-F]{32})\b")
 
@@ -57,10 +53,6 @@ def file_md5(path: Path) -> str:
         return hashlib.file_digest(fh, "md5").hexdigest()
 
 
-def _save_md5_sidecar(file_name: str, text: str) -> None:
-    (MD5_DIR / f"{file_name}.md5").write_text(text)
-
-
 def _sync_kind(
     con: duckdb.DuckDBPyConnection,
     *,
@@ -77,7 +69,6 @@ def _sync_kind(
     # testing — is the head. Slicing with None is the no-limit case.
     urls = _ensure_urls(base_url, list_cache, force=True)[:limit]
 
-    MD5_DIR.mkdir(parents=True, exist_ok=True)
     results: list[tuple[Path, str]] = []
     for url in tqdm(urls, desc=f"Syncing PubMed {kind}", unit="file"):
         file_name = url.rsplit("/", 1)[-1]
@@ -86,7 +77,6 @@ def _sync_kind(
             response = requests.get(url + ".md5", timeout=60)
             response.raise_for_status()
             published_md5 = parse_md5_text(response.text)
-            _save_md5_sidecar(file_name, response.text)
             if published_md5 is None:
                 logger.warning("no checksum in the md5 sidecar for %s", file_name)
         except requests.RequestException as exc:

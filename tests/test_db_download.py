@@ -84,7 +84,6 @@ def _sync_kind(con, monkeypatch, tmp_path, *, urls, body, registry=None, limit=N
         blob = tmp_path / "blob.xml.gz"
         blob.write_bytes(b"")
         ensure_module = _FakeEnsure(blob)
-    monkeypatch.setattr(download, "MD5_DIR", tmp_path / "md5")
     monkeypatch.setattr(download, "_ensure_urls", lambda *a, **k: urls)
     monkeypatch.setattr(download.requests, "get", lambda *a, **k: _FakeResponse(body))
 
