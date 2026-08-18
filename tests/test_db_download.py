@@ -256,3 +256,29 @@ def test_file_md5(tmp_path):
     payload = b"pubmed2db test payload"
     path.write_bytes(payload)
     assert file_md5(path) == hashlib.md5(payload).hexdigest()
+
+
+def test_known_file_without_a_checksum_is_not_treated_as_new(con, monkeypatch, tmp_path):
+    """A registered file whose checksum is NULL -- an rsynced copy, or a sidecar
+    that has never been fetchable -- must not read as new on every sync: that
+    would re-stamp downloaded_at and re-parse the file on every run."""
+    from pubmed2db.db import register_source_file
+
+    file_name = "pubmed25n0001.xml.gz"
+    register_source_file(con, file_name, kind="update", published_md5=None)
+    before = con.execute(
+        "SELECT downloaded_at FROM source_file WHERE file_name = ?", [file_name]
+    ).fetchone()[0]
+
+    _sync_kind(
+        con,
+        monkeypatch,
+        tmp_path,
+        urls=[f"https://example.invalid/updatefiles/{file_name}"],
+        body="<html>Service temporarily unavailable</html>",
+        registry={file_name: None},
+    )
+
+    assert con.execute(
+        "SELECT downloaded_at FROM source_file WHERE file_name = ?", [file_name]
+    ).fetchone()[0] == before

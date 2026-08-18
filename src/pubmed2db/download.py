@@ -90,7 +90,11 @@ def _sync_kind(
             # corpus on the next load, and keep doing so on every later sync.
             published_md5 = prior
 
-        changed = prior is None or prior != published_md5
+        # Newness is registry membership, not `prior is None`: a known file can
+        # have a NULL checksum (registered by `load` from an rsynced copy, or a
+        # sidecar that has never been fetchable). Treating that as new would bump
+        # downloaded_at on every sync and re-parse the file every run.
+        changed = file_name not in registry or prior != published_md5
 
         # ensure() skips by file name, so a file republished under its old name
         # would keep its stale bytes on disk: we would record the new checksum
