@@ -74,6 +74,9 @@ class _FakeEnsure:
             self.downloads += 1
         return self.path
 
+    def join(self, *, name: str) -> Path:
+        return self.path
+
 
 def _sync_kind(con, monkeypatch, tmp_path, *, urls, body, registry=None, limit=None,
                ensure_module=None, verify=False):
@@ -171,8 +174,31 @@ def test_changed_checksum_replaces_the_local_file(con, monkeypatch, tmp_path):
     assert ensure_module.downloads == 1
 
 
-def test_persistently_corrupt_file_is_not_registered(con, monkeypatch, tmp_path):
-    """A re-download that is also corrupt must not be recorded as verified."""
+def test_changed_checksum_does_not_download_an_absent_file_twice(con, monkeypatch, tmp_path):
+    """The stale local copy is dropped before the fetch, not after it."""
+    from pubmed2db.db import register_source_file
+
+    file_name = "pubmed25n0001.xml.gz"
+    old_md5 = "f" * 32
+    register_source_file(con, file_name, kind="update", published_md5=old_md5)
+    ensure_module = _FakeEnsure(tmp_path / file_name, payload=b"fresh")
+
+    _sync_kind(
+        con,
+        monkeypatch,
+        tmp_path,
+        urls=[f"https://example.invalid/updatefiles/{file_name}"],
+        body=f"MD5(x)= {_GOOD_MD5}",
+        registry={file_name: old_md5},
+        ensure_module=ensure_module,
+    )
+
+    assert ensure_module.downloads == 1
+
+
+def test_persistently_corrupt_file_is_discarded(con, monkeypatch, tmp_path):
+    """A re-download that is also corrupt must not be recorded as verified --
+    nor left on disk, where `load`'s directory glob would pick it up anyway."""
     file_name = "pubmed25n0001.xml.gz"
     blob = tmp_path / file_name
     ensure_module = _FakeEnsure(blob, payload=b"corrupt")

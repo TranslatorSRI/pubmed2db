@@ -92,18 +92,17 @@ def _sync_kind(
 
         changed = prior is None or prior != published_md5
 
-        path = Path(ensure_module.ensure(url=url))
-
         # ensure() skips by file name, so a file republished under its old name
         # would keep its stale bytes on disk: we would record the new checksum
         # against the old content and never look again. Drop the local copy
-        # first, whether or not we go on to hash it. Only when we had a prior
-        # checksum to compare — a first sync over an existing cache must not
-        # re-download the whole corpus.
+        # before fetching, whether or not we go on to hash it. Only when we had
+        # a prior checksum to compare — a first sync over an existing cache must
+        # not re-download the whole corpus.
         if prior is not None and published_md5 is not None and prior != published_md5:
             logger.info("published md5 changed for %s; re-downloading", file_name)
-            path.unlink(missing_ok=True)
-            path = Path(ensure_module.ensure(url=url))
+            Path(ensure_module.join(name=file_name)).unlink(missing_ok=True)
+
+        path = Path(ensure_module.ensure(url=url))
 
         # Only hash files we just fetched or whose published checksum moved:
         # re-hashing an unchanged, already-verified corpus costs tens of GiB of
