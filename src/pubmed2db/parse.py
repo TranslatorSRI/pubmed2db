@@ -154,6 +154,11 @@ def parse_file(path: str | Path) -> ParsedFile:
             result.n_failed += 1
             continue
         if article is None:
+            # Upstream returns None rather than raising for an empty
+            # <ArticleTitle> or a missing <MedlineJournalInfo> — both real in
+            # PubMed. Count them, or they vanish from n_articles unremarked.
+            logger.warning("skipping article in %s: extractor returned None", path)
+            result.n_failed += 1
             continue
         year, month, day, medline_date = _raw_pubdate(element)
         result.articles.append(

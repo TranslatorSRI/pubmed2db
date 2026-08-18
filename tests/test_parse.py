@@ -95,3 +95,15 @@ def test_collects_delete_citation(gz_fixture):
     assert parsed.deleted_pmids == [1002]
     assert [pa.pubmed for pa in parsed.articles] == [1001]
     assert parsed.articles[0].pmid_version == 2
+
+
+def test_articles_dropped_by_the_extractor_are_counted(gz_fixture, monkeypatch):
+    """Upstream returns None (rather than raising) for e.g. an empty
+    <ArticleTitle>; those must show up in n_failed, not vanish silently."""
+    from pubmed2db import parse
+
+    monkeypatch.setattr(parse, "_extract_article", lambda *a, **k: None)
+    parsed = parse.parse_file(gz_fixture("pubmed25n0001"))
+
+    assert parsed.articles == []
+    assert parsed.n_failed > 0
