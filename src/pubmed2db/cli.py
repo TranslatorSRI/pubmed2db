@@ -165,7 +165,13 @@ def load(ctx: click.Context, force: bool) -> None:
     help="Export format.",
 )
 @click.option("--out", required=True, type=click.Path(file_okay=False), help="Output directory.")
-@click.option("--shards", type=int, default=1, show_default=True, help="JSON: number of NDJSON shards.")
+@click.option(
+    "--shards",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="JSON: number of NDJSON shards.",
+)
 @click.option("--gzip/--no-gzip", "gzip_output", default=False, help="JSON: gzip each shard as it's written.")
 @click.option(
     "--latest/--all",

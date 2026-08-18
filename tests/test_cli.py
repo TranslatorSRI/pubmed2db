@@ -268,3 +268,18 @@ def test_cli_export_warns_when_journals_missing(tmp_path, gz_fixture):
     assert result.exit_code == 0, result.output
     assert "journals" in result.output.lower()
     assert list(out_dir.glob("*.ndjson"))  # export still happened
+
+
+def test_cli_rejects_a_non_positive_shard_count(tmp_path):
+    """`--shards 0` is a usage error, not a traceback out of export_json."""
+    result = CliRunner().invoke(
+        main,
+        [
+            "--db", str(tmp_path / "cli.duckdb"),
+            "export", "--format", "json", "--out", str(tmp_path / "out"),
+            "--shards", "0",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "--shards" in result.output
+
