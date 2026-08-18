@@ -299,8 +299,16 @@ def update(
     with closing(_connect(ctx)) as con:
         results = sync(con, baseline=baseline, updates=updates, limit=limit, verify=verify)
         click.echo(f"Synced {len(results)} file(s).")
-        n = load_journals(con)
-        click.echo(f"Loaded {n} journals.")
+        # The journal refresh is the least critical of the three steps: don't
+        # let an NLM Catalog outage throw away a completed download and skip the
+        # load. The previous journal dimension stays in place.
+        try:
+            n = load_journals(con)
+            click.echo(f"Loaded {n} journals.")
+        except Exception as exc:  # noqa: BLE001 - any failure here is non-fatal
+            click.echo(
+                f"Journal refresh failed ({exc}); keeping the existing journals.", err=True
+            )
         # Scan the full local directory (like `load`), not just the files this
         # run's sync() happened to return, so previously-downloaded-but-not-yet
         # loaded files aren't silently skipped.

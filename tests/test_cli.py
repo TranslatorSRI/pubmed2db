@@ -283,3 +283,33 @@ def test_cli_rejects_a_non_positive_shard_count(tmp_path):
     assert result.exit_code != 0
     assert "--shards" in result.output
 
+
+def test_cli_update_survives_a_failed_journal_refresh(staged_download, monkeypatch):
+    """A journal-overview outage must not throw away a completed download and
+    skip the load -- `update` is documented for scheduled runs."""
+    from pathlib import Path
+
+    from pubmed2db import cli, download, load
+
+    files = [
+        (path, "baseline" if path.parent.name == "baseline" else "update")
+        for path in Path(staged_download).glob("pubmed/*/*.xml.gz")
+    ]
+    monkeypatch.setattr(cli, "_local_files", lambda: files)
+    monkeypatch.setattr(download, "sync", lambda con, **kwargs: [])
+
+    def boom(con):
+        raise RuntimeError("NLM Catalog unreachable")
+
+    monkeypatch.setattr(load, "load_journals", boom)
+
+    db_path = staged_download / "cli.duckdb"
+    result = CliRunner().invoke(main, ["--db", str(db_path), "update"])
+    assert result.exit_code == 0, result.output
+    assert "Journal refresh failed" in result.output
+
+    from pubmed2db.db import connect
+
+    con = connect(db_path)
+    assert con.execute("SELECT count(*) FROM article").fetchone()[0] > 0
+    con.close()
