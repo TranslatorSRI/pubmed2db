@@ -138,6 +138,4 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         "latest_documents": latest_documents,
         "journals": journals,
         "journals_refreshed": last_run(con, "journals"),
-        "articles_loaded": articles_loaded(con),
-        "journals_loaded": journals_loaded(con),
     }
