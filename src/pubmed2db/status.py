@@ -54,15 +54,14 @@ def last_run(con: duckdb.DuckDBPyConnection, step: str) -> datetime | None:
     return row[0] if row else None
 
 
-def export_readiness(con: duckdb.DuckDBPyConnection) -> dict:
-    """Whether ``export`` can run, and any warnings — shared by the ``export``
-    and ``status`` commands so their verdicts can't drift apart.
+def export_readiness(con: duckdb.DuckDBPyConnection) -> tuple[str | None, list[str]]:
+    """Whether ``export`` can run: ``(blocking error or None, warnings)``.
+
+    Shared by the ``export`` and ``status`` commands so their verdicts can't
+    drift apart.
     """
     if not articles_loaded(con):
-        return {
-            "blocked": True,
-            "warnings": ["No articles loaded; run `pubmed2db load` first."],
-        }
+        return "No articles loaded; run `pubmed2db load` first.", []
     warnings = []
     pending = pending_file_count(con)
     if pending:
@@ -75,7 +74,7 @@ def export_readiness(con: duckdb.DuckDBPyConnection) -> dict:
             "journal table is empty, so journal names will be blank; "
             "run `pubmed2db journals` to populate them."
         )
-    return {"blocked": False, "warnings": warnings}
+    return None, warnings
 
 
 def summarize(con: duckdb.DuckDBPyConnection) -> dict:

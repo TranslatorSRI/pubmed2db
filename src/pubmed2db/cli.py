@@ -187,19 +187,22 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int, gzip_output: boo
 
     # Flags that only apply to the other format are silently inert otherwise,
     # which is an expensive thing to discover after a 20-minute export.
-    for option, applies_to in (("shards", "json"), ("gzip_output", "json"), ("latest", "parquet")):
+    for flag, option, applies_to in (
+        ("--shards", "shards", "json"),
+        ("--gzip", "gzip_output", "json"),
+        ("--latest", "latest", "parquet"),
+    ):
         if fmt != applies_to and ctx.get_parameter_source(option) == ParameterSource.COMMANDLINE:
             click.echo(
-                f"Warning: --{option.replace('_output', '')} only applies to "
-                f"--format {applies_to}; ignoring it.",
+                f"Warning: {flag} only applies to --format {applies_to}; ignoring it.",
                 err=True,
             )
 
     with closing(_connect(ctx)) as con:
-        readiness = export_readiness(con)
-        if readiness["blocked"]:
-            raise click.ClickException(readiness["warnings"][0])
-        for warning in readiness["warnings"]:
+        error, warnings = export_readiness(con)
+        if error:
+            raise click.ClickException(error)
+        for warning in warnings:
             click.echo(f"Warning: {warning}", err=True)
 
         if ctx.obj.get("verbose"):
@@ -271,11 +274,11 @@ def status(ctx: click.Context) -> None:
             f"{s['latest_documents']} latest document(s)"
         )
 
-        readiness = export_readiness(con)
-        if readiness["blocked"]:
-            click.echo(f"Export:    blocked — {readiness['warnings'][0]}")
-        elif readiness["warnings"]:
-            click.echo(f"Export:    ready, but: {'; '.join(readiness['warnings'])}")
+        error, warnings = export_readiness(con)
+        if error:
+            click.echo(f"Export:    blocked — {error}")
+        elif warnings:
+            click.echo(f"Export:    ready, but: {'; '.join(warnings)}")
         else:
             click.echo("Export:    ready")
 
