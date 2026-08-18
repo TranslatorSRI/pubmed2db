@@ -37,7 +37,7 @@ _VERSIONED_CHILDREN = (
 )
 
 #: Dimension/bookkeeping tables exported as-is.
-_OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid")
+_OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid", "pipeline_run")
 
 
 #: Month abbreviations, frozen rather than taken from ``calendar.month_abbr``:

@@ -142,3 +142,21 @@ def test_parquet_all_keeps_history(loaded_con, tmp_path):
     ).fetchone()[0]
     # All versions: 1001 (x2), 1002, 1003.
     assert n_article == 4
+
+
+def test_parquet_exports_every_table(loaded_con, tmp_path):
+    """One file per table, `pipeline_run` included -- it carries the journal
+    refresh provenance, which nothing else in the export records."""
+    from pubmed2db.export import export_parquet
+
+    out = tmp_path / "parquet"
+    written = export_parquet(loaded_con, out)
+
+    tables = {
+        row[0]
+        for row in loaded_con.execute(
+            "SELECT table_name FROM duckdb_tables() "
+            "WHERE schema_name = 'main' AND NOT temporary"
+        ).fetchall()
+    }
+    assert {path.stem for path in written} == tables
