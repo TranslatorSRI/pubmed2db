@@ -156,8 +156,12 @@ def load_parsed(
     source_file: str,
     *,
     kind: str,
-) -> None:
-    """Insert a :class:`ParsedFile` (replacing any prior rows for the file)."""
+) -> int:
+    """Insert a :class:`ParsedFile` (replacing any prior rows for the file).
+
+    Returns the number of articles stored, which is the post-dedup count
+    recorded in ``source_file.n_articles``.
+    """
     year_yy, file_number, order_key = parse_file_name(source_file)
 
     con.execute("BEGIN TRANSACTION")
@@ -217,6 +221,7 @@ def load_parsed(
     except Exception:
         con.execute("ROLLBACK")
         raise
+    return len(deduped)
 
 
 def load_file(
@@ -230,11 +235,11 @@ def load_file(
     path = Path(path)
     source_file = source_file or path.name
     parsed = parse_file(path)
-    load_parsed(con, parsed, source_file, kind=kind)
+    n_articles = load_parsed(con, parsed, source_file, kind=kind)
     logger.info(
         "loaded %s: %d articles, %d deletions, %d failed to parse (peak RSS %.1f GiB)",
         source_file,
-        len(parsed.articles),
+        n_articles,
         len(parsed.deleted_pmids),
         parsed.n_failed,
         peak_rss_gib(),
