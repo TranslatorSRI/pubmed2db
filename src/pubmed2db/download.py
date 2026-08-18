@@ -63,6 +63,7 @@ def _sync_kind(
     registry: dict[str, str | None],
     limit: int | None,
     verify: bool,
+    session: requests.Session,
 ) -> list[tuple[Path, str]]:
     # Always refresh the remote listing so newly published updatefiles appear.
     # _ensure_urls sorts it newest-first, so the newest N — what's useful for
@@ -74,7 +75,7 @@ def _sync_kind(
         file_name = url.rsplit("/", 1)[-1]
         prior = registry.get(file_name)
         try:
-            response = requests.get(url + ".md5", timeout=60)
+            response = session.get(url + ".md5", timeout=60)
             response.raise_for_status()
             published_md5 = parse_md5_text(response.text)
             if published_md5 is None:
@@ -187,27 +188,24 @@ def sync(
         for r in con.execute("SELECT file_name, published_md5 FROM source_file").fetchall()
     }
 
+    # One session for the ~2,600 sidecar fetches: without keep-alive each one
+    # pays a fresh TCP+TLS handshake, which is most of a no-op sync's runtime.
+    session = requests.Session()
     results: list[tuple[Path, str]] = []
-    if baseline:
-        results += _sync_kind(
-            con,
-            kind="baseline",
-            base_url=BASELINE_URL,
-            list_cache=BASELINE_PATH,
-            ensure_module=BASELINE_MODULE,
-            registry=registry,
-            limit=limit,
-            verify=verify,
-        )
-    if updates:
-        results += _sync_kind(
-            con,
-            kind="update",
-            base_url=UPDATES_URL,
-            list_cache=UPDATES_PATH,
-            ensure_module=UPDATES_MODULE,
-            registry=registry,
-            limit=limit,
-            verify=verify,
-        )
+    for kind, wanted, base_url, list_cache, ensure_module in (
+        ("baseline", baseline, BASELINE_URL, BASELINE_PATH, BASELINE_MODULE),
+        ("update", updates, UPDATES_URL, UPDATES_PATH, UPDATES_MODULE),
+    ):
+        if wanted:
+            results += _sync_kind(
+                con,
+                kind=kind,
+                base_url=base_url,
+                list_cache=list_cache,
+                ensure_module=ensure_module,
+                registry=registry,
+                limit=limit,
+                verify=verify,
+                session=session,
+            )
     return results

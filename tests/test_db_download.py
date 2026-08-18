@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -88,7 +90,7 @@ def _sync_kind(con, monkeypatch, tmp_path, *, urls, body, registry=None, limit=N
         blob.write_bytes(b"")
         ensure_module = _FakeEnsure(blob)
     monkeypatch.setattr(download, "_ensure_urls", lambda *a, **k: urls)
-    monkeypatch.setattr(download.requests, "get", lambda *a, **k: _FakeResponse(body))
+    session = SimpleNamespace(get=lambda *a, **k: _FakeResponse(body))
 
     return download._sync_kind(
         con,
@@ -99,6 +101,7 @@ def _sync_kind(con, monkeypatch, tmp_path, *, urls, body, registry=None, limit=N
         registry=registry if registry is not None else {},
         limit=limit,
         verify=verify,
+        session=session,
     )
 
 
