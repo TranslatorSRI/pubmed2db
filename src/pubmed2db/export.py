@@ -248,6 +248,20 @@ def export_parquet(
         tables, "latest version" if latest else "full history", out_dir,
     )
 
+    # A re-export overwrites its own fixed set of file names, so the only file
+    # that can survive is one whose table left the schema — `reference_citation`
+    # is exactly that case. Left in place it reads as part of this export to
+    # anything globbing the directory. Same sweep the JSON export does.
+    keep = {f"{t}.parquet" for t in ("article", *_VERSIONED_CHILDREN, *_OTHER_TABLES)}
+    stale = [p for p in out_dir.glob("*.parquet") if p.name not in keep]
+    for path in stale:
+        path.unlink()
+    if stale:
+        logger.info(
+            "removed %d Parquet file(s) for table(s) no longer in the schema: %s",
+            len(stale), ", ".join(sorted(p.stem for p in stale)),
+        )
+
     def _progress(path: Path) -> None:
         logger.info("wrote %s (%d/%d)", path.name, len(written), tables)
 
