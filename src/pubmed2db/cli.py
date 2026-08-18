@@ -55,12 +55,16 @@ def _sync_options(f):
     "--data-dir",
     default="data",
     show_default=True,
+    envvar="PUBMED2DB_DATA_DIR",
+    show_envvar=True,
     help="Root directory for downloaded PubMed files and the database.",
 )
 @click.option(
     "--db",
     default=None,
     show_default=False,
+    envvar="PUBMED2DB_DB",
+    show_envvar=True,
     help="Path to the DuckDB database (default: <data-dir>/pubmed.duckdb).",
 )
 @click.option(
@@ -68,18 +72,20 @@ def _sync_options(f):
     type=click.IntRange(min=1),
     default=None,
     envvar="PUBMED2DB_THREADS",
+    show_envvar=True,
     help=(
         "Cap DuckDB's thread pool (default: the machine's core count, which "
-        "oversubscribes a smaller Slurm allocation). Env: PUBMED2DB_THREADS."
+        "oversubscribes a smaller Slurm allocation)."
     ),
 )
 @click.option(
     "--temp-dir",
     default=None,
     envvar="PUBMED2DB_DUCKDB_TEMP_DIR",
+    show_envvar=True,
     help=(
         "Where DuckDB spills when a query exceeds memory (point at local "
-        "scratch for large exports). Env: PUBMED2DB_DUCKDB_TEMP_DIR."
+        "scratch for large exports)."
     ),
 )
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging.")
@@ -101,9 +107,7 @@ def main(
     # resolve under data_dir rather than ~/.data.
     os.environ["PYSTOW_HOME"] = str(Path(data_dir).resolve())
     ctx.ensure_object(dict)
-    ctx.obj["db"] = db or os.environ.get(
-        "PUBMED2DB_DB", str(Path(data_dir) / "pubmed.duckdb")
-    )
+    ctx.obj["db"] = db or str(Path(data_dir) / "pubmed.duckdb")
     ctx.obj["threads"] = threads
     ctx.obj["temp_dir"] = temp_dir
     ctx.obj["verbose"] = verbose
