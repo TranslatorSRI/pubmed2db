@@ -111,6 +111,13 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         """
         SELECT
             (SELECT count(*) FROM article),
+            -- Counting the view looks expensive — it is a window over the whole
+            -- `article` table — so this has already been "optimized" once into a
+            -- group-by over (pmid, file_order_key) anti-joined against
+            -- deleted_pmid. Don't: measured on 5-6M rows the two are within
+            -- noise (DuckDB prunes the view's projection, and the window was the
+            -- faster of the two), and the rewrite leaves a second copy of the
+            -- latest-version rule to keep in step with schema.sql.
             (SELECT count(*) FROM latest_article),
             (SELECT count(*) FROM journal)
         """
