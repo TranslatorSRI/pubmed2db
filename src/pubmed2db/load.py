@@ -117,28 +117,21 @@ def _article_rows(parsed: ParsedArticle, source_file: str, order_key: int) -> di
 #: Name under which a per-table batch is registered for the bulk insert below.
 _BATCH = "_load_batch"
 
-#: Bulk-insert SQL per table. Each row batch is registered as an Arrow table and
-#: inserted columnar via ``INSERT ... SELECT``, which is ~25x faster than
-#: row-by-row ``executemany`` on the large per-version tables (parse stays ~2s
-#: while insert drops from ~75s to ~4s per file — see scripts/benchmark_load.py).
-#: ``article`` appends ``now()`` for its server-side ``loaded_at`` column.
-_INSERT_SELECT: dict[str, str] = {
-    table: (
-        f"INSERT INTO {table} BY POSITION SELECT *, now() FROM {_BATCH}"
-        if table == "article"
-        else f"INSERT INTO {table} BY POSITION SELECT * FROM {_BATCH}"
-    )
-    for table in _VERSIONED_TABLES
-}
-
-
 def _insert_batch(con: duckdb.DuckDBPyConnection, table: str, rows: list[tuple]) -> None:
-    """Columnar bulk-insert of ``rows`` (positional tuples) into ``table``."""
+    """Columnar bulk-insert of ``rows`` (positional tuples) into ``table``.
+
+    Registering the batch as an Arrow table and inserting it via
+    ``INSERT ... SELECT`` is ~25x faster than row-by-row ``executemany`` on the
+    large per-version tables (parse stays ~2s while insert drops from ~75s to
+    ~4s per file — see scripts/benchmark_load.py).
+    """
     columns = zip(*rows)  # transpose row tuples -> per-column sequences
     batch = pa.table({str(i): pa.array(col) for i, col in enumerate(columns)})
     con.register(_BATCH, batch)
     try:
-        con.execute(_INSERT_SELECT[table])
+        # `article` appends now() for its server-side `loaded_at` column.
+        loaded_at = ", now()" if table == "article" else ""
+        con.execute(f"INSERT INTO {table} BY POSITION SELECT *{loaded_at} FROM {_BATCH}")
     finally:
         con.unregister(_BATCH)
 
@@ -175,7 +168,7 @@ def load_parsed(
         for article in parsed.articles:
             deduped[article.pubmed] = article
 
-        batches: dict[str, list[tuple]] = {t: [] for t in _INSERT_SELECT}
+        batches: dict[str, list[tuple]] = {t: [] for t in _VERSIONED_TABLES}
         for article in deduped.values():
             for table, table_rows in _article_rows(article, source_file, order_key).items():
                 batches[table].extend(table_rows)
