@@ -111,7 +111,7 @@ def _cited_pmids(element: etree._Element) -> list[int]:
     it in either position.
 
     To re-enable: re-add the ``reference_citation`` table to ``schema.sql`` and
-    to ``load._VERSIONED_TABLES`` / ``export._VERSIONED_CHILDREN``, call this
+    to ``load._VERSIONED_TABLES`` (which `export` derives from), call this
     from :func:`parse_file`, and insert the rows in ``load._article_rows``.
     """
     seen: dict[int, None] = {}

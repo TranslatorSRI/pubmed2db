@@ -16,24 +16,22 @@ from pathlib import Path
 
 import duckdb
 
+from .load import _VERSIONED_TABLES
 from .util import eta_str, peak_rss_gib
 
 logger = logging.getLogger(__name__)
 
+#: Rows pulled from DuckDB per fetch during the JSON export.
+_FETCH_BATCH = 5000
+
 #: Minimum gap between progress log lines, so large exports don't spam the log.
 _PROGRESS_INTERVAL_S = 10.0
 
-#: Child tables whose rows belong to a specific article version (pmid, source_file).
-_VERSIONED_CHILDREN = (
-    "abstract_text",
-    "author",
-    "author_affiliation",
-    "mesh_heading",
-    "mesh_qualifier",
-    "publication_type",
-    "grant_",
-    "article_id",
-    "history",
+#: Child tables whose rows belong to a specific article version (pmid, source_file):
+#: everything the loader writes per version except `article` itself (exported from
+#: the latest-version snapshot) and `deleted_pmid` (exported in full below).
+_VERSIONED_CHILDREN = tuple(
+    t for t in _VERSIONED_TABLES if t not in ("article", "deleted_pmid")
 )
 
 #: Dimension/bookkeeping tables exported as-is.
@@ -148,7 +146,6 @@ def export_json(
     out_dir: str | Path,
     *,
     shards: int = 1,
-    batch_size: int = 5000,
     gzip_output: bool = False,
 ) -> list[Path]:
     """Export the latest version of every abstract as sharded NDJSON.
@@ -185,28 +182,21 @@ def export_json(
     # --gzip setting, would otherwise leave earlier shards behind: a consumer
     # globbing the directory then reads a mix of two exports.
     keep = set(paths)
-    stale = [
-        p
-        for pattern in ("pubmed_metadata_*.ndjson", "pubmed_metadata_*.ndjson.gz")
-        for p in out_dir.glob(pattern)
-        if p not in keep
-    ]
+    stale = [p for p in out_dir.glob("pubmed_metadata_*.ndjson*") if p not in keep]
     for path in stale:
         path.unlink()
     if stale:
         logger.info("removed %d shard file(s) from a previous export", len(stale))
 
-    opener = (lambda p: gzip.open(p, "wt", encoding="utf-8")) if gzip_output else (
-        lambda p: p.open("w", encoding="utf-8")
-    )
-    handles = [opener(path) for path in paths]
+    opener = gzip.open if gzip_output else open
+    handles = [opener(path, "wt", encoding="utf-8") for path in paths]
     run_start = time.monotonic()
     last_log = run_start
     try:
         cur = con.execute(_LATEST_METADATA_SQL)
         index = 0
         while True:
-            rows = cur.fetchmany(batch_size)
+            rows = cur.fetchmany(_FETCH_BATCH)
             if not rows:
                 break
             for row in rows:
@@ -236,13 +226,6 @@ def export_json(
     return paths
 
 
-def _copy_parquet(con: duckdb.DuckDBPyConnection, query: str, path: Path) -> None:
-    # Escape single quotes so a path containing one (e.g. an apostrophe in a
-    # directory name) doesn't break out of the quoted string literal.
-    escaped_path = path.as_posix().replace("'", "''")
-    con.execute(f"COPY ({query}) TO '{escaped_path}' (FORMAT PARQUET)")
-
-
 def export_parquet(
     con: duckdb.DuckDBPyConnection,
     out_dir: str | Path,
@@ -264,13 +247,9 @@ def export_parquet(
         "starting Parquet export: %d table(s) (%s) to %s",
         tables, "latest version" if latest else "full history", out_dir,
     )
-    run_start = time.monotonic()
 
-    def _progress(done: int) -> None:
-        remaining = tables - done
-        elapsed = time.monotonic() - run_start
-        eta = eta_str(elapsed, done, remaining)
-        logger.info("progress: %d/%d tables, ~%s remaining", done, tables, eta)
+    def _progress(path: Path) -> None:
+        logger.info("wrote %s (%d/%d)", path.name, len(written), tables)
 
     if latest:
         # Materialize once: `latest_article` is a window function over the full
@@ -281,9 +260,9 @@ def export_parquet(
     else:
         article_query = "SELECT * FROM article"
     article_path = out_dir / "article.parquet"
-    _copy_parquet(con, article_query, article_path)
+    con.sql(article_query).write_parquet(str(article_path))
     written.append(article_path)
-    _progress(len(written))
+    _progress(article_path)
 
     for table in _VERSIONED_CHILDREN:
         if latest:
@@ -295,16 +274,16 @@ def export_parquet(
         else:
             query = f"SELECT * FROM {table}"
         path = out_dir / f"{table}.parquet"
-        _copy_parquet(con, query, path)
+        con.sql(query).write_parquet(str(path))
         written.append(path)
-        _progress(len(written))
+        _progress(path)
 
     # Dimension / bookkeeping tables are exported in full regardless of `latest`.
     for table in _OTHER_TABLES:
         path = out_dir / f"{table}.parquet"
-        _copy_parquet(con, f"SELECT * FROM {table}", path)
+        con.sql(f"SELECT * FROM {table}").write_parquet(str(path))
         written.append(path)
-        _progress(len(written))
+        _progress(path)
 
     logger.info(
         "exported %d Parquet file(s) to %s (peak RSS %.1f GiB)",
