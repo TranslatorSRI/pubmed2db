@@ -89,12 +89,13 @@ with the previous code, and that is not corrected by a normal incremental run �
 `needs_load` only re-parses files whose checksum moved. Such a database also
 still has a populated `reference_citation` table, which nothing will clear.
 
-- [ ] Decide whether to re-load affected files with `load --force` (a full
-  re-parse, roughly a baseline's worth of time) or to rebuild from scratch, and
-  note the answer in the README's "Re-running after a gap" section. Rebuilding is
-  the simpler answer: `load --force` fixes `article_id`'s rows but leaves the
-  dropped `reference_citation` table sitting there, since `schema.sql` only ever
-  adds tables.
+- [x] **Rebuild from scratch, don't `load --force`.** Decided and written into
+  the README's "Re-running after a gap". `load --force` applies a parsing change
+  to the whole corpus, but `schema.sql` only ever adds — `CREATE TABLE IF NOT
+  EXISTS` plus `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` — so a table dropped
+  from the schema keeps its rows through any number of forced reloads, and
+  `reference_citation` is exactly that case. Both cost one full `load`; only the
+  rebuild is guaranteed to leave the shape the schema describes.
 
 ## Scale & performance (full PubMed is ~38M articles, ~1500+ files)
 

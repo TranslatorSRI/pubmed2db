@@ -122,6 +122,33 @@ that are new or changed, and it cannot introduce duplicate data.
   later file recorded a `<DeleteCitation>` for it. Exports therefore see one row
   per PMID no matter how many versions are stored.
 
+### `load --force` or a fresh database?
+
+A normal incremental run only re-parses files whose published checksum moved, so
+neither a parser fix nor a schema change reaches data that is already loaded.
+Two ways to apply one, and they are not interchangeable:
+
+- **`load --force`** re-parses every local file and replaces its rows, so it
+  applies a *parsing* change to the whole corpus: roughly a baseline's worth of
+  time (~2–3 h), no re-download, and the database keeps its history.
+- **A fresh database** (delete `<data-dir>/pubmed.duckdb`, then `load`) is the
+  answer whenever the *schema* changed, and the safer default if you are unsure.
+
+The asymmetry is that `schema.sql` only ever adds: `CREATE TABLE IF NOT EXISTS`
+plus explicit `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations. Nothing
+drops a table or a column, so a forced reload refreshes the rows of tables that
+still exist while a table removed from the schema keeps its rows forever —
+`reference_citation`, dropped during development, is exactly that case. A forced
+reload also leaves any pre-existing wrong rows in place for files it re-parses
+identically.
+
+Rebuilding costs a full `load` and nothing else — the downloaded files are not
+touched — so unless the corpus is already loaded on a machine where 2–3 hours of
+`load` is cheaper than the disk churn, prefer the rebuild. At a new baseline year
+the question is moot: a fresh database is the recommended path anyway, since
+loading the new year into the old database stores a second version of every PMID
+(see above).
+
 **Watch for a new baseline year.** Around November–December PubMed publishes a
 fresh baseline for the *coming* year (`pubmed26n*.xml.gz` lands in late 2025,
 after `pubmed25n*.xml.gz`), which is a complete re-issue of the corpus, not an

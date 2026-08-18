@@ -47,6 +47,13 @@ Parquet (PubMed field names, for downloadable queries).
   non-deleted version per PMID. `file_order_key = year_yy * 1_000_000 + file_number`
   reproduces PubMed's chronological ordering (baseline before updates; year prefix
   dominates).
+- **`schema.sql` only ever adds, and it runs on every connect.** Tables are
+  `CREATE TABLE IF NOT EXISTS`, so a column added after the first release does
+  **not** appear in an existing database — it needs its own
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` line right below the table (see
+  `source_file.n_failed`). Nothing drops a table or column, which is why the
+  README tells you to rebuild rather than `load --force` after a schema change:
+  a removed table keeps its rows forever.
 - **MD5 is low-priority** (HTTP downloads are reliable and PubMed files are
   immutable): we store the published checksum and reload a file only if it is new
   or its checksum changed (`load.needs_load` compares `downloaded_at > processed_at`).
