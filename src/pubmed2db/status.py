@@ -14,14 +14,7 @@ from datetime import datetime
 
 import duckdb
 
-#: Shared "downloaded but not (re)loaded" predicate: a file is pending if it was
-#: downloaded but never processed, or downloaded again since its last load (a
-#: changed published MD5). Used by both this module's pending_file_count() and
-#: summarize(), and by :func:`pubmed2db.load.needs_load`'s single-file check, so
-#: the rule can't drift apart between its callers.
-NEEDS_LOAD_SQL = (
-    "downloaded_at IS NOT NULL AND (processed_at IS NULL OR downloaded_at > processed_at)"
-)
+from .db import NEEDS_LOAD_SQL
 
 
 def articles_loaded(con: duckdb.DuckDBPyConnection) -> bool:

@@ -16,9 +16,8 @@ import duckdb
 import pyarrow as pa
 from pubmed_downloader.utils import Collective
 
-from .db import parse_file_name, record_run
+from .db import NEEDS_LOAD_SQL, parse_file_name, record_run
 from .parse import ParsedArticle, ParsedFile, parse_file
-from .status import NEEDS_LOAD_SQL
 from .util import eta_str, peak_rss_gib
 
 logger = logging.getLogger(__name__)
@@ -250,7 +249,7 @@ def load_file(
 def needs_load(con: duckdb.DuckDBPyConnection, source_file: str, *, force: bool = False) -> bool:
     """Whether a file should be (re)loaded.
 
-    Single-file form of :data:`pubmed2db.status.NEEDS_LOAD_SQL` (the same rule
+    Single-file form of :data:`pubmed2db.db.NEEDS_LOAD_SQL` (the same rule
     :func:`pubmed2db.status.pending_file_count` applies registry-wide), plus a
     never-registered file and ``force`` both counting as needing a load.
     """
