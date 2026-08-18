@@ -356,7 +356,7 @@ def _parse_journal_overview(path: Path):
         yield record, issns
 
 
-def load_journals(con: duckdb.DuckDBPyConnection, *, force: bool = False) -> int:
+def load_journals(con: duckdb.DuckDBPyConnection) -> int:
     """Load the NLM Catalog journal dimension.
 
     Downloads NLM's journal overview (J_Entrez) via ``pubmed_downloader`` and
@@ -365,7 +365,11 @@ def load_journals(con: duckdb.DuckDBPyConnection, *, force: bool = False) -> int
     """
     from pubmed_downloader.catalog import ensure_journal_overview
 
-    path = Path(ensure_journal_overview(force=force))
+    # force=True on every call: pystow's ensure() skips the download whenever
+    # the file is already there, so without it the journal dimension would stay
+    # frozen at whatever the first run fetched while `status` kept reporting a
+    # fresh refresh. It is one small text file.
+    path = Path(ensure_journal_overview(force=True))
 
     journals: dict[str, dict] = {}
     issn_rows: list[tuple[str, str, str]] = []

@@ -58,3 +58,20 @@ def test_load_journals_keeps_data_when_overview_is_empty(con, monkeypatch, tmp_p
 
     assert load_journals(con) == 0
     assert con.execute("SELECT count(*) FROM journal").fetchone()[0] == 2
+
+
+def test_load_journals_always_refetches(con, monkeypatch):
+    """pystow's ensure() skips a file that already exists, so without force=True
+    the journal dimension freezes at whatever the very first run downloaded --
+    while `status` keeps reporting a fresh refresh."""
+    from pubmed2db.load import load_journals
+
+    calls = []
+
+    def fake_ensure(**kwargs):
+        calls.append(kwargs)
+        return FIXTURES / "J_Entrez_sample.txt"
+
+    monkeypatch.setattr(catalog, "ensure_journal_overview", fake_ensure)
+    load_journals(con)
+    assert calls == [{"force": True}]
