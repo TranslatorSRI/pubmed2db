@@ -10,7 +10,6 @@ import sys
 from click.testing import CliRunner
 
 from pubmed2db.cli import main
-from tests.conftest import SAMPLE_JOURNALS
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess:
@@ -28,21 +27,8 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess:
     )
 
 
-def _build_db(con, gz_fixture):
-    from pubmed2db.load import load_file
-
-    load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
-    load_file(con, gz_fixture("pubmed25n0002"), kind="update")
-    con.executemany("INSERT INTO journal VALUES (?,?,?,?,?,?,?)", SAMPLE_JOURNALS)
-
-
-def test_cli_export_json(tmp_path, gz_fixture):
-    from pubmed2db.db import connect
-
-    db_path = tmp_path / "cli.duckdb"
-    con = connect(db_path)
-    _build_db(con, gz_fixture)
-    con.close()  # release the DuckDB file lock before the CLI opens it
+def test_cli_export_json(tmp_path, loaded_db):
+    db_path = loaded_db
 
     out_dir = tmp_path / "out"
     result = CliRunner().invoke(
@@ -61,13 +47,8 @@ def test_cli_export_json(tmp_path, gz_fixture):
     assert docs["PMID:1001"]["pub_month"] == "Mar"
 
 
-def test_cli_export_warns_on_wrong_format_flag(tmp_path, gz_fixture):
-    from pubmed2db.db import connect
-
-    db_path = tmp_path / "cli.duckdb"
-    con = connect(db_path)
-    _build_db(con, gz_fixture)
-    con.close()
+def test_cli_export_warns_on_wrong_format_flag(tmp_path, loaded_db):
+    db_path = loaded_db
 
     result = CliRunner().invoke(
         main,
@@ -80,13 +61,8 @@ def test_cli_export_warns_on_wrong_format_flag(tmp_path, gz_fixture):
     assert "--latest" not in result.output
 
 
-def test_cli_export_parquet(tmp_path, gz_fixture):
-    from pubmed2db.db import connect
-
-    db_path = tmp_path / "cli.duckdb"
-    con = connect(db_path)
-    _build_db(con, gz_fixture)
-    con.close()
+def test_cli_export_parquet(tmp_path, loaded_db):
+    db_path = loaded_db
 
     out_dir = tmp_path / "pq"
     result = CliRunner().invoke(
@@ -122,14 +98,9 @@ def test_cli_export_without_load_errors(tmp_path):
     assert "load" in result.output.lower()
 
 
-def test_cli_status_reports_pipeline_state(tmp_path, gz_fixture):
+def test_cli_status_reports_pipeline_state(loaded_db):
     """`status` runs read-only and reports each step's state."""
-    from pubmed2db.db import connect
-
-    db_path = tmp_path / "cli.duckdb"
-    con = connect(db_path)
-    _build_db(con, gz_fixture)
-    con.close()
+    db_path = loaded_db
 
     result = CliRunner().invoke(main, ["--db", str(db_path), "status"])
     assert result.exit_code == 0, result.output
@@ -139,13 +110,12 @@ def test_cli_status_reports_pipeline_state(tmp_path, gz_fixture):
     assert "Export:    ready" in result.output
 
 
-def test_cli_status_flags_a_second_baseline_year(tmp_path, gz_fixture):
+def test_cli_status_flags_a_second_baseline_year(loaded_db):
     """A new baseline year stores every PMID twice; `status` should say so."""
     from pubmed2db.db import connect, register_source_file
 
-    db_path = tmp_path / "cli.duckdb"
+    db_path = loaded_db
     con = connect(db_path)
-    _build_db(con, gz_fixture)
     register_source_file(con, "pubmed25n0001.xml.gz", kind="baseline")
     con.close()
 
@@ -189,14 +159,9 @@ def test_connect_applies_duckdb_tuning(tmp_path):
         con.close()
 
 
-def test_cli_threads_and_temp_dir_options(tmp_path, gz_fixture):
+def test_cli_threads_and_temp_dir_options(tmp_path, loaded_db):
     """The group-level `--threads`/`--temp-dir` options reach the connection."""
-    from pubmed2db.db import connect
-
-    db_path = tmp_path / "cli.duckdb"
-    con = connect(db_path)
-    _build_db(con, gz_fixture)
-    con.close()
+    db_path = loaded_db
 
     result = CliRunner().invoke(
         main,
@@ -295,7 +260,7 @@ def test_cli_update_survives_a_failed_journal_refresh(staged_download, monkeypat
         (path, "baseline" if path.parent.name == "baseline" else "update")
         for path in Path(staged_download).glob("pubmed/*/*.xml.gz")
     ]
-    monkeypatch.setattr(cli, "_local_files", lambda: files)
+    monkeypatch.setattr(download, "local_files", lambda: files)
     monkeypatch.setattr(download, "sync", lambda con, **kwargs: [])
 
     def boom(con):

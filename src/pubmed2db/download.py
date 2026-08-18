@@ -155,6 +155,20 @@ def _sync_kind(
     return results
 
 
+def local_files() -> list[tuple[Path, str]]:
+    """Enumerate already-downloaded PubMed files as ``(path, kind)``.
+
+    The same shape :func:`sync` returns, for the files already on disk: `load`
+    works from this rather than from one sync's results, so files downloaded by
+    an earlier run (or by rsync) aren't skipped.
+    """
+    return [
+        (path, kind)
+        for module, kind in ((BASELINE_MODULE, "baseline"), (UPDATES_MODULE, "update"))
+        for path in Path(module.base).glob("*.xml.gz")
+    ]
+
+
 def sync(
     con: duckdb.DuckDBPyConnection,
     *,

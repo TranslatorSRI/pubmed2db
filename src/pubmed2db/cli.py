@@ -13,17 +13,25 @@ from click.core import ParameterSource
 from . import __version__
 from .db import connect
 
-DEFAULT_DATA_DIR = os.environ.get("PUBMED2DB_DATA_DIR", "data")
+def _load_local(con, *, force: bool, require_files: bool) -> None:
+    """Load every downloaded file, reporting the counts the CLI prints.
 
+    Scans the download directories rather than one sync's results, so files
+    downloaded by an earlier run aren't skipped. Shared by `load` and `update`,
+    which differ only in whether an empty directory is an error.
+    """
+    from .download import local_files
+    from .load import load_files
 
-def _local_files() -> list[tuple[Path, str]]:
-    """Enumerate already-downloaded PubMed files (baseline + updates)."""
-    from pubmed_downloader.api import BASELINE_MODULE, UPDATES_MODULE
-
-    files: list[tuple[Path, str]] = []
-    for module, kind in ((BASELINE_MODULE, "baseline"), (UPDATES_MODULE, "update")):
-        files.extend((path, kind) for path in Path(module.base).glob("*.xml.gz"))
-    return files
+    files = local_files()
+    if require_files and not files:
+        raise click.ClickException("No downloaded files found; run `pubmed2db download` first.")
+    loaded, failed = load_files(con, files, force=force)
+    click.echo(f"Loaded {loaded} file(s); {len(files)} local file(s) checked.")
+    if failed:
+        raise click.ClickException(
+            f"{len(failed)} file(s) failed to load: {', '.join(failed)}"
+        )
 
 
 def _sync_options(f):
@@ -45,7 +53,7 @@ def _sync_options(f):
 @click.version_option(__version__)
 @click.option(
     "--data-dir",
-    default=DEFAULT_DATA_DIR,
+    default="data",
     show_default=True,
     help="Root directory for downloaded PubMed files and the database.",
 )
@@ -140,20 +148,8 @@ def load(ctx: click.Context, force: bool) -> None:
     Loads article data only. Run `pubmed2db journals` to (re)load the journal
     dimension used at export time, or `pubmed2db update` to do everything.
     """
-    from .load import load_files
-
     with closing(_connect(ctx)) as con:
-        files = _local_files()
-        if not files:
-            raise click.ClickException(
-                "No downloaded files found; run `pubmed2db download` first."
-            )
-        loaded, failed = load_files(con, files, force=force)
-        click.echo(f"Loaded {loaded} file(s); {len(files)} local file(s) checked.")
-        if failed:
-            raise click.ClickException(
-                f"{len(failed)} file(s) failed to load: {', '.join(failed)}"
-            )
+        _load_local(con, force=force, require_files=True)
 
 
 @main.command()
@@ -297,7 +293,7 @@ def update(
 ) -> None:
     """Download, refresh journals, and load — for scheduled runs."""
     from .download import sync
-    from .load import load_files, load_journals
+    from .load import load_journals
 
     with closing(_connect(ctx)) as con:
         results = sync(con, baseline=baseline, updates=updates, limit=limit, verify=verify)
@@ -312,16 +308,7 @@ def update(
             click.echo(
                 f"Journal refresh failed ({exc}); keeping the existing journals.", err=True
             )
-        # Scan the full local directory (like `load`), not just the files this
-        # run's sync() happened to return, so previously-downloaded-but-not-yet
-        # loaded files aren't silently skipped.
-        files = _local_files()
-        loaded, failed = load_files(con, files, force=force)
-        click.echo(f"Loaded {loaded} file(s); {len(files)} local file(s) checked.")
-        if failed:
-            raise click.ClickException(
-                f"{len(failed)} file(s) failed to load: {', '.join(failed)}"
-            )
+        _load_local(con, force=force, require_files=False)
 
 
 if __name__ == "__main__":
