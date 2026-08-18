@@ -285,3 +285,29 @@ def test_known_file_without_a_checksum_is_not_treated_as_new(con, monkeypatch, t
     assert con.execute(
         "SELECT downloaded_at FROM source_file WHERE file_name = ?", [file_name]
     ).fetchone()[0] == before
+
+
+def test_a_missing_local_file_is_verified_when_refetched(con, monkeypatch, tmp_path):
+    """A known file that vanished locally is downloaded again even though its
+    published checksum never moved -- those bytes have never been hashed, so
+    --verify must not skip them."""
+    from pubmed2db.db import register_source_file
+
+    file_name = "pubmed25n0001.xml.gz"
+    register_source_file(con, file_name, kind="update", published_md5=_GOOD_MD5)
+    blob = tmp_path / file_name  # absent: pruned, or an interrupted transfer
+    ensure_module = _FakeEnsure(blob, payload=b"corrupt")
+
+    results = _sync_kind(
+        con,
+        monkeypatch,
+        tmp_path,
+        urls=[f"https://example.invalid/updatefiles/{file_name}"],
+        body=f"MD5(x)= {_GOOD_MD5}",
+        registry={file_name: _GOOD_MD5},
+        ensure_module=ensure_module,
+        verify=True,
+    )
+
+    assert results == []
+    assert not blob.exists()

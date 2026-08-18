@@ -103,9 +103,17 @@ def _sync_kind(
         # before fetching, whether or not we go on to hash it. Only when we had
         # a prior checksum to compare — a first sync over an existing cache must
         # not re-download the whole corpus.
+        local_path = Path(ensure_module.join(name=file_name))
         if prior is not None and published_md5 is not None and prior != published_md5:
             logger.info("published md5 changed for %s; re-downloading", file_name)
-            Path(ensure_module.join(name=file_name)).unlink(missing_ok=True)
+            local_path.unlink(missing_ok=True)
+
+        # Whether ensure() will actually transfer bytes: it skips by file name,
+        # so a file already on disk is left alone. One that vanished locally —
+        # pruned to reclaim disk, or an interrupted earlier transfer — is
+        # fetched again even when its published checksum never moved, and those
+        # bytes have never been hashed.
+        fetched = not local_path.exists()
 
         path = Path(ensure_module.ensure(url=url))
 
@@ -113,7 +121,7 @@ def _sync_kind(
         # re-hashing an unchanged, already-verified corpus costs tens of GiB of
         # I/O per sync and, since PubMed files are immutable, never catches
         # anything. Corruption happens at download time, which is still covered.
-        if verify and published_md5 is not None and changed:
+        if verify and published_md5 is not None and (changed or fetched):
             actual = file_md5(path)
             if actual != published_md5:
                 logger.warning(
