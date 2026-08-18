@@ -199,8 +199,8 @@ still fetched, so a changed published checksum is always detected.
 - This tool is intended to eventually replace the PubMed download in
   [Babel](https://github.com/NCATSTranslator/Babel) (`createcompendia/publications.py`).
 
-See [`CLAUDE.md`](./CLAUDE.md) for architecture and design decisions, and
-[`FUTURE.md`](./FUTURE.md) for known limitations and planned work.
+See [`AGENTS.md`](./AGENTS.md) for a map of the source and the design decisions
+behind it, and [`FUTURE.md`](./FUTURE.md) for known limitations and planned work.
 
 ## Information on running this pipeline
 

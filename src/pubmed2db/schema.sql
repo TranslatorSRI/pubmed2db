@@ -12,6 +12,15 @@
 -- `file_order_key` encodes PubMed's chronological order: baseline files come
 -- first, then updatefiles in ascending number, and the year prefix increments
 -- across years. It is computed as (year_yy * 1000000 + file_number).
+--
+-- Convention: this file only ever ADDS, and it runs on every connect. Tables are
+-- `CREATE TABLE IF NOT EXISTS`, so a column added to a table here does *not*
+-- appear in a database created before it — it needs its own
+-- `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` line right below the table (see
+-- `source_file.n_failed`). Nothing here drops a table or column, so a table
+-- removed from this file keeps its rows forever in an existing database: after a
+-- schema change, rebuild rather than `load --force` (see the README's
+-- "`load --force` or a fresh database?").
 
 -- Registry of every PubMed XML file we know about. Drives incremental loads.
 CREATE TABLE IF NOT EXISTS source_file (

@@ -23,8 +23,8 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
   `pubmed_downloader.catalog.process_journal_overview()` no longer requires
   `start_year`/`end_year` (broken in ≤ 0.0.14 — those fields aren't in
   `J_Entrez.txt`, filed at https://github.com/cthoyt/pubmed-downloader/pull/16).
-  Then we can go back to using the library's `Journal` model
-  directly. See `CLAUDE.md`.
+  Then we can go back to using the library's `Journal` model directly. See
+  `load._parse_journal_overview` for what we do instead.
 - **`cites_pubmed_ids` never matches, but we no longer care.** `_extract_article`
   searches `medline_citation.findall(".//ReferenceList/Reference")`, but PubMed
   nests `<ReferenceList>` under `<PubmedData>`, so `Article.cites_pubmed_ids` is
