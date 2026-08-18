@@ -172,9 +172,9 @@ def test_source_file_registry_counts(loaded_con):
 
 
 def test_status_latest_count_matches_the_view(loaded_con):
-    """`status` counts latest documents with a cheaper aggregate than the
-    latest_article view (which is the export-sized query); they must agree --
-    including the fixtures' revised and deleted PMIDs."""
+    """`status`'s latest-document count is the `latest_article` view; pinned so
+    a future "cheaper" rewrite of it has to keep agreeing with the view --
+    including on the fixtures' revised and deleted PMIDs."""
     from pubmed2db.status import summarize
 
     expected = loaded_con.execute("SELECT count(*) FROM latest_article").fetchone()[0]
