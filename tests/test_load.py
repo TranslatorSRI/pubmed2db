@@ -179,3 +179,68 @@ def test_status_latest_count_matches_the_view(loaded_con):
 
     expected = loaded_con.execute("SELECT count(*) FROM latest_article").fetchone()[0]
     assert summarize(loaded_con)["latest_documents"] == expected
+
+
+def test_registry_records_the_skip_counts(con, gz_fixture, tmp_path):
+    """Skipped records never become rows, so no downstream count is short --
+    the registry is the only place they can be queried from."""
+    import gzip
+
+    from pubmed2db.load import load_file
+
+    src = gz_fixture("pubmed25n0001")
+    with gzip.open(src, "rt", encoding="utf-8") as handle:
+        xml = handle.read()
+    book = (
+        "<PubmedBookArticle><BookDocument><PMID Version='1'>9001</PMID>"
+        "<ArticleTitle>A chapter</ArticleTitle></BookDocument></PubmedBookArticle>"
+    )
+    path = tmp_path / "pubmed25n0007.xml.gz"
+    with gzip.open(path, "wt", encoding="utf-8") as handle:
+        handle.write(xml.replace("</PubmedArticleSet>", book + "</PubmedArticleSet>"))
+
+    load_file(con, path, kind="baseline")
+
+    assert con.execute(
+        "SELECT n_failed, n_book_records FROM source_file WHERE file_name = ?",
+        [path.name],
+    ).fetchone() == (0, 1)
+
+    from pubmed2db.status import summarize
+
+    assert summarize(con)["skipped_records"] == 1
+
+
+def test_schema_migrates_a_database_without_the_skip_columns(tmp_path):
+    """`CREATE TABLE IF NOT EXISTS` leaves an existing database at its old shape,
+    so the columns added after the first release need their own migration."""
+    import duckdb
+
+    from pubmed2db.db import connect, init_schema
+
+    db_path = tmp_path / "old.duckdb"
+    old = duckdb.connect(db_path)
+    old.execute(
+        """
+        CREATE TABLE source_file (
+            file_name TEXT PRIMARY KEY, kind TEXT NOT NULL, year_yy INTEGER NOT NULL,
+            file_number INTEGER NOT NULL, file_order_key BIGINT NOT NULL,
+            published_md5 TEXT, downloaded_at TIMESTAMP, processed_at TIMESTAMP,
+            n_articles INTEGER, n_deletions INTEGER
+        )
+        """
+    )
+    old.execute(
+        "INSERT INTO source_file VALUES "
+        "('pubmed25n0001.xml.gz', 'baseline', 25, 1, 25000001, NULL, NULL, NULL, NULL, NULL)"
+    )
+    old.close()
+
+    con = connect(db_path)
+    try:
+        init_schema(con)  # idempotent: the migration must survive a second run
+        assert con.execute(
+            "SELECT n_failed, n_book_records FROM source_file"
+        ).fetchall() == [(None, None)]
+    finally:
+        con.close()

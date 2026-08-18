@@ -84,6 +84,7 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         last_download,
         loaded_files,
         last_load,
+        skipped_records,
         baseline_years,
     ) = con.execute(
         """
@@ -97,6 +98,7 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
             max(downloaded_at),
             count(*) FILTER (WHERE processed_at IS NOT NULL),
             max(processed_at),
+            coalesce(sum(n_failed), 0) + coalesce(sum(n_book_records), 0),
             -- More than one baseline year on disk means a new baseline landed:
             -- every PMID is stored twice and only the newest year is exported.
             list_sort(list(DISTINCT year_yy) FILTER (
@@ -133,6 +135,7 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         "loaded_files": loaded_files,
         "pending_files": pending_files,
         "last_load": last_load,
+        "skipped_records": skipped_records,
         "article_versions": article_versions,
         "latest_documents": latest_documents,
         "journals": journals,

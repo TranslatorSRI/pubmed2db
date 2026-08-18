@@ -183,8 +183,9 @@ def load_parsed(
             """
             INSERT INTO source_file
                 (file_name, kind, year_yy, file_number, file_order_key,
-                 downloaded_at, processed_at, n_articles, n_deletions)
-            VALUES (?, ?, ?, ?, ?, now(), now(), ?, ?)
+                 downloaded_at, processed_at, n_articles, n_deletions,
+                 n_failed, n_book_records)
+            VALUES (?, ?, ?, ?, ?, now(), now(), ?, ?, ?, ?)
             ON CONFLICT (file_name) DO UPDATE SET
                 kind = excluded.kind,
                 -- Files obtained outside `download` (rsync/FTP) have no
@@ -197,7 +198,9 @@ def load_parsed(
                 file_order_key = excluded.file_order_key,
                 processed_at = excluded.processed_at,
                 n_articles = excluded.n_articles,
-                n_deletions = excluded.n_deletions
+                n_deletions = excluded.n_deletions,
+                n_failed = excluded.n_failed,
+                n_book_records = excluded.n_book_records
             """,
             [
                 source_file,
@@ -207,6 +210,8 @@ def load_parsed(
                 order_key,
                 len(deduped),
                 len(parsed.deleted_pmids),
+                parsed.n_failed,
+                parsed.n_book_records,
             ],
         )
         con.execute("COMMIT")
@@ -229,11 +234,13 @@ def load_file(
     parsed = parse_file(path)
     n_articles = load_parsed(con, parsed, source_file, kind=kind)
     logger.info(
-        "loaded %s: %d articles, %d deletions, %d failed to parse (peak RSS %.1f GiB)",
+        "loaded %s: %d articles, %d deletions, %d failed to parse, "
+        "%d book record(s) skipped (peak RSS %.1f GiB)",
         source_file,
         n_articles,
         len(parsed.deleted_pmids),
         parsed.n_failed,
+        parsed.n_book_records,
         peak_rss_gib(),
     )
     return parsed

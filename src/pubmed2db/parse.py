@@ -57,6 +57,7 @@ class ParsedFile:
     articles: list[ParsedArticle] = field(default_factory=list)
     deleted_pmids: list[int] = field(default_factory=list)
     n_failed: int = 0
+    n_book_records: int = 0
 
 
 _PUBDATE_PATH = "MedlineCitation/Article/Journal/JournalIssue/PubDate"
@@ -177,12 +178,12 @@ def parse_file(path: str | Path) -> ParsedFile:
     # so Bookshelf citations can share these files. We parse journal citations
     # only; say how many records that skipped rather than dropping them silently
     # — the count is what issue #27 needs to decide whether to support them.
-    n_book_records = len(root.findall("PubmedBookArticle"))
-    if n_book_records:
+    result.n_book_records = len(root.findall("PubmedBookArticle"))
+    if result.n_book_records:
         logger.warning(
             "%s: skipped %d PubmedBookArticle record(s); book citations are not parsed (see #27)",
             path,
-            n_book_records,
+            result.n_book_records,
         )
 
     for pmid_tag in root.findall("DeleteCitation/PMID"):

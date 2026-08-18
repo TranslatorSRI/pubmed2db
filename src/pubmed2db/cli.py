@@ -269,6 +269,11 @@ def status(ctx: click.Context) -> None:
                 "→ run `pubmed2db load`"
             )
         click.echo(f"           last load: {_fmt_ts(s['last_load'])}")
+        if s["skipped_records"]:
+            # Records the loader could not store: extractor rejections plus book
+            # citations. Kept visible because they are otherwise invisible —
+            # they never become rows, so no count downstream is short.
+            click.echo(f"           {s['skipped_records']} record(s) skipped while parsing")
         click.echo(
             f"           {s['article_versions']} article version(s); "
             f"{s['latest_documents']} latest document(s)"

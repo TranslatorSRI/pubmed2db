@@ -24,8 +24,17 @@ CREATE TABLE IF NOT EXISTS source_file (
     downloaded_at  TIMESTAMP,
     processed_at   TIMESTAMP,                  -- NULL until loaded into the tables
     n_articles     INTEGER,
-    n_deletions    INTEGER
+    n_deletions    INTEGER,
+    n_failed       INTEGER,                    -- records the extractor rejected
+    n_book_records INTEGER                     -- <PubmedBookArticle>, not parsed
 );
+
+-- CREATE TABLE IF NOT EXISTS leaves an existing database at its old shape, so
+-- columns added after the first release need their own migration. Adding a
+-- nullable column is a metadata-only change in DuckDB; NULL reads as "loaded
+-- before this column existed", which is not the same as a counted zero.
+ALTER TABLE source_file ADD COLUMN IF NOT EXISTS n_failed INTEGER;
+ALTER TABLE source_file ADD COLUMN IF NOT EXISTS n_book_records INTEGER;
 
 -- Records when steps that leave no other timestamp were last run (currently just
 -- `journals`, whose tables are replaced wholesale). Download/load recency is
