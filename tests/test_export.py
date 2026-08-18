@@ -160,3 +160,41 @@ def test_parquet_exports_every_table(loaded_con, tmp_path):
         ).fetchall()
     }
     assert {path.stem for path in written} == tables
+
+
+def test_placeholder_looking_fields_survive_to_the_export(con, gz_fixture, tmp_path):
+    """A validation run flagged two records as exporting blank where Entrez has a
+    value: a non-numeric `<Issue>Suppl</Issue>` and an `<ArticleTitle>` of the
+    literal "[Not Available].". Neither is dropped anywhere in the pipeline."""
+    import json
+
+    from pubmed2db.export import export_json
+    from pubmed2db.load import load_file
+
+    load_file(con, gz_fixture("pubmed25n0004"), kind="baseline")
+    out = tmp_path / "json"
+    export_json(con, out, shards=1)
+
+    docs = {
+        json.loads(line)["id"]: json.loads(line)
+        for line in (out / "pubmed_metadata_00000.ndjson").read_text().splitlines()
+    }
+    assert docs["PMID:10137601"]["issue"] == "Suppl"
+    assert docs["PMID:10137601"]["volume"] == "3 Suppl"
+    assert docs["PMID:28972331"]["article_title"] == "[Not Available]."
+
+
+def test_parquet_export_removes_a_dropped_table_s_file(loaded_con, tmp_path):
+    """A re-export overwrites its own file names, so a table removed from the
+    schema would otherwise leave its Parquet behind for consumers to glob."""
+    from pubmed2db.export import export_parquet
+
+    out = tmp_path / "parquet"
+    out.mkdir()
+    orphan = out / "reference_citation.parquet"  # dropped from schema.sql
+    orphan.write_bytes(b"stale")
+
+    written = export_parquet(loaded_con, out)
+
+    assert not orphan.exists()
+    assert set(out.glob("*.parquet")) == set(written)
