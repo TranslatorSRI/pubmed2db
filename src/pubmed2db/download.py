@@ -119,17 +119,21 @@ def _sync_kind(
                 )
                 path.unlink(missing_ok=True)
                 path = Path(ensure_module.ensure(url=url))
-                # A retry that is also corrupt must not be registered as good:
-                # leave the file as it was so a later sync tries again.
+                # A retry that is also corrupt must not be registered as good.
+                # Delete it too: `load` globs the download directories rather
+                # than reading sync()'s return value, so a corrupt file left on
+                # disk would be loaded anyway — and, being unregistered, would
+                # be re-parsed on every later run.
                 actual = file_md5(path)
                 if actual != published_md5:
                     logger.error(
                         "md5 still mismatched for %s after re-downloading "
-                        "(got %s, expected %s); leaving it unregistered",
+                        "(got %s, expected %s); discarding it",
                         file_name,
                         actual,
                         published_md5,
                     )
+                    path.unlink(missing_ok=True)
                     continue
                 changed = True
 

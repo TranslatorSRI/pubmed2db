@@ -215,6 +215,7 @@ def test_persistently_corrupt_file_is_discarded(con, monkeypatch, tmp_path):
 
     assert results == []
     assert con.execute("SELECT count(*) FROM source_file").fetchone()[0] == 0
+    assert not blob.exists()
 
 
 def test_verify_only_hashes_new_or_changed_files(con, monkeypatch, tmp_path):
