@@ -82,6 +82,21 @@ def test_json_export_uses_spec_fields(loaded_con, tmp_path):
     }
 
 
+def test_curie_sql_is_derived_from_id_prefixes():
+    """The exporter's CURIEs come from ID_PREFIXES, not a second hand-written list.
+
+    `validate` rebuilds the CURIEs it expects from the same mapping, so a
+    re-hardcoded `CASE`/`IN` in the SQL would let a new id type or a casing fix
+    reach the validator alone — reporting every sampled record as a mismatch
+    against a correct export.
+    """
+    from pubmed2db.export import ID_PREFIXES, _LATEST_METADATA_SQL
+
+    for id_type, prefix in ID_PREFIXES.items():
+        assert f"'{id_type}'" in _LATEST_METADATA_SQL
+        assert f"'{prefix}:'" in _LATEST_METADATA_SQL
+
+
 def test_json_export_empty_string_not_null(loaded_con, tmp_path):
     from pubmed2db.export import export_json
 

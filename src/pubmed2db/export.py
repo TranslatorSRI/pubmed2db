@@ -46,6 +46,16 @@ _OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid", "pipe
 #: case-insensitive per spec and PubMed is not consistent).
 ID_PREFIXES = {"doi": "doi", "pmc": "PMC"}
 
+#: The same mapping as SQL, derived rather than restated: `validate` imports
+#: `ID_PREFIXES` to rebuild the CURIEs it expects, so a hand-written `CASE` here
+#: would let a new id type or a casing fix reach the validator without reaching
+#: the export, and every sampled record would be reported as a mismatch against
+#: a correct export. No `ELSE` branch: an unlisted type cannot pass the `WHERE`.
+_ID_CURIE_SQL = "CASE id_type " + " ".join(
+    f"WHEN '{t}' THEN '{prefix}:'" for t, prefix in ID_PREFIXES.items()
+) + " END"
+_ID_TYPES_SQL = ", ".join(f"'{t}'" for t in ID_PREFIXES)
+
 
 #: Month abbreviations, frozen rather than taken from ``calendar.month_abbr``:
 #: that is ``strftime('%b')`` under ``LC_TIME``, so any dependency calling
@@ -102,7 +112,7 @@ def _year_from_medline_date(raw: str | None) -> str:
 #: Joining `article_id` on (pmid, source_file) — the same key `abs` uses —
 #: confines the identifiers to the article's *latest* version, so a DOI or PMCID
 #: that only ever appeared on a superseded version does not leak into the export.
-_LATEST_METADATA_SQL = """
+_LATEST_METADATA_SQL = f"""
 WITH abs AS (
     SELECT pmid, source_file, string_agg(text, ' ' ORDER BY seq) AS abstract
     FROM abstract_text a
@@ -117,10 +127,10 @@ WITH abs AS (
 ),
 ids AS (
     SELECT pmid, source_file, list_sort(list_distinct(list(
-        CASE id_type WHEN 'doi' THEN 'doi:' ELSE 'PMC:' END || id_value
+        {_ID_CURIE_SQL} || id_value
     ))) AS identifiers
     FROM article_id ai
-    WHERE id_type IN ('doi', 'pmc')
+    WHERE id_type IN ({_ID_TYPES_SQL})
       -- Same reason as `abs` above: restrict before aggregating, so the
       -- group-by does not span the whole version history.
       AND EXISTS (
