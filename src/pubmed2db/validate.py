@@ -515,7 +515,14 @@ def _eutils(
         except requests.RequestException as exc:
             last_exc = exc
             logger.warning("eutils %s attempt %d failed: %s", endpoint, attempt + 1, exc)
-            time.sleep(min(2**attempt, 10))
+            # raise_for_status() also fires for 4xx, which no amount of retrying
+            # fixes (a bad api_key would burn every attempt plus its backoff).
+            # A connection error carries no response, so it stays retryable.
+            status = getattr(exc.response, "status_code", None)
+            if status is not None and status not in _RETRY_STATUS:
+                break
+            if attempt < retries - 1:
+                time.sleep(min(2**attempt, 10))
     raise RuntimeError(f"eutils {endpoint} failed after {retries} attempts") from last_exc
 
 
@@ -815,7 +822,23 @@ def check_fields(
         return
 
     pmids = sorted(sample)
-    fetched = efetch_documents(pmids, api_key=api_key, email=email)
+    try:
+        fetched = efetch_documents(pmids, api_key=api_key, email=email)
+    except Exception as exc:  # as the other online checks do: degrade, don't die
+        # The report and the --manifest sidecar are both written after every
+        # check, so letting this escape would throw away the offline structure
+        # and coverage results too — the expensive part of an HPC run.
+        logger.warning("could not fetch the sampled records: %s", exc)
+        for name, expectation in expectations.items():
+            report.record(
+                name, "field accuracy", expectation, WARN,
+                f"Entrez unreachable: {exc}",
+                code="field_check_unreachable",
+                message=f"Could not fetch the sampled records: {exc}",
+                count=len(pmids), see="checks.field_validation",
+            )
+        report.checks["field_validation"] = {"sampled": len(pmids), "checked": 0}
+        return
 
     mismatches: list[dict] = []
     soft_mismatches: list[dict] = []

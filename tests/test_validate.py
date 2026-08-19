@@ -464,3 +464,42 @@ def test_examples_are_capped_but_counted():
         found.append({"line": i})
     assert len(found) == validate._MAX_EXAMPLES + 500
     assert len(found.examples) == validate._MAX_EXAMPLES
+
+
+def test_offline_results_survive_an_entrez_outage(export_dir, loaded_con, monkeypatch):
+    """A mid-run network failure must not discard the offline checks or the manifest."""
+    def dead(endpoint, params, **_):
+        if endpoint == "efetch.fcgi":
+            raise RuntimeError("eutils efetch.fcgi failed after 3 attempts")
+        return _fake_eutils_factory(_EFETCH)(endpoint, params)
+
+    monkeypatch.setattr(validate, "_eutils", dead)
+    report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
+
+    assert report["checks"]["structure"]["records_total"] == 2
+    assert any(w["code"] == "field_check_unreachable" for w in report["warnings"])
+    assert report["checks"]["field_validation"] == {"sampled": 2, "checked": 0}
+
+
+def test_permanent_http_errors_are_not_retried(monkeypatch):
+    """A 4xx (a bad api_key, say) fails on the first call: retrying cannot fix it."""
+    import requests
+
+    calls = []
+
+    class _Resp:
+        status_code = 400
+
+        def raise_for_status(self):
+            raise requests.HTTPError("400 Client Error", response=self)
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append(url)
+        return _Resp()
+
+    monkeypatch.setattr(validate.requests, "get", fake_get)
+    monkeypatch.setattr(validate.time, "sleep", lambda _: pytest.fail("slept on a 4xx"))
+
+    with pytest.raises(RuntimeError):
+        validate._eutils("einfo.fcgi", {"db": "pubmed"}, api_key="bad", email=None)
+    assert len(calls) == 1
