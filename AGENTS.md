@@ -23,8 +23,10 @@ explains its part; this table is only a map.
 | `src/pubmed2db/parse.py` | Self-driven XML iteration over each file. |
 | `src/pubmed2db/load.py` | Loads parsed files (full history, provenance-tagged), delete logic, journal dimension. |
 | `src/pubmed2db/export.py` | JSON + Parquet export. |
+| `src/pubmed2db/validate.py` | Post-export checks over a directory of NDJSON shards; emits a gated JSON report. |
 | `src/pubmed2db/status.py` | Pipeline-readiness checks derived from DB state. |
-| `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`, `status`. |
+| `src/pubmed2db/util.py` | Shared helpers for the long steps: progress/ETA, durations, peak RSS. |
+| `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`, `status`, `validate`. |
 
 ## Decisions that are not visible from the code
 
@@ -39,6 +41,24 @@ explains its part; this table is only a map.
   consumer wants. `parse._cited_pmids` is parked (uncalled) with re-enabling
   instructions in its docstring; `test_no_reference_citation_table` stops it
   creeping back.
+- **An efetch mismatch is not evidence about what we parsed.** `validate`
+  compares the export against Entrez `efetch`, but efetch output is a
+  *rendering*, not the archival XML: it serves PMID 152567 as
+  `<Year>1978</Year><Season>Jul-Aug</Season>` where the baseline file it was
+  loaded from holds a bare `<MedlineDate>1978 Jul-Aug</MedlineDate>` and no
+  `<Year>` at all. Diagnosing a field mismatch from efetch alone points at the
+  wrong layer — download the baseline file containing the PMID and read the raw
+  element before changing any parsing or export code.
+- **`validate.py` is one 1,400-line module on purpose.** Splitting it by check
+  would add import edges without reducing what you must read: every check needs
+  `Report.record` and the example accumulators, most need `efetch_documents`, and
+  that coupling is what makes the report's "the arrays cannot drift from the
+  checks" property hold. The banner comments run in execution order, which is the
+  navigability a split would have bought. Two things would change the answer: a
+  second consumer of the Entrez client (`_RateLimiter`/`_eutils`/
+  `efetch_documents`, ~110 lines, the one cleanly separable seam), or
+  `run_validation` growing past its 14 keyword arguments — the latter wants an
+  options dataclass *within* the file, not a split.
 - **Three upstream bugs are worked around**, each written up in `FUTURE.md` and
   pinned by a test, so they fail loudly once upstream fixes them. Two upstream
   *behaviours* are also easy to assume backwards (`_ensure_urls` sorts

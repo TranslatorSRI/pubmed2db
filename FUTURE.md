@@ -14,6 +14,16 @@ below are deliberately deferred.
   Verify this matches what Node Annotator's ElasticSearch ingest expects (id
   field, shard sizing, gzip?).
 
+## Validation (`validate`)
+
+- **Richer deletion status** (#30). Deletion confirmation currently treats
+  "efetch returns nothing" as deleted. Entrez `esummary` distinguishes deleted
+  vs. merged/moved records; use it to label merges explicitly rather than
+  surfacing them as "still live → review manually".
+- **Semantic field tolerance** (#31). Journal name/abbrev come from the NLM
+  Catalog dimension, not the article XML, so they are compared as *soft*
+  (warning-only) fields; revisit if a stricter journal cross-check is wanted.
+
 ## Upstream dependency (`cthoyt/pubmed-downloader`)
 
 The dependency is pinned `<0.1` because we call private APIs (`_extract_article`,

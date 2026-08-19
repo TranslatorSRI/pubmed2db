@@ -220,6 +220,118 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int, gzip_output: boo
         )
 
 
+@main.command()
+@click.argument("directory", type=click.Path(exists=True, file_okay=False))
+@click.option("--previous-report", type=click.Path(exists=True, dir_okay=False), default=None,
+              help="Prior validation_report.json to compare coverage against.")
+@click.option("--previous-manifest", type=click.Path(exists=True, dir_okay=False), default=None,
+              help="Prior pmids.txt.gz manifest; reports which PMIDs disappeared "
+                   "since that export.")
+@click.option("--manifest", "manifest", type=click.Path(dir_okay=False), default=None,
+              help="Write this export's sorted PMID manifest here (gzipped), for a "
+                   "later run to diff against with --previous-manifest.")
+@click.option("--sample-size", type=int, default=15, show_default=True,
+              help="Records sampled per shard for API field validation.")
+@click.option("--drop-sample", type=int, default=10, show_default=True,
+              help="Dropped PMIDs sampled for deletion confirmation.")
+@click.option("--seed", type=int, default=0, show_default=True,
+              help="Seed for reproducible sampling.")
+@click.option("--abstract-threshold", type=float, default=0.90, show_default=True,
+              help="Minimum abstract similarity ratio before it counts as a mismatch.")
+@click.option("--online/--offline", default=True, show_default=True,
+              help="Run the Entrez API checks, or offline structure/DB checks only.")
+@click.option("--api-key", default=None, envvar="NCBI_API_KEY",
+              help="NCBI API key (raises the rate limit to 10 req/s).")
+@click.option("--email", default=None, envvar="NCBI_EMAIL",
+              help="Contact email sent to NCBI, per their usage etiquette.")
+@click.option("--entrez-low", type=float, default=0.95, show_default=True,
+              help="Lower bound of the acceptable exported/Entrez fraction. "
+                   "Widen for a partial export (e.g. a --limit test run).")
+@click.option("--entrez-high", type=float, default=1.05, show_default=True,
+              help="Upper bound of the acceptable exported/Entrez fraction.")
+@click.option("--out", type=click.Path(dir_okay=False), default=None,
+              help="Report path (default: <directory>/validation_report.json).")
+@click.option("--fail-on-warn", is_flag=True, help="Exit non-zero on warnings too.")
+@click.pass_context
+def validate(
+    ctx: click.Context,
+    directory: str,
+    previous_report: str | None,
+    previous_manifest: str | None,
+    manifest: str | None,
+    sample_size: int,
+    drop_sample: int,
+    seed: int,
+    abstract_threshold: float,
+    online: bool,
+    api_key: str | None,
+    email: str | None,
+    entrez_low: float,
+    entrez_high: float,
+    out: str | None,
+    fail_on_warn: bool,
+) -> None:
+    """Validate a directory of exported NDJSON shards and write a report.
+
+    Writes a pretty-printed validation_report.json alongside the export whose
+    leading errors/warnings arrays are empty when everything checks out. Exits
+    non-zero on errors (add --fail-on-warn to also fail on warnings). The DuckDB
+    database is used when present; pass --offline to skip all network checks.
+    """
+    from .status import articles_loaded
+    from .validate import format_summary, run_validation, write_report
+
+    export_dir = Path(directory)
+    out_path = Path(out) if out else export_dir / "validation_report.json"
+
+    # Use the database only if it already exists and has articles loaded; never
+    # create it here, and leave DB-derived sections blank when it is unavailable.
+    con = None
+    db_path = Path(ctx.obj["db"])
+    if db_path.exists():
+        candidate = _connect(ctx)
+        if articles_loaded(candidate):
+            con = candidate
+        else:
+            candidate.close()
+
+    try:
+        if online and not email:
+            click.echo(
+                "Warning: no --email/NCBI_EMAIL set; NCBI asks that API callers "
+                "identify themselves.",
+                err=True,
+            )
+        report = run_validation(
+            export_dir,
+            con=con,
+            previous_report=Path(previous_report) if previous_report else None,
+            previous_manifest=Path(previous_manifest) if previous_manifest else None,
+            manifest_out=Path(manifest) if manifest else None,
+            sample_size=sample_size,
+            drop_sample=drop_sample,
+            seed=seed,
+            abstract_threshold=abstract_threshold,
+            online=online,
+            api_key=api_key,
+            email=email,
+            entrez_low=entrez_low,
+            entrez_high=entrez_high,
+        )
+    finally:
+        if con is not None:
+            con.close()
+
+    write_report(report, out_path)
+    click.echo(format_summary(report))
+    click.echo(f"Report written to {out_path}")
+
+    if report["status"] == "fail":
+        ctx.exit(1)
+    if report["status"] == "warn" and fail_on_warn:
+        ctx.exit(2)
+
+
 def _fmt_ts(ts: object) -> str:
     """Render a timestamp for the status report, or 'never' if missing."""
     return ts.strftime("%Y-%m-%d %H:%M") if ts is not None else "never"

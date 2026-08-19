@@ -80,6 +80,10 @@ uv run pubmed2db --data-dir data update
 
 # Report what's been downloaded, loaded, and is ready to export (read-only).
 uv run pubmed2db --data-dir data status
+
+# Sanity-check a finished export and write validation_report.json alongside it.
+# (Uses the DB when present; --offline skips the Entrez API cross-checks.)
+uv run pubmed2db --data-dir data validate data/json --email you@example.com
 ```
 
 `--data-dir data` is the default, so omitting it gives the same result.
@@ -98,6 +102,77 @@ and `export` errors if nothing has been loaded, warns if some downloaded files
 have not been loaded yet, and warns if the journal dimension is empty (journal
 names would be blank). When in doubt, `uv run pubmed2db update` runs the whole pipeline
 (`download → journals → load`) in order.
+
+`uv run pubmed2db validate <dir>` inspects a finished JSON export and writes a
+`validation_report.json` (pretty-printed, archivable) whose leading
+`errors`/`warnings` arrays are empty when the export looks good. It confirms
+every record parses and has the expected fields, compares the exported count to
+both the live PubMed total and the local database, re-fetches a random sample
+from NCBI Entrez to confirm field values match, and confirms a sample of dropped
+PMIDs are genuinely gone. It exits non-zero on errors (`--fail-on-warn` also
+fails on warnings) so it can gate an HPC run; pass `--offline` to skip the
+network checks. Set `--email` (or `NCBI_EMAIL`) and optionally `--api-key` (or
+`NCBI_API_KEY`, which raises the rate limit) for the API checks.
+
+Stdout is a test report: every check is listed with what it expected and what it
+saw, so a reviewer can tell what was verified, what was skipped, and what is not
+covered at all. Abridged, from a full-corpus run:
+
+```
+Validation WARN: 40,901,984 record(s) in 16 shard(s) of data/json
+  database available · Entrez online, no API key (3 req/s; set NCBI_API_KEY for 10/s)
+  ran in 10m 51s, peak RSS 5.177 GiB
+
+COVERAGE
+  [pass] vs-entrez       within [95%, 105%] of the live PubMed total  40,901,984 of 40,944,369 (99.896%)
+  [pass] vs-database     matches the database's latest_article count  exact match (40,901,984)
+  [skip] vs-previous     coverage within 10% of the previous report's no --previous-report
+
+FIELD ACCURACY  (240 records sampled: 15/shard x 16 shards, seed 0)
+  [WARN] core-fields     <20% of compared fields differ from Entrez   20 of 1,600 differ (1.25%)
+         by field: 18x pub_year, 1x article_title, 1x issue
+            0 exported a different value (incorrect data)
+           20 exported blank where Entrez has a value (missing data)
+         e.g. PMID:152567 pub_year exported "" vs. Entrez "1978"
+
+NOT CHECKED
+  - compared strictly against Entrez: article_title, volume, issue, pub_year, ...
+  - identifiers other than the PMID (DOI, PMCID) are not part of this export
+  - MeSH terms, authors, affiliations and grants are stored in the DB, never exported
+```
+
+The `values_differ` count is printed **even when it is zero**, because that zero
+is the decision a reviewer has to make: fields left blank are a completeness gap
+that is safe to pass downstream, whereas a field exported with the *wrong* value
+is a correctness bug. `[skip]` means a check could have run with another flag or
+a network; `[n/a ]` means there was nothing to verify (no deletions to sample).
+
+Every line of that output is rendered from `validation_report.json`, which also
+gains a `checks_run` array — the same list, machine-readable, with structured
+mismatch tallies.
+
+Coverage counts alone cannot tell you that two exports of the same size hold the
+same *records*, so `validate` can write a sorted PMID manifest and diff against
+an earlier one:
+
+```bash
+# Archive this export's PMID set (gzipped, one PMID per line).
+uv run pubmed2db validate data/json --manifest data/json/pmids.txt.gz
+
+# Next month: report which PMIDs disappeared since that export.
+uv run pubmed2db validate data/json-new \
+    --previous-manifest data/json/pmids.txt.gz --manifest data/json-new/pmids.txt.gz
+```
+
+A dropped PMID is fine if the database recorded a `DeleteCitation` for it; one
+that vanished *without* a recorded deletion is an **error**, since it means
+records were lost rather than retired. With no database available the drops can't
+be attributed, so they downgrade to a warning to review.
+
+The coverage check expects the export to be within ±5% of the live PubMed total
+(the 2026-07-30 full run came in at 99.90% of it). A **partial** export — from a
+`--limit` test download — is legitimately far below that, so pass something like
+`--entrez-low 0.001` when validating one, or `--offline` to skip the comparison.
 
 Use `--limit N` on `download`/`update` to fetch only the newest N files when testing.
 
