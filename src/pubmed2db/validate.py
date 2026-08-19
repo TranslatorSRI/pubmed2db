@@ -31,7 +31,6 @@ sections skipped otherwise.
 
 from __future__ import annotations
 
-import calendar
 import difflib
 import gzip
 import json
@@ -46,7 +45,13 @@ import duckdb
 import requests
 from lxml import etree
 
-from .export import ID_PREFIXES, _document, _year_from_medline_date, month_to_abbrev
+from .export import (
+    ID_PREFIXES,
+    _MONTH_ABBR,
+    _document,
+    _year_from_medline_date,
+    month_to_abbrev,
+)
 from .util import fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
@@ -83,8 +88,11 @@ SOFT_FIELDS = ("journal_name", "journal_abbrev")
 
 _ID_RE = re.compile(r"^PMID:(\d+)$")
 
-#: Valid ``pub_month`` values: the 3-letter abbreviations, or empty.
-_VALID_MONTHS = frozenset(m for m in calendar.month_abbr if m) | {""}
+#: Valid ``pub_month`` values: the 3-letter abbreviations, or empty. Taken from
+#: the exporter's frozen tuple rather than ``calendar.month_abbr``, which is
+#: ``strftime('%b')`` under ``LC_TIME`` — a process that localizes it would make
+#: every correctly exported month read as invalid here.
+_VALID_MONTHS = frozenset(_MONTH_ABBR) | {""}
 
 #: How many records to include verbatim in an example list before truncating.
 _MAX_EXAMPLES = 20
@@ -218,6 +226,28 @@ def _capped(items: list) -> list:
     return items[:_MAX_EXAMPLES]
 
 
+class _Examples:
+    """Count findings while keeping only the first ``_MAX_EXAMPLES`` of them.
+
+    The report shows a capped list either way, so retaining every occurrence
+    buys nothing — and a systematic defect on the ~41M-record corpus (one blank
+    field per record, say) would otherwise cost gigabytes to describe a single
+    bug, OOM-killing the validation of exactly the export that was broken.
+    """
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.examples: list = []
+
+    def append(self, item) -> None:
+        self.count += 1
+        if len(self.examples) < _MAX_EXAMPLES:
+            self.examples.append(item)
+
+    def __len__(self) -> int:
+        return self.count
+
+
 # --------------------------------------------------------------------------- #
 # Reading shards
 # --------------------------------------------------------------------------- #
@@ -293,12 +323,13 @@ def check_structure(
     full set of PMIDs (needed for duplicate detection and the deletion check).
     """
     result = StructureResult()
-    malformed: list[dict] = []
+    malformed = _Examples()
     missing_fields: dict[str, int] = {}
     extra_fields: dict[str, int] = {}
-    null_values: list[dict] = []
-    invalid_ids: list[dict] = []
-    invalid_months: list[dict] = []
+    null_values = _Examples()
+    invalid_ids = _Examples()
+    invalid_months = _Examples()
+    unreadable = _Examples()
     duplicates: dict[int, int] = {}
 
     for shard_index, path in enumerate(shards):
@@ -306,57 +337,66 @@ def check_structure(
         reservoir: list[tuple[int, dict]] = []
         seen_in_shard = 0
 
-        with _open_text(path) as handle:
-            for lineno, line in enumerate(handle, start=1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    doc = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    malformed.append({"shard": path.name, "line": lineno, "error": str(exc)})
-                    continue
+        # A shard truncated by a killed export (`export` writes in place, so that
+        # is a real state on disk) raises EOFError from gzip mid-iteration, and a
+        # corrupt header raises BadGzipFile. Report it as the structural fault it
+        # is instead of dying on the one input this check exists to catch.
+        try:
+            with _open_text(path) as handle:
+                for lineno, line in enumerate(handle, start=1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        doc = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        malformed.append(
+                            {"shard": path.name, "line": lineno, "error": str(exc)}
+                        )
+                        continue
 
-                result.records_total += 1
-                result.records_by_shard[path.name] = (
-                    result.records_by_shard.get(path.name, 0) + 1
-                )
-
-                keys = set(doc)
-                for missing in EXPECTED_FIELDS - keys:
-                    missing_fields[missing] = missing_fields.get(missing, 0) + 1
-                for extra in keys - EXPECTED_FIELDS:
-                    extra_fields[extra] = extra_fields.get(extra, 0) + 1
-                for key, value in doc.items():
-                    if value is None:
-                        null_values.append({"shard": path.name, "line": lineno, "field": key})
-
-                match = _ID_RE.match(str(doc.get("id", "")))
-                if match is None:
-                    invalid_ids.append(
-                        {"shard": path.name, "line": lineno, "id": doc.get("id")}
-                    )
-                    pmid = None
-                else:
-                    pmid = int(match.group(1))
-                    if pmid in result.all_pmids:
-                        duplicates[pmid] = duplicates.get(pmid, 1) + 1
-                    result.all_pmids.add(pmid)
-
-                if doc.get("pub_month") not in _VALID_MONTHS:
-                    invalid_months.append(
-                        {"shard": path.name, "line": lineno, "pub_month": doc.get("pub_month")}
+                    result.records_total += 1
+                    result.records_by_shard[path.name] = (
+                        result.records_by_shard.get(path.name, 0) + 1
                     )
 
-                # Reservoir sampling (Algorithm R), keyed by valid PMID.
-                if pmid is not None:
-                    if len(reservoir) < sample_size:
-                        reservoir.append((pmid, doc))
+                    keys = set(doc)
+                    for missing in EXPECTED_FIELDS - keys:
+                        missing_fields[missing] = missing_fields.get(missing, 0) + 1
+                    for extra in keys - EXPECTED_FIELDS:
+                        extra_fields[extra] = extra_fields.get(extra, 0) + 1
+                    for key, value in doc.items():
+                        if value is None:
+                            null_values.append({"shard": path.name, "line": lineno, "field": key})
+
+                    match = _ID_RE.match(str(doc.get("id", "")))
+                    if match is None:
+                        invalid_ids.append(
+                            {"shard": path.name, "line": lineno, "id": doc.get("id")}
+                        )
+                        pmid = None
                     else:
-                        j = rng.randint(0, seen_in_shard)
-                        if j < sample_size:
-                            reservoir[j] = (pmid, doc)
-                    seen_in_shard += 1
+                        pmid = int(match.group(1))
+                        if pmid in result.all_pmids:
+                            duplicates[pmid] = duplicates.get(pmid, 1) + 1
+                        result.all_pmids.add(pmid)
+
+                    if doc.get("pub_month") not in _VALID_MONTHS:
+                        invalid_months.append(
+                            {"shard": path.name, "line": lineno, "pub_month": doc.get("pub_month")}
+                        )
+
+                    # Reservoir sampling (Algorithm R), keyed by valid PMID.
+                    if pmid is not None:
+                        if len(reservoir) < sample_size:
+                            reservoir.append((pmid, doc))
+                        else:
+                            j = rng.randint(0, seen_in_shard)
+                            if j < sample_size:
+                                reservoir[j] = (pmid, doc)
+                        seen_in_shard += 1
+        except (OSError, EOFError) as exc:
+            unreadable.append({"shard": path.name, "error": str(exc)})
 
         for pmid, doc in reservoir:
             result.sample[pmid] = doc
@@ -364,12 +404,13 @@ def check_structure(
     result_dict = {
         "records_total": result.records_total,
         "records_by_shard": result.records_by_shard,
-        "malformed": _capped(malformed),
+        "malformed": malformed.examples,
         "missing_fields": missing_fields,
         "extra_fields": extra_fields,
-        "null_values": _capped(null_values),
-        "invalid_ids": _capped(invalid_ids),
-        "invalid_months": _capped(invalid_months),
+        "null_values": null_values.examples,
+        "invalid_ids": invalid_ids.examples,
+        "invalid_months": invalid_months.examples,
+        "unreadable_shards": unreadable.examples,
         "duplicate_pmids": _capped(sorted(duplicates)),
     }
     report.checks["structure"] = result_dict
@@ -384,6 +425,9 @@ def check_structure(
 
     #: (name, expectation, noun, findings, key in result_dict, code, message, severity)
     rows = (
+        ("shard-readable", "every shard can be read to its end",
+         "unreadable shard(s)", unreadable, "unreadable_shards", "unreadable_shard",
+         "Shards that could not be read (truncated or corrupt).", FAIL),
         ("json-parse", "every line parses as JSON", "malformed line(s)",
          malformed, "malformed", "malformed_json",
          "Lines that could not be parsed as JSON.", FAIL),
@@ -407,7 +451,7 @@ def check_structure(
          "Records whose pub_month is not a 3-letter abbrev or empty.", WARN),
     )
     for name, expectation, noun, findings, key, code, message, severity in rows:
-        # dict findings (field -> n) count occurrences; list findings count rows.
+        # dict findings (field -> n) count occurrences; _Examples counts its own.
         count = sum(findings.values()) if isinstance(findings, dict) else len(findings)
         report.record(
             name, "structure", expectation,
@@ -477,7 +521,14 @@ def _eutils(
         except requests.RequestException as exc:
             last_exc = exc
             logger.warning("eutils %s attempt %d failed: %s", endpoint, attempt + 1, exc)
-            time.sleep(min(2**attempt, 10))
+            # raise_for_status() also fires for 4xx, which no amount of retrying
+            # fixes (a bad api_key would burn every attempt plus its backoff).
+            # A connection error carries no response, so it stays retryable.
+            status = getattr(exc.response, "status_code", None)
+            if status is not None and status not in _RETRY_STATUS:
+                break
+            if attempt < retries - 1:
+                time.sleep(min(2**attempt, 10))
     raise RuntimeError(f"eutils {endpoint} failed after {retries} attempts") from last_exc
 
 
@@ -795,7 +846,23 @@ def check_fields(
         return
 
     pmids = sorted(sample)
-    fetched = efetch_documents(pmids, api_key=api_key, email=email)
+    try:
+        fetched = efetch_documents(pmids, api_key=api_key, email=email)
+    except Exception as exc:  # as the other online checks do: degrade, don't die
+        # The report and the --manifest sidecar are both written after every
+        # check, so letting this escape would throw away the offline structure
+        # and coverage results too — the expensive part of an HPC run.
+        logger.warning("could not fetch the sampled records: %s", exc)
+        for name, expectation in expectations.items():
+            report.record(
+                name, "field accuracy", expectation, WARN,
+                f"Entrez unreachable: {exc}",
+                code="field_check_unreachable",
+                message=f"Could not fetch the sampled records: {exc}",
+                count=len(pmids), see="checks.field_validation",
+            )
+        report.checks["field_validation"] = {"sampled": len(pmids), "checked": 0}
+        return
 
     mismatches: list[dict] = []
     soft_mismatches: list[dict] = []
@@ -963,6 +1030,10 @@ def check_deletions(
         """
         SELECT DISTINCT d.pmid FROM deleted_pmid d
         WHERE NOT EXISTS (SELECT 1 FROM latest_article la WHERE la.pmid = d.pmid)
+        -- Ordered because rng.sample() below indexes into this list: DuckDB does
+        -- not promise a row order across parallel scans, so without it --seed
+        -- would not reproduce the same sample.
+        ORDER BY d.pmid
         """
     ).fetchall()
     pool = [r[0] for r in rows]
@@ -1068,12 +1139,17 @@ def check_drops_since(
     explained: list[int] = []
     unexplained = sorted(dropped)
     if dropped and con is not None:
-        # Ask the DB which of the dropped PMIDs it actually marked deleted. Passed
-        # as an Arrow-friendly temp view rather than a giant IN list.
+        # Ask the DB which of the dropped PMIDs are retired: marked deleted and
+        # not since re-added. Bound as a list via UNNEST rather than interpolated
+        # into a giant IN clause.
         rows = con.execute(
             """
             SELECT DISTINCT d.pmid FROM deleted_pmid d
             WHERE d.pmid IN (SELECT * FROM UNNEST(?))
+              -- A PMID deleted and later re-added is live again, so its absence
+              -- from the export is not explained by that deletion. Same filter
+              -- as check_deletions uses to build its candidate pool.
+              AND NOT EXISTS (SELECT 1 FROM latest_article la WHERE la.pmid = d.pmid)
             """,
             [sorted(dropped)],
         ).fetchall()

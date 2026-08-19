@@ -483,3 +483,90 @@ def test_medline_date_year_is_not_a_false_mismatch(export_dir, loaded_con, monke
     assert fetched[1003]["pub_year"] == "1998"
     assert [m for m in report["checks"]["field_validation"]["mismatches"]
             if m["field"] == "pub_year"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Failure modes the checks must survive rather than crash on
+# --------------------------------------------------------------------------- #
+
+
+def test_truncated_shard_is_reported_not_raised(export_dir):
+    """A shard cut off mid-write (a killed export) is a finding, not a traceback."""
+    import gzip as _gzip
+
+    shard = export_dir / "truncated.ndjson.gz"
+    with _gzip.open(shard, "wt", encoding="utf-8") as handle:
+        handle.write(json.dumps(_valid_doc()) + "\n")
+    shard.write_bytes(shard.read_bytes()[:-8])  # lose the end-of-stream marker
+
+    report = validate.run_validation(export_dir, online=False)
+    assert report["status"] == "fail"
+    assert any(e["code"] == "unreadable_shard" for e in report["errors"])
+    assert report["checks"]["structure"]["unreadable_shards"][0]["shard"] == shard.name
+
+
+def test_examples_are_capped_but_counted():
+    """Findings keep their full count while retaining only a few examples."""
+    found = validate._Examples()
+    for i in range(validate._MAX_EXAMPLES + 500):
+        found.append({"line": i})
+    assert len(found) == validate._MAX_EXAMPLES + 500
+    assert len(found.examples) == validate._MAX_EXAMPLES
+
+
+def test_offline_results_survive_an_entrez_outage(export_dir, loaded_con, monkeypatch):
+    """A mid-run network failure must not discard the offline checks or the manifest."""
+    def dead(endpoint, params, **_):
+        if endpoint == "efetch.fcgi":
+            raise RuntimeError("eutils efetch.fcgi failed after 3 attempts")
+        return _fake_eutils_factory(_EFETCH)(endpoint, params)
+
+    monkeypatch.setattr(validate, "_eutils", dead)
+    report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
+
+    assert report["checks"]["structure"]["records_total"] == 2
+    assert any(w["code"] == "field_check_unreachable" for w in report["warnings"])
+    assert report["checks"]["field_validation"] == {"sampled": 2, "checked": 0}
+
+
+def test_permanent_http_errors_are_not_retried(monkeypatch):
+    """A 4xx (a bad api_key, say) fails on the first call: retrying cannot fix it."""
+    import requests
+
+    calls = []
+
+    class _Resp:
+        status_code = 400
+
+        def raise_for_status(self):
+            raise requests.HTTPError("400 Client Error", response=self)
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append(url)
+        return _Resp()
+
+    monkeypatch.setattr(validate.requests, "get", fake_get)
+    monkeypatch.setattr(validate.time, "sleep", lambda _: pytest.fail("slept on a 4xx"))
+
+    with pytest.raises(RuntimeError):
+        validate._eutils("einfo.fcgi", {"db": "pubmed"}, api_key="bad", email=None)
+    assert len(calls) == 1
+
+
+def test_reinstated_pmid_is_not_an_explained_drop(export_dir, loaded_con, tmp_path):
+    """A PMID deleted then re-added is live, so losing it from the export is an error."""
+    # 1002 is deleted in the fixtures; re-add it as a later version, which is
+    # what latest_article resolves to. The export predates that, so it is absent.
+    loaded_con.execute(
+        "INSERT INTO article (pmid, source_file, file_order_key, article_title, loaded_at)"
+        " VALUES (1002, 'pubmed25n0009.xml.gz', 25000009, 'Reinstated.', now())"
+    )
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1002, 1003}, manifest)
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, online=False
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["explained_by_deletion"] == []
+    assert drops["unexplained"] == [1002]

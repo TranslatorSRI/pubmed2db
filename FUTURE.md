@@ -16,13 +16,13 @@ below are deliberately deferred.
 
 ## Validation (`validate`)
 
-- **Richer deletion status.** Deletion confirmation currently treats "efetch
-  returns nothing" as deleted. Entrez `esummary` distinguishes deleted vs.
-  merged/moved records; use it to label merges explicitly rather than surfacing
-  them as "still live → review manually".
-- **Semantic field tolerance.** Journal name/abbrev come from the NLM Catalog
-  dimension, not the article XML, so they are compared as *soft* (warning-only)
-  fields; revisit if a stricter journal cross-check is wanted.
+- **Richer deletion status** (#30). Deletion confirmation currently treats
+  "efetch returns nothing" as deleted. Entrez `esummary` distinguishes deleted
+  vs. merged/moved records; use it to label merges explicitly rather than
+  surfacing them as "still live → review manually".
+- **Semantic field tolerance** (#31). Journal name/abbrev come from the NLM
+  Catalog dimension, not the article XML, so they are compared as *soft*
+  (warning-only) fields; revisit if a stricter journal cross-check is wanted.
 
 ## Upstream dependency (`cthoyt/pubmed-downloader`)
 
@@ -33,8 +33,8 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
   `pubmed_downloader.catalog.process_journal_overview()` no longer requires
   `start_year`/`end_year` (broken in ≤ 0.0.14 — those fields aren't in
   `J_Entrez.txt`, filed at https://github.com/cthoyt/pubmed-downloader/pull/16).
-  Then we can go back to using the library's `Journal` model
-  directly. See `CLAUDE.md`.
+  Then we can go back to using the library's `Journal` model directly. See
+  `load._parse_journal_overview` for what we do instead.
 - **`cites_pubmed_ids` never matches, but we no longer care.** `_extract_article`
   searches `medline_citation.findall(".//ReferenceList/Reference")`, but PubMed
   nests `<ReferenceList>` under `<PubmedData>`, so `Article.cites_pubmed_ids` is
@@ -99,12 +99,13 @@ with the previous code, and that is not corrected by a normal incremental run �
 `needs_load` only re-parses files whose checksum moved. Such a database also
 still has a populated `reference_citation` table, which nothing will clear.
 
-- [ ] Decide whether to re-load affected files with `load --force` (a full
-  re-parse, roughly a baseline's worth of time) or to rebuild from scratch, and
-  note the answer in the README's "Re-running after a gap" section. Rebuilding is
-  the simpler answer: `load --force` fixes `article_id`'s rows but leaves the
-  dropped `reference_citation` table sitting there, since `schema.sql` only ever
-  adds tables.
+- [x] **Rebuild from scratch, don't `load --force`.** Decided and written into
+  the README's "Re-running after a gap". `load --force` applies a parsing change
+  to the whole corpus, but `schema.sql` only ever adds — `CREATE TABLE IF NOT
+  EXISTS` plus `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` — so a table dropped
+  from the schema keeps its rows through any number of forced reloads, and
+  `reference_citation` is exactly that case. Both cost one full `load`; only the
+  rebuild is guaranteed to leave the shape the schema describes.
 
 ## Scale & performance (full PubMed is ~38M articles, ~1500+ files)
 

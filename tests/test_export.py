@@ -108,6 +108,18 @@ def test_json_sharding(loaded_con, tmp_path):
     assert set(docs) == {"PMID:1001", "PMID:1003"}
 
 
+def test_reexport_removes_stale_shards(loaded_con, tmp_path):
+    """Shards from an earlier, wider (or gzipped) export must not survive: a
+    consumer globbing the directory would read two exports at once."""
+    from pubmed2db.export import export_json
+
+    out = tmp_path / "json"
+    export_json(loaded_con, out, shards=2)
+    export_json(loaded_con, out, shards=1, gzip_output=True)
+
+    assert sorted(p.name for p in out.iterdir()) == ["pubmed_metadata_00000.ndjson.gz"]
+
+
 def test_parquet_latest_filters_versions(loaded_con, tmp_path):
     from pubmed2db.export import export_parquet
 
@@ -135,3 +147,59 @@ def test_parquet_all_keeps_history(loaded_con, tmp_path):
     ).fetchone()[0]
     # All versions: 1001 (x2), 1002, 1003.
     assert n_article == 4
+
+
+def test_parquet_exports_every_table(loaded_con, tmp_path):
+    """One file per table, `pipeline_run` included -- it carries the journal
+    refresh provenance, which nothing else in the export records."""
+    from pubmed2db.export import export_parquet
+
+    out = tmp_path / "parquet"
+    written = export_parquet(loaded_con, out)
+
+    tables = {
+        row[0]
+        for row in loaded_con.execute(
+            "SELECT table_name FROM duckdb_tables() "
+            "WHERE schema_name = 'main' AND NOT temporary"
+        ).fetchall()
+    }
+    assert {path.stem for path in written} == tables
+
+
+def test_placeholder_looking_fields_survive_to_the_export(con, gz_fixture, tmp_path):
+    """A validation run flagged two records as exporting blank where Entrez has a
+    value: a non-numeric `<Issue>Suppl</Issue>` and an `<ArticleTitle>` of the
+    literal "[Not Available].". Neither is dropped anywhere in the pipeline."""
+    import json
+
+    from pubmed2db.export import export_json
+    from pubmed2db.load import load_file
+
+    load_file(con, gz_fixture("pubmed25n0004"), kind="baseline")
+    out = tmp_path / "json"
+    export_json(con, out, shards=1)
+
+    docs = {
+        json.loads(line)["id"]: json.loads(line)
+        for line in (out / "pubmed_metadata_00000.ndjson").read_text().splitlines()
+    }
+    assert docs["PMID:10137601"]["issue"] == "Suppl"
+    assert docs["PMID:10137601"]["volume"] == "3 Suppl"
+    assert docs["PMID:28972331"]["article_title"] == "[Not Available]."
+
+
+def test_parquet_export_removes_a_dropped_table_s_file(loaded_con, tmp_path):
+    """A re-export overwrites its own file names, so a table removed from the
+    schema would otherwise leave its Parquet behind for consumers to glob."""
+    from pubmed2db.export import export_parquet
+
+    out = tmp_path / "parquet"
+    out.mkdir()
+    orphan = out / "reference_citation.parquet"  # dropped from schema.sql
+    orphan.write_bytes(b"stale")
+
+    written = export_parquet(loaded_con, out)
+
+    assert not orphan.exists()
+    assert set(out.glob("*.parquet")) == set(written)

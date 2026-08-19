@@ -12,6 +12,15 @@
 -- `file_order_key` encodes PubMed's chronological order: baseline files come
 -- first, then updatefiles in ascending number, and the year prefix increments
 -- across years. It is computed as (year_yy * 1000000 + file_number).
+--
+-- Convention: this file only ever ADDS, and it runs on every connect. Tables are
+-- `CREATE TABLE IF NOT EXISTS`, so a column added to a table here does *not*
+-- appear in a database created before it — it needs its own
+-- `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` line right below the table (see
+-- `source_file.n_failed`). Nothing here drops a table or column, so a table
+-- removed from this file keeps its rows forever in an existing database: after a
+-- schema change, rebuild rather than `load --force` (see the README's
+-- "`load --force` or a fresh database?").
 
 -- Registry of every PubMed XML file we know about. Drives incremental loads.
 CREATE TABLE IF NOT EXISTS source_file (
@@ -24,8 +33,17 @@ CREATE TABLE IF NOT EXISTS source_file (
     downloaded_at  TIMESTAMP,
     processed_at   TIMESTAMP,                  -- NULL until loaded into the tables
     n_articles     INTEGER,
-    n_deletions    INTEGER
+    n_deletions    INTEGER,
+    n_failed       INTEGER,                    -- records the extractor rejected
+    n_book_records INTEGER                     -- <PubmedBookArticle>, not parsed
 );
+
+-- CREATE TABLE IF NOT EXISTS leaves an existing database at its old shape, so
+-- columns added after the first release need their own migration. Adding a
+-- nullable column is a metadata-only change in DuckDB; NULL reads as "loaded
+-- before this column existed", which is not the same as a counted zero.
+ALTER TABLE source_file ADD COLUMN IF NOT EXISTS n_failed INTEGER;
+ALTER TABLE source_file ADD COLUMN IF NOT EXISTS n_book_records INTEGER;
 
 -- Records when steps that leave no other timestamp were last run (currently just
 -- `journals`, whose tables are replaced wholesale). Download/load recency is
