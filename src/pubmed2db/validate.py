@@ -220,6 +220,28 @@ def _capped(items: list) -> list:
     return items[:_MAX_EXAMPLES]
 
 
+class _Examples:
+    """Count findings while keeping only the first ``_MAX_EXAMPLES`` of them.
+
+    The report shows a capped list either way, so retaining every occurrence
+    buys nothing — and a systematic defect on the ~41M-record corpus (one blank
+    field per record, say) would otherwise cost gigabytes to describe a single
+    bug, OOM-killing the validation of exactly the export that was broken.
+    """
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.examples: list = []
+
+    def append(self, item) -> None:
+        self.count += 1
+        if len(self.examples) < _MAX_EXAMPLES:
+            self.examples.append(item)
+
+    def __len__(self) -> int:
+        return self.count
+
+
 # --------------------------------------------------------------------------- #
 # Reading shards
 # --------------------------------------------------------------------------- #
@@ -295,12 +317,13 @@ def check_structure(
     full set of PMIDs (needed for duplicate detection and the deletion check).
     """
     result = StructureResult()
-    malformed: list[dict] = []
+    malformed = _Examples()
     missing_fields: dict[str, int] = {}
     extra_fields: dict[str, int] = {}
-    null_values: list[dict] = []
-    invalid_ids: list[dict] = []
-    invalid_months: list[dict] = []
+    null_values = _Examples()
+    invalid_ids = _Examples()
+    invalid_months = _Examples()
+    unreadable = _Examples()
     duplicates: dict[int, int] = {}
 
     for shard_index, path in enumerate(shards):
@@ -308,57 +331,66 @@ def check_structure(
         reservoir: list[tuple[int, dict]] = []
         seen_in_shard = 0
 
-        with _open_text(path) as handle:
-            for lineno, line in enumerate(handle, start=1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    doc = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    malformed.append({"shard": path.name, "line": lineno, "error": str(exc)})
-                    continue
+        # A shard truncated by a killed export (`export` writes in place, so that
+        # is a real state on disk) raises EOFError from gzip mid-iteration, and a
+        # corrupt header raises BadGzipFile. Report it as the structural fault it
+        # is instead of dying on the one input this check exists to catch.
+        try:
+            with _open_text(path) as handle:
+                for lineno, line in enumerate(handle, start=1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        doc = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        malformed.append(
+                            {"shard": path.name, "line": lineno, "error": str(exc)}
+                        )
+                        continue
 
-                result.records_total += 1
-                result.records_by_shard[path.name] = (
-                    result.records_by_shard.get(path.name, 0) + 1
-                )
-
-                keys = set(doc)
-                for missing in EXPECTED_FIELDS - keys:
-                    missing_fields[missing] = missing_fields.get(missing, 0) + 1
-                for extra in keys - EXPECTED_FIELDS:
-                    extra_fields[extra] = extra_fields.get(extra, 0) + 1
-                for key, value in doc.items():
-                    if value is None:
-                        null_values.append({"shard": path.name, "line": lineno, "field": key})
-
-                match = _ID_RE.match(str(doc.get("id", "")))
-                if match is None:
-                    invalid_ids.append(
-                        {"shard": path.name, "line": lineno, "id": doc.get("id")}
-                    )
-                    pmid = None
-                else:
-                    pmid = int(match.group(1))
-                    if pmid in result.all_pmids:
-                        duplicates[pmid] = duplicates.get(pmid, 1) + 1
-                    result.all_pmids.add(pmid)
-
-                if doc.get("pub_month") not in _VALID_MONTHS:
-                    invalid_months.append(
-                        {"shard": path.name, "line": lineno, "pub_month": doc.get("pub_month")}
+                    result.records_total += 1
+                    result.records_by_shard[path.name] = (
+                        result.records_by_shard.get(path.name, 0) + 1
                     )
 
-                # Reservoir sampling (Algorithm R), keyed by valid PMID.
-                if pmid is not None:
-                    if len(reservoir) < sample_size:
-                        reservoir.append((pmid, doc))
+                    keys = set(doc)
+                    for missing in EXPECTED_FIELDS - keys:
+                        missing_fields[missing] = missing_fields.get(missing, 0) + 1
+                    for extra in keys - EXPECTED_FIELDS:
+                        extra_fields[extra] = extra_fields.get(extra, 0) + 1
+                    for key, value in doc.items():
+                        if value is None:
+                            null_values.append({"shard": path.name, "line": lineno, "field": key})
+
+                    match = _ID_RE.match(str(doc.get("id", "")))
+                    if match is None:
+                        invalid_ids.append(
+                            {"shard": path.name, "line": lineno, "id": doc.get("id")}
+                        )
+                        pmid = None
                     else:
-                        j = rng.randint(0, seen_in_shard)
-                        if j < sample_size:
-                            reservoir[j] = (pmid, doc)
-                    seen_in_shard += 1
+                        pmid = int(match.group(1))
+                        if pmid in result.all_pmids:
+                            duplicates[pmid] = duplicates.get(pmid, 1) + 1
+                        result.all_pmids.add(pmid)
+
+                    if doc.get("pub_month") not in _VALID_MONTHS:
+                        invalid_months.append(
+                            {"shard": path.name, "line": lineno, "pub_month": doc.get("pub_month")}
+                        )
+
+                    # Reservoir sampling (Algorithm R), keyed by valid PMID.
+                    if pmid is not None:
+                        if len(reservoir) < sample_size:
+                            reservoir.append((pmid, doc))
+                        else:
+                            j = rng.randint(0, seen_in_shard)
+                            if j < sample_size:
+                                reservoir[j] = (pmid, doc)
+                        seen_in_shard += 1
+        except (OSError, EOFError) as exc:
+            unreadable.append({"shard": path.name, "error": str(exc)})
 
         for pmid, doc in reservoir:
             result.sample[pmid] = doc
@@ -366,12 +398,13 @@ def check_structure(
     result_dict = {
         "records_total": result.records_total,
         "records_by_shard": result.records_by_shard,
-        "malformed": _capped(malformed),
+        "malformed": malformed.examples,
         "missing_fields": missing_fields,
         "extra_fields": extra_fields,
-        "null_values": _capped(null_values),
-        "invalid_ids": _capped(invalid_ids),
-        "invalid_months": _capped(invalid_months),
+        "null_values": null_values.examples,
+        "invalid_ids": invalid_ids.examples,
+        "invalid_months": invalid_months.examples,
+        "unreadable_shards": unreadable.examples,
         "duplicate_pmids": _capped(sorted(duplicates)),
     }
     report.checks["structure"] = result_dict
@@ -386,6 +419,9 @@ def check_structure(
 
     #: (name, expectation, noun, findings, key in result_dict, code, message, severity)
     rows = (
+        ("shard-readable", "every shard can be read to its end",
+         "unreadable shard(s)", unreadable, "unreadable_shards", "unreadable_shard",
+         "Shards that could not be read (truncated or corrupt).", FAIL),
         ("json-parse", "every line parses as JSON", "malformed line(s)",
          malformed, "malformed", "malformed_json",
          "Lines that could not be parsed as JSON.", FAIL),
@@ -409,7 +445,7 @@ def check_structure(
          "Records whose pub_month is not a 3-letter abbrev or empty.", WARN),
     )
     for name, expectation, noun, findings, key, code, message, severity in rows:
-        # dict findings (field -> n) count occurrences; list findings count rows.
+        # dict findings (field -> n) count occurrences; _Examples counts its own.
         count = sum(findings.values()) if isinstance(findings, dict) else len(findings)
         report.record(
             name, "structure", expectation,

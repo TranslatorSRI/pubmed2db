@@ -435,3 +435,32 @@ def test_medline_date_year_is_not_a_false_mismatch(export_dir, loaded_con, monke
     assert fetched[1003]["pub_year"] == "1998"
     assert [m for m in report["checks"]["field_validation"]["mismatches"]
             if m["field"] == "pub_year"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Failure modes the checks must survive rather than crash on
+# --------------------------------------------------------------------------- #
+
+
+def test_truncated_shard_is_reported_not_raised(export_dir):
+    """A shard cut off mid-write (a killed export) is a finding, not a traceback."""
+    import gzip as _gzip
+
+    shard = export_dir / "truncated.ndjson.gz"
+    with _gzip.open(shard, "wt", encoding="utf-8") as handle:
+        handle.write(json.dumps(_valid_doc()) + "\n")
+    shard.write_bytes(shard.read_bytes()[:-8])  # lose the end-of-stream marker
+
+    report = validate.run_validation(export_dir, online=False)
+    assert report["status"] == "fail"
+    assert any(e["code"] == "unreadable_shard" for e in report["errors"])
+    assert report["checks"]["structure"]["unreadable_shards"][0]["shard"] == shard.name
+
+
+def test_examples_are_capped_but_counted():
+    """Findings keep their full count while retaining only a few examples."""
+    found = validate._Examples()
+    for i in range(validate._MAX_EXAMPLES + 500):
+        found.append({"line": i})
+    assert len(found) == validate._MAX_EXAMPLES + 500
+    assert len(found.examples) == validate._MAX_EXAMPLES
