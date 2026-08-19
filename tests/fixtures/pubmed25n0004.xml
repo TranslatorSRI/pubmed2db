@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE PubmedArticleSet SYSTEM "http://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_250101.dtd">
+<!--
+  Two real records, trimmed, that a validation run flagged as exporting blank
+  where Entrez has a value. They are here because both shapes look like
+  placeholders a parser might drop:
+
+  * PMID 10137601 has a non-numeric issue, <Issue>Suppl</Issue>, and a volume
+    ("3 Suppl") that repeats it.
+  * PMID 28972331 is a Norwegian article whose <ArticleTitle> is the literal
+    string "[Not Available]." with the real title in <VernacularTitle>.
+-->
+<PubmedArticleSet>
+  <PubmedArticle>
+    <MedlineCitation Status="MEDLINE" Owner="NLM">
+      <PMID Version="1">10137601</PMID>
+      <Article PubModel="Print">
+        <Journal>
+          <ISSN IssnType="Print">0963-8172</ISSN>
+          <JournalIssue CitedMedium="Print">
+            <Volume>3 Suppl</Volume>
+            <Issue>Suppl</Issue>
+            <PubDate>
+              <Year>1994</Year>
+              <Month>Jun</Month>
+            </PubDate>
+          </JournalIssue>
+          <Title>Quality in health care : QHC</Title>
+          <ISOAbbreviation>Qual Health Care</ISOAbbreviation>
+        </Journal>
+        <ArticleTitle>Quality: link with effectiveness.</ArticleTitle>
+        <Pagination>
+          <MedlinePgn>41-5</MedlinePgn>
+        </Pagination>
+        <Abstract>
+          <AbstractText>At the heart of quality must be the effectiveness and cost effectiveness of interventions.</AbstractText>
+        </Abstract>
+        <Language>eng</Language>
+      </Article>
+      <MedlineJournalInfo>
+        <Country>England</Country>
+        <MedlineTA>Qual Health Care</MedlineTA>
+        <NlmUniqueID>9209948</NlmUniqueID>
+        <ISSNLinking>0963-8172</ISSNLinking>
+      </MedlineJournalInfo>
+    </MedlineCitation>
+    <PubmedData>
+      <PublicationStatus>ppublish</PublicationStatus>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">10137601</ArticleId>
+        <ArticleId IdType="doi">10.1136/qshc.3.suppl.41</ArticleId>
+      </ArticleIdList>
+    </PubmedData>
+  </PubmedArticle>
+  <PubmedArticle>
+    <MedlineCitation Status="MEDLINE" Owner="NLM">
+      <PMID Version="1">28972331</PMID>
+      <Article PubModel="Electronic-Print">
+        <Journal>
+          <ISSN IssnType="Electronic">0807-7096</ISSN>
+          <JournalIssue CitedMedium="Internet">
+            <Volume>137</Volume>
+            <Issue>18</Issue>
+            <PubDate>
+              <Year>2017</Year>
+              <Month>Oct</Month>
+              <Day>03</Day>
+            </PubDate>
+          </JournalIssue>
+          <Title>Tidsskrift for den Norske laegeforening</Title>
+          <ISOAbbreviation>Tidsskr Nor Laegeforen</ISOAbbreviation>
+        </Journal>
+        <ArticleTitle>[Not Available].</ArticleTitle>
+        <Language>nor</Language>
+        <VernacularTitle>The vanishing Aral Sea: health consequences of an environmental disaster.</VernacularTitle>
+      </Article>
+      <MedlineJournalInfo>
+        <Country>Norway</Country>
+        <MedlineTA>Tidsskr Nor Laegeforen</MedlineTA>
+        <NlmUniqueID>0413423</NlmUniqueID>
+        <ISSNLinking>0029-2001</ISSNLinking>
+      </MedlineJournalInfo>
+    </MedlineCitation>
+    <PubmedData>
+      <PublicationStatus>epublish</PublicationStatus>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">28972331</ArticleId>
+        <ArticleId IdType="doi">10.4045/tidsskr.17.0597</ArticleId>
+      </ArticleIdList>
+    </PubmedData>
+  </PubmedArticle>
+</PubmedArticleSet>

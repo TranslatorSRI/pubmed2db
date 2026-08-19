@@ -1,0 +1,37 @@
+[project]
+name = "pubmed2db"
+version = "0.1.0"
+description = "Download PubMed abstracts, load them into DuckDB, and export to JSON and Parquet."
+readme = "README.md"
+requires-python = ">=3.11"   # hashlib.file_digest (download.file_md5)
+license = { file = "LICENSE" }
+authors = [{ name = "Gaurav Vaidya", email = "gaurav@ggvaidya.com" }]
+dependencies = [
+    # Upper bound: we call private APIs (`_extract_article`, `_ensure_urls`), so
+    # any 0.0.x release can break us. Re-test before raising the ceiling.
+    "pubmed-downloader>=0.0.14,<0.1",
+    "duckdb>=1.1",
+    "pyarrow>=14",
+    "click>=8.1",
+    "requests>=2.31",
+    "tqdm>=4.66",
+    "lxml>=5",
+]
+
+[project.scripts]
+pubmed2db = "pubmed2db.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pubmed2db"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,3 +1,10 @@
+# Ignore downloaded data but track the directory skeleton.
+/data/*
+!/data/.gitkeep
+
+# JetBrains IDE files
+.idea/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
