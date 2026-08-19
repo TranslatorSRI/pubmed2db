@@ -157,15 +157,25 @@ def test_field_validation_flags_mismatch(export_dir, loaded_con, monkeypatch):
 
 
 def test_field_validation_flags_identifier_mismatch(export_dir, loaded_con, monkeypatch):
-    """A DOI that disagrees with Entrez is caught like any other core field."""
+    """A DOI that disagrees with Entrez is reported, but only as advisory.
+
+    Identifiers are deliberately outside the gated core-field rate: a PMCID
+    assigned upstream since our last update file is not an export defect, and
+    it lands on the same ahead-of-print records that already mismatch on
+    volume/issue. See the comment at the comparison.
+    """
     tampered = dict(_EFETCH)
     tampered[1001] = _EFETCH[1001].replace("10.1038/example1001", "10.1038/somethingelse")
     monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(tampered))
     report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
-    mismatched = report["checks"]["field_validation"]["mismatches"]
-    entry = next(m for m in mismatched if m["field"] == "identifiers" and m["pmid"] == 1001)
+    checks = report["checks"]["field_validation"]
+    entry = next(m for m in checks["identifier_mismatches"] if m["pmid"] == 1001)
     assert "doi:10.1038/somethingelse" in entry["entrez"]
     assert "doi:10.1038/example1001" in entry["exported"]
+    assert not any(m["field"] == "identifiers" for m in checks["mismatches"])
+    statuses = {c["name"]: c["status"] for c in report["checks_run"]}
+    assert statuses["identifiers-soft"] == "warn"
+    assert statuses["core-fields"] != "fail"
 
 
 def test_efetch_identifiers_exclude_cited_references(monkeypatch):

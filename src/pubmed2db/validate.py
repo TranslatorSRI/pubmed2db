@@ -835,6 +835,7 @@ def check_fields(
         "core-fields": f"<{_FIELD_MISMATCH_RATE:.0%} of compared fields differ from Entrez",
         "abstract": f"abstracts at least {abstract_threshold:.0%} similar to Entrez",
         "journal-soft": "journal name/abbrev match Entrez (advisory)",
+        "identifiers-soft": "DOIs and PMCIDs match Entrez (advisory)",
     }
     if not online:
         for name, expectation in expectations.items():
@@ -868,6 +869,7 @@ def check_fields(
 
     mismatches: list[dict] = []
     soft_mismatches: list[dict] = []
+    identifier_mismatches: list[dict] = []
     missing_from_api: list[int] = []
     similarities: list[float] = []
     checked = 0
@@ -891,14 +893,19 @@ def check_fields(
                 )
 
         # `identifiers` is the one list-valued field, so it can't go through the
-        # string comparison above. Order is irrelevant; membership is not. Note
-        # this compares our newest *loaded* version against live PubMed, so a
-        # DOI assigned after our last update file reads as a mismatch — the same
-        # exposure the other core fields carry, absorbed by the rate threshold.
-        core_comparisons += 1
+        # string comparison above. Order is irrelevant; membership is not.
+        #
+        # Advisory, not part of the gated rate: this compares our newest
+        # *loaded* version against live PubMed, so a PMCID assigned after our
+        # last update file reads as a mismatch. That is the same exposure the
+        # core fields carry, but it is not independent of them — an
+        # ahead-of-print record already mismatching on volume/issue is exactly
+        # the one that has since been assigned a PMCID, so counting it here too
+        # would tighten the FAIL threshold on the records most likely to trip
+        # it. Same reasoning as SOFT_FIELDS below: compared, reported, never
+        # fatal.
         if set(exported.get("identifiers") or []) != set(entrez.get("identifiers") or []):
-            core_mismatch += 1
-            mismatches.append({
+            identifier_mismatches.append({
                 "pmid": pmid, "field": "identifiers",
                 "exported": exported.get("identifiers"),
                 "entrez": entrez.get("identifiers"),
@@ -936,6 +943,7 @@ def check_fields(
         "mismatches_by_field": grouped["by_field"],
         "mismatches_by_kind": grouped["by_kind"],
         "soft_mismatches": _capped(soft_mismatches),
+        "identifier_mismatches": _capped(identifier_mismatches),
         "missing_from_api": _capped(missing_from_api),
         "abstract_similarity": {
             "min": min_similarity,
@@ -991,6 +999,16 @@ def check_fields(
         code="journal_mismatches",
         message="Sampled journal name/abbrev differs from Entrez (different source).",
         count=len(soft_mismatches), see="checks.field_validation.soft_mismatches",
+    )
+
+    report.record(
+        "identifiers-soft", "field accuracy", expectations["identifiers-soft"],
+        WARN if identifier_mismatches else PASS,
+        f"{len(identifier_mismatches):,} of {checked:,} record(s) differ",
+        code="identifier_mismatches",
+        message="Sampled DOIs/PMCIDs differ from Entrez (may be assigned since our last update).",
+        count=len(identifier_mismatches),
+        see="checks.field_validation.identifier_mismatches",
     )
 
 
@@ -1297,7 +1315,7 @@ def write_report(report: dict, out_path: Path) -> None:
 #: what the export *omits*. Everything else in the NOT CHECKED block is derived
 #: from CORE_FIELDS/SOFT_FIELDS so it cannot fall out of date.
 _NOT_CHECKED = (
-    "identifiers other than the PMID (DOI, PMCID) are not part of this export",
+    "identifiers other than the DOI, PMCID and PMID are exported but never compared",
     "MeSH terms, authors, affiliations and grants are stored in the DB, never exported",
     "records outside the sample are checked for structure only, never against Entrez",
 )
@@ -1373,6 +1391,8 @@ def _not_checked(report: dict) -> list[str]:
     derived = [
         f"compared strictly against Entrez: {', '.join(CORE_FIELDS)}",
         f"compared but never fails the run (NLM Catalog source): {', '.join(SOFT_FIELDS)}",
+        "compared but never fails the run (assigned upstream after our last "
+        "update file): identifiers",
         "abstract compared by similarity ratio"
         + (f" (>= {threshold})" if threshold is not None else "")
         + ", not character-for-character",

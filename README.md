@@ -183,7 +183,7 @@ FIELD ACCURACY  (240 records sampled: 15/shard x 16 shards, seed 0)
 
 NOT CHECKED
   - compared strictly against Entrez: article_title, volume, issue, pub_year, ...
-  - identifiers other than the PMID (DOI, PMCID) are not part of this export
+  - compared but never fails the run (assigned upstream after our last update file): identifiers
   - MeSH terms, authors, affiliations and grants are stored in the DB, never exported
 ```
 
