@@ -331,6 +331,10 @@ def check_structure(
     invalid_months = _Examples()
     unreadable = _Examples()
     duplicates = _Examples()
+    #: PMIDs already recorded in `duplicates`, so that one PMID exported 25
+    #: times spends one of the 20 example slots rather than all of them, and
+    #: `duplicates.count` stays a count of distinct offending PMIDs.
+    duplicated: set[int] = set()
 
     for shard_index, path in enumerate(shards):
         rng = random.Random(seed + shard_index)
@@ -377,7 +381,8 @@ def check_structure(
                         pmid = None
                     else:
                         pmid = int(match.group(1))
-                        if pmid in result.all_pmids:
+                        if pmid in result.all_pmids and pmid not in duplicated:
+                            duplicated.add(pmid)
                             duplicates.append(pmid)
                         result.all_pmids.add(pmid)
 
@@ -440,7 +445,7 @@ def check_structure(
         ("id-format", "every id looks like PMID:<digits>", "invalid id(s)",
          invalid_ids, "invalid_ids", "invalid_ids",
          "Records whose id is not of the form PMID:<digits>.", FAIL),
-        ("pmid-unique", "no PMID is exported twice", "duplicate record(s)",
+        ("pmid-unique", "no PMID is exported twice", "duplicated PMID(s)",
          duplicates, "duplicate_pmids", "duplicate_pmids",
          "PMIDs appearing in more than one record.", FAIL),
         ("no-extra-fields", "no record carries an unexpected field",

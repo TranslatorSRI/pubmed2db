@@ -84,6 +84,21 @@ def test_offline_structure_passes(export_dir):
     assert report["checks"]["structure"]["records_total"] == 2
 
 
+def test_duplicate_examples_are_distinct_pmids(export_dir):
+    """One PMID exported many times must not consume every example slot.
+
+    The example list is capped, so listing the same offender 25 times would
+    hide 19 other duplicated PMIDs behind a single bug.
+    """
+    shard = next(export_dir.glob("*.ndjson"))
+    with shard.open("a") as handle:
+        for _ in range(25):
+            handle.write(json.dumps({**_valid_doc(), "id": "PMID:1001"}) + "\n")
+
+    structure = validate.run_validation(export_dir, online=False)["checks"]["structure"]
+    assert structure["duplicate_pmids"] == [1001]
+
+
 def test_malformed_and_structural_errors(export_dir):
     shard = next(export_dir.glob("*.ndjson"))
     with shard.open("a") as handle:
