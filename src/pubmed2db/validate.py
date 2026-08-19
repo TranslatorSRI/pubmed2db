@@ -31,7 +31,6 @@ sections skipped otherwise.
 
 from __future__ import annotations
 
-import calendar
 import difflib
 import gzip
 import json
@@ -46,7 +45,7 @@ import duckdb
 import requests
 from lxml import etree
 
-from .export import _document, _year_from_medline_date, month_to_abbrev
+from .export import _MONTH_ABBR, _document, _year_from_medline_date, month_to_abbrev
 from .util import fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
@@ -83,8 +82,11 @@ SOFT_FIELDS = ("journal_name", "journal_abbrev")
 
 _ID_RE = re.compile(r"^PMID:(\d+)$")
 
-#: Valid ``pub_month`` values: the 3-letter abbreviations, or empty.
-_VALID_MONTHS = frozenset(m for m in calendar.month_abbr if m) | {""}
+#: Valid ``pub_month`` values: the 3-letter abbreviations, or empty. Taken from
+#: the exporter's frozen tuple rather than ``calendar.month_abbr``, which is
+#: ``strftime('%b')`` under ``LC_TIME`` — a process that localizes it would make
+#: every correctly exported month read as invalid here.
+_VALID_MONTHS = frozenset(_MONTH_ABBR) | {""}
 
 #: How many records to include verbatim in an example list before truncating.
 _MAX_EXAMPLES = 20
