@@ -49,6 +49,16 @@ explains its part; this table is only a map.
   `<Year>` at all. Diagnosing a field mismatch from efetch alone points at the
   wrong layer — download the baseline file containing the PMID and read the raw
   element before changing any parsing or export code.
+- **`validate.py` is one 1,400-line module on purpose.** Splitting it by check
+  would add import edges without reducing what you must read: every check needs
+  `Report.record` and the example accumulators, most need `efetch_documents`, and
+  that coupling is what makes the report's "the arrays cannot drift from the
+  checks" property hold. The banner comments run in execution order, which is the
+  navigability a split would have bought. Two things would change the answer: a
+  second consumer of the Entrez client (`_RateLimiter`/`_eutils`/
+  `efetch_documents`, ~110 lines, the one cleanly separable seam), or
+  `run_validation` growing past its 14 keyword arguments — the latter wants an
+  options dataclass *within* the file, not a split.
 - **Three upstream bugs are worked around**, each written up in `FUTURE.md` and
   pinned by a test, so they fail loudly once upstream fixes them. Two upstream
   *behaviours* are also easy to assume backwards (`_ensure_urls` sorts
