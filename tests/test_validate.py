@@ -503,3 +503,22 @@ def test_permanent_http_errors_are_not_retried(monkeypatch):
     with pytest.raises(RuntimeError):
         validate._eutils("einfo.fcgi", {"db": "pubmed"}, api_key="bad", email=None)
     assert len(calls) == 1
+
+
+def test_reinstated_pmid_is_not_an_explained_drop(export_dir, loaded_con, tmp_path):
+    """A PMID deleted then re-added is live, so losing it from the export is an error."""
+    # 1002 is deleted in the fixtures; re-add it as a later version, which is
+    # what latest_article resolves to. The export predates that, so it is absent.
+    loaded_con.execute(
+        "INSERT INTO article (pmid, source_file, file_order_key, article_title, loaded_at)"
+        " VALUES (1002, 'pubmed25n0009.xml.gz', 25000009, 'Reinstated.', now())"
+    )
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1002, 1003}, manifest)
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, online=False
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["explained_by_deletion"] == []
+    assert drops["unexplained"] == [1002]

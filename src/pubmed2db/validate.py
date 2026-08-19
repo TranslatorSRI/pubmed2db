@@ -992,6 +992,10 @@ def check_deletions(
         """
         SELECT DISTINCT d.pmid FROM deleted_pmid d
         WHERE NOT EXISTS (SELECT 1 FROM latest_article la WHERE la.pmid = d.pmid)
+        -- Ordered because rng.sample() below indexes into this list: DuckDB does
+        -- not promise a row order across parallel scans, so without it --seed
+        -- would not reproduce the same sample.
+        ORDER BY d.pmid
         """
     ).fetchall()
     pool = [r[0] for r in rows]
@@ -1097,12 +1101,17 @@ def check_drops_since(
     explained: list[int] = []
     unexplained = sorted(dropped)
     if dropped and con is not None:
-        # Ask the DB which of the dropped PMIDs it actually marked deleted. Passed
-        # as an Arrow-friendly temp view rather than a giant IN list.
+        # Ask the DB which of the dropped PMIDs are retired: marked deleted and
+        # not since re-added. Bound as a list via UNNEST rather than interpolated
+        # into a giant IN clause.
         rows = con.execute(
             """
             SELECT DISTINCT d.pmid FROM deleted_pmid d
             WHERE d.pmid IN (SELECT * FROM UNNEST(?))
+              -- A PMID deleted and later re-added is live again, so its absence
+              -- from the export is not explained by that deletion. Same filter
+              -- as check_deletions uses to build its candidate pool.
+              AND NOT EXISTS (SELECT 1 FROM latest_article la WHERE la.pmid = d.pmid)
             """,
             [sorted(dropped)],
         ).fetchall()
