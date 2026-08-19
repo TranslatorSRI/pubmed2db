@@ -123,17 +123,16 @@ PubMed supplies (`pii`, `mid`, …) is still loaded and is available in the
 > **Databases built before this feature need rebuilding.** The identifiers come
 > from the `article_id` table, and until now that table was populated by an
 > upstream parser that also swept up every *cited reference's* DOI and PMCID (see
-> `CLAUDE.md`). Loading is idempotent, so re-running it simply replaces each
-> file's rows — but nothing detects the stale data automatically, because the
-> files themselves have not changed:
->
-> Note that `load --force` refreshes the *rows* but not the *schema*:
-> `schema.sql` uses `CREATE TABLE IF NOT EXISTS`, so an existing database keeps
-> `reference_citation.cited_pmid` as `TEXT` rather than the current `BIGINT`.
-> Build a fresh database if you want that column typed correctly.
+> `CLAUDE.md`). Nothing detects the stale rows automatically, because the files
+> themselves have not changed. `load --force` re-parses the whole corpus and does
+> replace those rows, but it cannot undo a table that left the schema — such a
+> database still carries a populated `reference_citation`, which no reload clears
+> (see [`load --force` or a fresh database?](#load---force-or-a-fresh-database)).
+> Load into a fresh one:
 >
 > ```bash
-> uv run pubmed2db --data-dir data load --force
+> rm data/pubmed.duckdb
+> uv run pubmed2db --data-dir data load
 > ```
 
 Two more group-level options tune DuckDB itself, mainly for large exports on a
