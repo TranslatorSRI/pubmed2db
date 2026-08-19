@@ -548,7 +548,7 @@ def test_permanent_http_errors_are_not_retried(monkeypatch):
     monkeypatch.setattr(validate.requests, "get", fake_get)
     monkeypatch.setattr(validate.time, "sleep", lambda _: pytest.fail("slept on a 4xx"))
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="after 1 attempt"):
         validate._eutils("einfo.fcgi", {"db": "pubmed"}, api_key="bad", email=None)
     assert len(calls) == 1
 

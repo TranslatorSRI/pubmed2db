@@ -510,7 +510,9 @@ def _eutils(
     url = f"{EUTILS_BASE}/{endpoint}"
 
     last_exc: Exception | None = None
+    made = 0
     for attempt in range(retries):
+        made = attempt + 1
         _RATE.wait(has_key=bool(api_key))
         try:
             resp = requests.get(url, params=query, timeout=timeout)
@@ -529,7 +531,7 @@ def _eutils(
                 break
             if attempt < retries - 1:
                 time.sleep(min(2**attempt, 10))
-    raise RuntimeError(f"eutils {endpoint} failed after {retries} attempts") from last_exc
+    raise RuntimeError(f"eutils {endpoint} failed after {made} attempt(s)") from last_exc
 
 
 def entrez_total(*, api_key: str | None, email: str | None) -> int:
