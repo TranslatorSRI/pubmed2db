@@ -3,13 +3,15 @@
 We drive the XML iteration ourselves (rather than using
 ``pubmed_downloader.iterate_process_*``) for two reasons:
 
-1. We reuse cthoyt's :func:`pubmed_downloader.api._extract_article` for the rich
-   record (authors, MeSH, grants, citations, history, ...), called with all
-   grounders ``None`` so no heavy ``pyobo``/``orcid`` lookups happen.
-2. In the same pass we capture what cthoyt's pipeline drops or gets wrong: the
-   *raw* ``PubDate`` components (so ``MedlineDate``-only and partial dates
-   survive with full fidelity), ``<DeleteCitation>`` PMIDs (needed for
-   latest-version selection), and the article's own IDs (see
+1. We reuse the `pubmed_downloader library
+   <https://github.com/cthoyt/pubmed-downloader>`_'s
+   :func:`pubmed_downloader.api._extract_article` for the rich record (authors,
+   MeSH, grants, citations, history, ...), called with all grounders ``None``
+   so no heavy ``pyobo``/``orcid`` lookups happen.
+2. In the same pass we capture what that library's pipeline drops or gets
+   wrong: the *raw* ``PubDate`` components (so ``MedlineDate``-only and
+   partial dates survive with full fidelity), ``<DeleteCitation>`` PMIDs
+   (needed for latest-version selection), and the article's own IDs (see
    :func:`_article_ids`).
 
 :func:`_cited_pmids` is deliberately unused — see its docstring.
@@ -30,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ParsedArticle:
-    """A cthoyt :class:`Article` plus the raw fields we extract ourselves."""
+    """A ``pubmed_downloader`` :class:`Article` plus the fields we extract ourselves."""
 
     article: Article
     pmid_version: int | None = None
@@ -57,6 +59,7 @@ class ParsedFile:
     articles: list[ParsedArticle] = field(default_factory=list)
     deleted_pmids: list[int] = field(default_factory=list)
     n_failed: int = 0
+    n_book_records: int = 0
 
 
 _PUBDATE_PATH = "MedlineCitation/Article/Journal/JournalIssue/PubDate"
@@ -111,7 +114,7 @@ def _cited_pmids(element: etree._Element) -> list[int]:
     it in either position.
 
     To re-enable: re-add the ``reference_citation`` table to ``schema.sql`` and
-    to ``load._VERSIONED_TABLES`` / ``export._VERSIONED_CHILDREN``, call this
+    to ``load._VERSIONED_TABLES`` (which `export` derives from), call this
     from :func:`parse_file`, and insert the rows in ``load._article_rows``.
     """
     seen: dict[int, None] = {}
@@ -154,6 +157,11 @@ def parse_file(path: str | Path) -> ParsedFile:
             result.n_failed += 1
             continue
         if article is None:
+            # Upstream returns None rather than raising for an empty
+            # <ArticleTitle> or a missing <MedlineJournalInfo> — both real in
+            # PubMed. Count them, or they vanish from n_articles unremarked.
+            logger.warning("skipping article in %s: extractor returned None", path)
+            result.n_failed += 1
             continue
         year, month, day, medline_date = _raw_pubdate(element)
         result.articles.append(
@@ -166,6 +174,18 @@ def parse_file(path: str | Path) -> ParsedFile:
                 medline_date=medline_date,
                 article_ids=_article_ids(element),
             )
+        )
+
+    # The DTD is `PubmedArticleSet ((PubmedArticle | PubmedBookArticle)+, ...)`,
+    # so Bookshelf citations can share these files. We parse journal citations
+    # only; say how many records that skipped rather than dropping them silently
+    # — the count is what issue #27 needs to decide whether to support them.
+    result.n_book_records = len(root.findall("PubmedBookArticle"))
+    if result.n_book_records:
+        logger.warning(
+            "%s: skipped %d PubmedBookArticle record(s); book citations are not parsed (see #27)",
+            path,
+            result.n_book_records,
         )
 
     for pmid_tag in root.findall("DeleteCitation/PMID"):
