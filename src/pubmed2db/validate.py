@@ -330,7 +330,7 @@ def check_structure(
     invalid_ids = _Examples()
     invalid_months = _Examples()
     unreadable = _Examples()
-    duplicates: dict[int, int] = {}
+    duplicates = _Examples()
 
     for shard_index, path in enumerate(shards):
         rng = random.Random(seed + shard_index)
@@ -378,7 +378,7 @@ def check_structure(
                     else:
                         pmid = int(match.group(1))
                         if pmid in result.all_pmids:
-                            duplicates[pmid] = duplicates.get(pmid, 1) + 1
+                            duplicates.append(pmid)
                         result.all_pmids.add(pmid)
 
                     if doc.get("pub_month") not in _VALID_MONTHS:
@@ -411,7 +411,7 @@ def check_structure(
         "invalid_ids": invalid_ids.examples,
         "invalid_months": invalid_months.examples,
         "unreadable_shards": unreadable.examples,
-        "duplicate_pmids": _capped(sorted(duplicates)),
+        "duplicate_pmids": duplicates.examples,
     }
     report.checks["structure"] = result_dict
 
@@ -440,7 +440,7 @@ def check_structure(
         ("id-format", "every id looks like PMID:<digits>", "invalid id(s)",
          invalid_ids, "invalid_ids", "invalid_ids",
          "Records whose id is not of the form PMID:<digits>.", FAIL),
-        ("pmid-unique", "no PMID is exported twice", "duplicate PMID(s)",
+        ("pmid-unique", "no PMID is exported twice", "duplicate record(s)",
          duplicates, "duplicate_pmids", "duplicate_pmids",
          "PMIDs appearing in more than one record.", FAIL),
         ("no-extra-fields", "no record carries an unexpected field",
