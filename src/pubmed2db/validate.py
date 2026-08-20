@@ -96,7 +96,17 @@ CORE_FIELDS = ("article_title", "volume", "issue",
 #: That is the same reasoning that keeps the ``identifiers`` comparison
 #: advisory below, and it is unaffected by how well the two sides are
 #: normalized.
-SOFT_FIELDS = ("journal_name", "journal_abbrev", "pub_date")
+#: Keyed by *why* each field is soft, because the two reasons are unrelated and
+#: the run summary prints them separately. ``SOFT_FIELDS`` is derived from this
+#: rather than written twice — the summary line used to say "NLM Catalog source"
+#: for the whole tuple, which stopped being true the moment ``pub_date`` joined
+#: it for an entirely different reason.
+SOFT_FIELD_REASONS: dict[str, tuple[str, ...]] = {
+    "NLM Catalog source": ("journal_name", "journal_abbrev"),
+    "efetch renders a date, we ship the archival string": ("pub_date",),
+}
+
+SOFT_FIELDS = tuple(f for fields in SOFT_FIELD_REASONS.values() for f in fields)
 
 _ID_RE = re.compile(r"^PMID:(\d+)$")
 
@@ -1625,7 +1635,10 @@ def _not_checked(report: dict) -> list[str]:
     threshold = report["inputs"].get("abstract_threshold")
     derived = [
         f"compared strictly against Entrez: {', '.join(CORE_FIELDS)}",
-        f"compared but never fails the run (NLM Catalog source): {', '.join(SOFT_FIELDS)}",
+        *(
+            f"compared but never fails the run ({reason}): {', '.join(fields)}"
+            for reason, fields in SOFT_FIELD_REASONS.items()
+        ),
         "compared but never fails the run (assigned upstream after our last "
         "update file): identifiers",
         "abstract compared by similarity ratio"

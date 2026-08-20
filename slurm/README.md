@@ -133,9 +133,22 @@ INFO pubmed2db.load: loaded pubmed26n1201.xml.gz: 30000 articles, 0 deletions, 0
   it is what a high-water mark does.
 
 So a run that reaches `peak 42.1 GiB` by file 1201 hit 42 GiB *at some point*;
-whether it is still there is what `RSS` tells you. If both climb together and
-`RSS` never comes down, DuckDB's limit is too high — lower
-`PUBMED2DB_DUCKDB_MEMORY_LIMIT` rather than raising `--mem`.
+whether it is still there is what `RSS` tells you.
+
+If both climb together and `RSS` never comes down, **something is growing, but
+not necessarily DuckDB.** Its buffer pool is the obvious suspect and the easy
+one to test — lower `PUBMED2DB_DUCKDB_MEMORY_LIMIT` and re-run. If `RSS`
+plateaus lower, that was it. If it climbs the same way, the growth is in the
+memory DuckDB's limit does *not* govern (the lxml tree, the parsed records, the
+Arrow batch), and lowering the limit further only buys spilling — visible as a
+collapsed s/file rate — without touching the cause.
+
+That distinction is not academic: the 42.1 GiB reading above has **never been
+explained.** It predates the discovery that DuckDB reads the cgroup, so it was
+originally blamed on a node-sized buffer-pool default that turned out not to
+exist. Which half is growing is one of the questions the next full load answers
+(#37), and #25 — the loader holding a whole lxml DOM per file — is the leading
+candidate for the other half.
 
 (`RSS` reads `/proc`, so it shows `n/a` on macOS. That only affects local
 development; on the cluster it is always available.)
@@ -274,14 +287,17 @@ Notes on the knobs:
   oversubscribes the step that gets OOM-killed, and one set deliberately below
   it is also the only way `--shards` interacts with a group-level `--threads` —
   the `SET` overrides it for the duration of the COPY.
-- **`--sample-size` is per shard, so the field check scales with the shard
-  count.** `validate` samples that many records from *each* shard, and since
-  the export writes one shard per writer thread, the shard count follows
-  `--cpus-per-task` rather than being fixed. Halving the export's allocation
-  therefore halves how many records the next `validate` compares against
-  Entrez, without either flag changing. The report says what a run actually
-  checked — `(240 records sampled: 15/shard x 16 shards, seed 0)` — so read
-  that line rather than assuming the default means one number.
+- **`--sample-size` is per shard, so `05-validate.sbatch` derives it from a
+  target total.** `validate` samples that many records from *each* shard, and
+  since the export writes one shard per writer thread the shard count follows
+  `--cpus-per-task`. Left alone, halving the export's allocation would halve how
+  many records the next `validate` compares against Entrez without either flag
+  changing. The script divides `VALIDATE_SAMPLE_TOTAL` (240 by default, what the
+  pre-2026 runs sampled as 15 × 16) by the shards actually on disk, so runs stay
+  comparable across allocations; set it empty to pass nothing and take the CLI's
+  own per-shard default. The report still says what a run checked —
+  `(240 records sampled: 30/shard x 8 shards, seed 0)` — and that line, not the
+  flag, is the one to read.
 - **Shards are gzipped by default.** `--gzip` is on unless you pass
   `--no-gzip`; compression happens as each shard is written (no separate
   re-read pass) and costs CPU rather than memory. A full corpus lands at

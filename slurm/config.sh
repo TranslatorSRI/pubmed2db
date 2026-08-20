@@ -26,6 +26,14 @@
 # --cpus-per-task=8 oversubscribes 2:1 on the one step that gets OOM-killed,
 # and would silently raise a group-level --threads set to run *below* an
 # allocation on a busy node. Change the sbatch header and this follows.
+# `validate` samples this many records *in total* for the Entrez field check,
+# not per shard — the CLI's --sample-size is per shard, and since the export
+# writes one shard per writer thread that would make the sample silently track
+# --cpus-per-task. 240 is what the pre-2026 corpus runs sampled (15 x 16
+# shards), so runs stay comparable when the shard count changes. Set it empty
+# to pass no --sample-size at all and take the CLI's own default.
+: "${VALIDATE_SAMPLE_TOTAL=240}"
+
 : "${SHARDS:=${SLURM_CPUS_PER_TASK:-8}}"
 
 # DuckDB's buffer-pool cap per step. These are NOT exported: the CLI reads
@@ -35,8 +43,15 @@
 # Both are starting points rather than measured optima (#37). They sit below
 # each step's --mem to leave room for the lxml tree, the parsed records and the
 # Arrow batch, which share the same cgroup and are not covered by DuckDB's limit.
-: "${LOAD_MEMORY_LIMIT:=48GB}"
-: "${EXPORT_MEMORY_LIMIT:=200GB}"
+#
+# `=` rather than `:=`, so `LOAD_MEMORY_LIMIT= ./slurm/submit.sh load` really
+# does leave DuckDB's own cgroup-derived default in place. With `:=` an empty
+# value is silently replaced by the default below, which is the opposite of what
+# passing it empty means — the same mistake DUCKDB_TEMP_DIR was fixed for and
+# these two were not. An empty value is safe all the way down: the CLI's option
+# is falsy, so `db.connect` never issues a SET.
+: "${LOAD_MEMORY_LIMIT=48GB}"
+: "${EXPORT_MEMORY_LIMIT=200GB}"
 
 # Fast local scratch for DuckDB to spill into. Only the export is likely to need
 # it; the loader inserts file-by-file. Set it to empty (DUCKDB_TEMP_DIR=) to
