@@ -18,7 +18,7 @@ from pubmed_downloader.utils import Collective
 
 from .db import NEEDS_LOAD_SQL, parse_file_name, record_run
 from .parse import ParsedArticle, ParsedFile, parse_file
-from .util import eta_str, peak_rss_gib
+from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
 
@@ -233,14 +233,19 @@ def load_file(
     source_file = source_file or path.name
     parsed = parse_file(path)
     n_articles = load_parsed(con, parsed, source_file, kind=kind)
+    # Report RSS *now* as well as the high-water mark: ru_maxrss only ever rises,
+    # so on its own a growing number says nothing about whether this process is
+    # actually holding more memory than it was ten files ago.
+    current = current_rss_gib()
     logger.info(
         "loaded %s: %d articles, %d deletions, %d failed to parse, "
-        "%d book record(s) skipped (peak RSS %.1f GiB)",
+        "%d book record(s) skipped (RSS %s, peak %.1f GiB)",
         source_file,
         n_articles,
         len(parsed.deleted_pmids),
         parsed.n_failed,
         parsed.n_book_records,
+        "n/a" if current is None else f"{current:.1f} GiB",
         peak_rss_gib(),
     )
     return parsed
@@ -305,10 +310,14 @@ def load_files(
         done = i + 1
         remaining = total - done
         elapsed = time.monotonic() - run_start
-        eta = eta_str(elapsed, done, remaining)
+        # Elapsed and the running rate are both here so a Slurm run tells you
+        # what --time to request next: the rate is what scales to the remaining
+        # files, and elapsed is what you compare against the limit you asked for.
         logger.info(
-            "progress: %d/%d files this run, %d remaining, ~%s to go",
-            done, total, remaining, eta,
+            "progress: %d/%d files this run, %d remaining · %.1f s/file · "
+            "elapsed %s · %s",
+            done, total, remaining, elapsed / done, fmt_duration(elapsed),
+            "done" if remaining <= 0 else f"~{eta_str(elapsed, done, remaining)} to go",
         )
 
     if failed:

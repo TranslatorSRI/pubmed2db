@@ -27,6 +27,7 @@ explains its part; this table is only a map.
 | `src/pubmed2db/status.py` | Pipeline-readiness checks derived from DB state. |
 | `src/pubmed2db/util.py` | Shared helpers for the long steps: progress/ETA, durations, peak RSS. |
 | `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`, `status`, `validate`. |
+| `slurm/` | One `sbatch` script per pipeline step, `config.sh`, and `submit.sh`. See [`slurm/README.md`](./slurm/README.md). |
 
 ## Decisions that are not visible from the code
 
@@ -48,6 +49,23 @@ explains its part; this table is only a map.
   written down). A denormalized `article.identifiers` column would have
   duplicated the data *and* forced a full corpus reload to backfill it, which is
   the reason not to, and the reason is not visible from the query.
+- **DuckDB reads the Slurm cgroup. Both of its sized defaults do — we guessed
+  otherwise twice and were wrong twice.** Measured on duckdb 1.5.4:
+  `memory_limit` is ~76% of `--mem` (6.1 GiB under `--mem=8G`, 47.3 GiB under
+  `--mem=62G`; ~80% of physical RAM off a cluster) and `threads` is
+  `--cpus-per-task` (2 under `--cpus-per-task=2` on a 64-core node — and via the
+  cgroup's CPU quota, not an affinity mask, which read the full 64). **Do not
+  reason from "DuckDB cannot see the allocation"; measure it.** Both claims
+  reached the docs, the `--help` text and an issue before anyone ran the
+  one-line probe in #36/#38 that disproves them. So the buffer pool is not what
+  overruns the allocation; what its limit does not cover is, since the lxml
+  tree, the parsed records and the Arrow batch share the same cgroup and the
+  default already claims three quarters of it.
+- **Two memory numbers mislead, and both have bitten.** `util.peak_rss_gib` is
+  `ru_maxrss`, a high-water mark that only ever rises, so a climbing per-file
+  "peak" is not evidence of a leak; `current_rss_gib` is the one that can fall —
+  which is why the load and validate progress lines log both. Before diagnosing loader memory, read `slurm/README.md` → "Running
+  `load`: how much memory?".
 - **An efetch mismatch is not evidence about what we parsed.** `validate`
   compares the export against Entrez `efetch`, but efetch output is a
   *rendering*, not the archival XML: it serves PMID 152567 as
@@ -77,6 +95,45 @@ explains its part; this table is only a map.
   newest-first, so `--limit N` takes the head; `ensure()` skips by file name, so a
   republished file keeps stale bytes); both are pinned by tests in
   `tests/test_db_download.py`, whose docstrings say what they hold in place.
+
+- **The `#SBATCH` headers in `slurm/` are the only place an allocation is
+  written down**, and `slurm/README.md` deliberately does not repeat them — it
+  carries the *evidence* (dated run tables, peak RSS, the shard-read breakdown)
+  and the reasoning instead. The two have different lifecycles: a new run
+  appends a measurement, a changed cluster profile edits a header. Keeping both
+  runnable meant two places to edit with nothing to catch a missed one;
+  `test_readme_does_not_duplicate_the_allocations` holds the split. Don't
+  "helpfully" restore a copy-pasteable `srun --mem=…` to the README.
+- **`--dependency=afterok` does not cancel anything by default.** Slurm leaves a
+  dependent whose dependency can never be satisfied *pending forever* with
+  reason `DependencyNeverSatisfied`; it cancels only where the site set
+  `kill_invalid_depend` in `slurm.conf`. `submit.sh` therefore passes
+  `--kill-on-invalid-dep=yes` on every chained job, which is what makes its
+  header's promise true on any site. In the same family: `sbatch --parsable`
+  prints `jobid;clustername` on a multi-cluster site, so the id is truncated at
+  the `;` before it reaches the next `--dependency`. Neither is observable off
+  the cluster — both are pinned by tests in `tests/test_slurm_scripts.py`.
+- **Compare manifest paths by base name, never as strings.** `MANIFEST_DIR` is
+  environment-overridable, so `data/manifests/` and `data/manifests` both reach
+  `05-validate.sbatch`; the second spelling makes `$manifest` and `find`'s
+  output the same file but never string-equal, which silently let a same-day
+  re-run pick today's manifest as its own baseline and report zero drops. The
+  matching rule on the Python side is that a **`fail`** run writes no manifest
+  at all (a short PMID set from a truncated export would poison the next run's
+  drop check) while a **`warn`** run still does — the usual warning is "Entrez
+  was unreachable", which says nothing about the set the shard read built.
+- **Test the shell scripts by running them, not by reading them.** Every bug in
+  `slurm/` so far was invisible on inspection and would have fired on the
+  cluster, not locally: an empty array expanded under `set -u` is an error on
+  bash 3.2 (and sat on a *fallback* path), and `:=` restored a default the
+  config documented as disableable by setting it empty. `tests/test_slurm_scripts.py`
+  runs them against a stub `uv` that echoes its arguments, which is cheap enough
+  that new logic has no excuse. It also avoids `declare -A` so the scripts run
+  on bash 3.2, which is what makes them testable on a macOS dev box at all.
+  (One thing measured and found *not* to be a bug, so it is not re-litigated:
+  `[[ cond ]] && arr+=(...)` under `set -e` is harmless mid-script — non-final
+  commands of an AND-OR list are exempt. It bites only as the last statement of
+  a script or function.)
 
 ## Development
 

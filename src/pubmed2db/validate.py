@@ -34,6 +34,7 @@ from __future__ import annotations
 import difflib
 from collections import Counter
 import gzip
+import io
 import json
 import logging
 import random
@@ -53,7 +54,7 @@ from .export import (
     _year_from_medline_date,
     month_to_abbrev,
 )
-from .util import fmt_duration, peak_rss_gib
+from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,10 @@ _DRIFT_REL = 0.10
 
 #: Fractional shortfall of export vs. the DB latest count that is an error.
 _DB_SHORTFALL_RATE = 0.01
+
+#: Minimum gap between progress log lines while reading the shards, matching the
+#: export's cadence: enough points to watch RSS climb, few enough to read.
+_PROGRESS_INTERVAL_S = 60.0
 
 # --------------------------------------------------------------------------- #
 # Report accumulator
@@ -261,6 +266,24 @@ def find_shards(export_dir: Path) -> list[Path]:
     )
 
 
+def _shard_sizes(shards: list[Path]) -> dict[Path, int]:
+    """Byte size of each shard, ``0`` for one that cannot be stat'd.
+
+    `export` publishes in place (#24), so a re-run can replace or remove a shard
+    between :func:`find_shards` and here. That is the half-written export this
+    check exists to report, not a reason to abandon the run with a
+    ``FileNotFoundError`` — the read itself then fails and records the shard as
+    unreadable. Only the progress denominator is off, and only for that shard.
+    """
+    sizes = {}
+    for path in shards:
+        try:
+            sizes[path] = path.stat().st_size
+        except OSError:
+            sizes[path] = 0
+    return sizes
+
+
 def _open_text(path: Path):
     if path.name.endswith(".gz"):
         return gzip.open(path, "rt", encoding="utf-8")
@@ -342,6 +365,17 @@ def check_structure(
     #: not — so record the rate and let a reader compare it to the last run.
     with_prefix: Counter[str] = Counter()
 
+    # Progress is measured in *bytes of shard consumed*, the one denominator we
+    # know before reading: the record total is what this pass is computing, and
+    # counting shards alone would report nothing at all for the common
+    # single-shard export. Hence the raw handle below — `raw.tell()` is the
+    # compressed offset for a .gz shard, which is the scale `st_size` is in.
+    shard_bytes = _shard_sizes(shards)
+    total_bytes = sum(shard_bytes.values())
+    bytes_done = 0
+    start = time.monotonic()
+    last_log = start
+
     for shard_index, path in enumerate(shards):
         rng = random.Random(seed + shard_index)
         reservoir: list[tuple[int, dict]] = []
@@ -352,7 +386,13 @@ def check_structure(
         # corrupt header raises BadGzipFile. Report it as the structural fault it
         # is instead of dying on the one input this check exists to catch.
         try:
-            with _open_text(path) as handle:
+            # The raw binary handle rather than `_open_text`, so the progress
+            # line below can call `raw.tell()`: for a .gz shard that is the
+            # compressed offset, the scale `total_bytes` is measured in.
+            with path.open("rb") as raw, (
+                gzip.open(raw, "rt", encoding="utf-8") if path.name.endswith(".gz")
+                else io.TextIOWrapper(raw, encoding="utf-8")
+            ) as handle:
                 for lineno, line in enumerate(handle, start=1):
                     line = line.strip()
                     if not line:
@@ -410,9 +450,35 @@ def check_structure(
                             if j < sample_size:
                                 reservoir[j] = (pmid, doc)
                         seen_in_shard += 1
+
+                    # Reading the clock every record looks wasteful and is not:
+                    # `time.monotonic()` is ~25 ns against ~2.8 µs of per-record
+                    # work above (json.loads, the two set differences, the null
+                    # scan, the id regex, the reservoir draw), so gating on a
+                    # `records % N` counter instead saves ~1 s of a 7m 38s
+                    # corpus read. It would also cost the property the line is
+                    # for: progress is denominated in bytes, so a record-counted
+                    # gate would space the lines by record size rather than by
+                    # time, and these are meant to be a minute apart in a log.
+                    now = time.monotonic()
+                    if now - last_log >= _PROGRESS_INTERVAL_S and total_bytes:
+                        elapsed = now - start
+                        read = bytes_done + raw.tell()
+                        current = current_rss_gib()
+                        logger.info(
+                            "progress: %s record(s), shard %d/%d, %.1f%% of %.1f GiB "
+                            "read · elapsed %s · RSS %s · ~%s remaining",
+                            f"{result.records_total:,}", shard_index + 1, len(shards),
+                            100 * read / total_bytes, total_bytes / 1024**3,
+                            fmt_duration(elapsed),
+                            "n/a" if current is None else f"{current:.1f} GiB",
+                            eta_str(elapsed, read, total_bytes - read),
+                        )
+                        last_log = now
         except (OSError, EOFError) as exc:
             unreadable.append({"shard": path.name, "error": str(exc)})
 
+        bytes_done += shard_bytes[path]
         for pmid, doc in reservoir:
             result.sample[pmid] = doc
 
@@ -1273,6 +1339,20 @@ def run_validation(
     shards = find_shards(export_dir)
     report = Report()
 
+    # One start line, before any of the slow work: what is being validated, and
+    # whether the two things a run is usually misconfigured on — the database
+    # and the API key — were actually picked up. The key itself is never logged,
+    # only that one was found; the report carries the same fact as `api_key_used`.
+    logger.info(
+        "starting validation: %d shard(s) in %s, %.1f GiB · database %s · %s",
+        len(shards), export_dir,
+        sum(_shard_sizes(shards).values()) / 1024**3,
+        "available" if con is not None else "not available",
+        "offline (no Entrez checks)" if not online
+        else "online with an NCBI API key (10 req/s)" if api_key
+        else "online without an NCBI API key (3 req/s; set NCBI_API_KEY for 10/s)",
+    )
+
     previous = None
     if previous_report is not None:
         previous = json.loads(Path(previous_report).read_text())
@@ -1284,17 +1364,34 @@ def run_validation(
         count=0, see="inputs",
     )
 
+    # The phase lines cost nothing and are what tells you *where* a run is stuck:
+    # reading the shards is CPU-bound and local, everything after it waits on
+    # NCBI, and a hung eutils call otherwise looks identical to a slow read.
+    logger.info("reading shards (structure check)...")
     structure = check_structure(shards, report, sample_size=sample_size, seed=seed)
+    logger.info(
+        "read %s record(s) in %s (peak RSS %.1f GiB)",
+        f"{structure.records_total:,}", fmt_duration(time.monotonic() - start),
+        peak_rss_gib(),
+    )
 
+    logger.info("checking coverage...")
     check_coverage(
         report, exported_count=structure.records_total, con=con, online=online,
         api_key=api_key, email=email, previous=previous,
         entrez_low=entrez_low, entrez_high=entrez_high,
     )
+    # `check_fields` returns immediately when offline, so announcing the
+    # comparison unconditionally contradicts the start line two lines up.
+    if online:
+        logger.info(
+            "comparing %d sampled record(s) against Entrez...", len(structure.sample)
+        )
     check_fields(
         report, structure.sample, online=online, api_key=api_key, email=email,
         abstract_threshold=abstract_threshold,
     )
+    logger.info("confirming deletions...")
     check_deletions(
         report, all_pmids=structure.all_pmids, con=con,
         online=online, api_key=api_key, email=email, drop_sample=drop_sample, seed=seed,
@@ -1304,8 +1401,35 @@ def run_validation(
         previous_manifest=previous_manifest, con=con,
     )
 
+    # A manifest is a *baseline*: the next run diffs its export against it and
+    # reports what disappeared. Writing one from a failed run poisons that
+    # comparison — a truncated or half-written export yields a short PMID set,
+    # and the next run reports the recovered corpus as "N added" while the real
+    # drops go unnoticed. Since 05-validate.sbatch passes --manifest on every
+    # cluster run, that is now the default path rather than an explicit choice.
+    #
+    # WARN still writes, deliberately: the common warning is "Entrez was
+    # unreachable", which says nothing about the PMID set the shard read built.
+    # Only FAIL — no shards, unreadable shards, malformed records — means the
+    # set itself is not to be trusted.
+    manifest_written: Path | None = None
     if manifest_out is not None:
-        write_manifest(structure.all_pmids, manifest_out)
+        if report.status == FAIL:
+            logger.warning(
+                "not writing the PMID manifest to %s: validation failed, so this "
+                "export's PMID set would be an untrustworthy baseline for the "
+                "next run's drop check",
+                manifest_out,
+            )
+        else:
+            logger.info("writing PMID manifest to %s...", manifest_out)
+            write_manifest(structure.all_pmids, manifest_out)
+            manifest_written = manifest_out
+
+    logger.info(
+        "validation finished in %s (peak RSS %.1f GiB)",
+        fmt_duration(time.monotonic() - start), peak_rss_gib(),
+    )
 
     return {
         "status": report.status,
@@ -1320,7 +1444,7 @@ def run_validation(
             "database": None if con is None else "available",
             "previous_report": None if previous_report is None else str(previous_report),
             "previous_manifest": None if previous_manifest is None else str(previous_manifest),
-            "manifest_written": None if manifest_out is None else str(manifest_out),
+            "manifest_written": None if manifest_written is None else str(manifest_written),
             "online": online,
             "sample_size": sample_size,
             "drop_sample": drop_sample,

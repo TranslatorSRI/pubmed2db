@@ -74,8 +74,9 @@ def _sync_options(f):
     envvar="PUBMED2DB_THREADS",
     show_envvar=True,
     help=(
-        "Cap DuckDB's thread pool (default: the machine's core count, which "
-        "oversubscribes a smaller Slurm allocation)."
+        "Cap DuckDB's thread pool (default: the Slurm allocation's "
+        "--cpus-per-task, or the machine's core count off a cluster). Rarely "
+        "needed; use it to leave a busy node headroom."
     ),
 )
 @click.option(
@@ -88,6 +89,17 @@ def _sync_options(f):
         "scratch for large exports)."
     ),
 )
+@click.option(
+    "--memory-limit",
+    default=None,
+    envvar="PUBMED2DB_DUCKDB_MEMORY_LIMIT",
+    show_envvar=True,
+    help=(
+        "Cap DuckDB's buffer pool, e.g. '48GB' (default: ~76% of a Slurm "
+        "allocation, which leaves only the remaining quarter for the lxml tree, "
+        "the parsed records and the Arrow batch)."
+    ),
+)
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging.")
 @click.pass_context
 def main(
@@ -96,6 +108,7 @@ def main(
     db: str | None,
     threads: int | None,
     temp_dir: str | None,
+    memory_limit: str | None,
     verbose: bool,
 ) -> None:
     """Download, store, and export PubMed abstracts."""
@@ -110,13 +123,17 @@ def main(
     ctx.obj["db"] = db or str(Path(data_dir) / "pubmed.duckdb")
     ctx.obj["threads"] = threads
     ctx.obj["temp_dir"] = temp_dir
+    ctx.obj["memory_limit"] = memory_limit
     ctx.obj["verbose"] = verbose
 
 
 def _connect(ctx: click.Context):
     """Open the database with the group-level DuckDB tuning options applied."""
     return connect(
-        ctx.obj["db"], threads=ctx.obj["threads"], temp_directory=ctx.obj["temp_dir"]
+        ctx.obj["db"],
+        threads=ctx.obj["threads"],
+        temp_directory=ctx.obj["temp_dir"],
+        memory_limit=ctx.obj["memory_limit"],
     )
 
 
@@ -229,7 +246,9 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int, gzip_output: boo
                    "since that export.")
 @click.option("--manifest", "manifest", type=click.Path(dir_okay=False), default=None,
               help="Write this export's sorted PMID manifest here (gzipped), for a "
-                   "later run to diff against with --previous-manifest.")
+                   "later run to diff against with --previous-manifest. Skipped "
+                   "when the run fails, so a bad export cannot become the next "
+                   "run's baseline.")
 @click.option("--sample-size", type=int, default=15, show_default=True,
               help="Records sampled per shard for API field validation.")
 @click.option("--drop-sample", type=int, default=10, show_default=True,

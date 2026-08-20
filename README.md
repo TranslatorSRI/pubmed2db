@@ -144,11 +144,21 @@ PubMed supplies (`pii`, `mid`, …) is still loaded and is available in the
 > uv run pubmed2db --data-dir data load
 > ```
 
-Two more group-level options tune DuckDB itself, mainly for large exports on a
-cluster: `--threads N` (`PUBMED2DB_THREADS`) caps the thread pool, which
-otherwise sizes itself from the machine's core count and so oversubscribes a
-smaller allocation, and `--temp-dir PATH` (`PUBMED2DB_DUCKDB_TEMP_DIR`) sets
-where DuckDB spills when a query exceeds memory. Both go before the subcommand.
+Three more group-level options tune DuckDB itself, which matters on a cluster:
+
+- `--threads N` (`PUBMED2DB_THREADS`) caps the thread pool. Rarely needed on
+  Slurm: DuckDB reads the cgroup's CPU quota and already sizes the pool from
+  `--cpus-per-task` (it uses the machine's core count only off a cluster).
+- `--memory-limit SIZE` (`PUBMED2DB_DUCKDB_MEMORY_LIMIT`, e.g. `48GB`) caps the
+  buffer pool. DuckDB does read the Slurm cgroup, defaulting to ~76% of `--mem`
+  (measured on duckdb 1.5.4), so this is not about rescuing it from a node-sized
+  default — it is about leaving room for the memory DuckDB's limit does *not*
+  cover: the lxml tree, the parsed records and the Arrow batch all live in the
+  same cgroup.
+- `--temp-dir PATH` (`PUBMED2DB_DUCKDB_TEMP_DIR`) sets where DuckDB spills when a
+  query exceeds its memory budget.
+
+All three go before the subcommand. See [`slurm/README.md`](./slurm/README.md).
 
 The steps are independent and incremental (re-running `download` revalidates
 existing files rather than refetching them), and each checks its prerequisites
@@ -173,6 +183,12 @@ The STRUCTURE heading also carries the share of records that came out with each
 identifier type (`identifier_coverage` in the report). Nothing gates on it — one
 export in isolation cannot say whether 96% is right and 6% is not — but a rate
 that collapsed between two runs is invisible without the number.
+
+A long run narrates itself: one start line naming the shards and confirming
+whether the database and an API key were picked up (never the key itself), a
+progress line with an ETA once a minute while the shards are read, and a line
+per phase after that — so a run waiting on NCBI is distinguishable from one
+still reading. Peak RSS is logged at the end and stored in the report.
 
 Stdout is a test report: every check is listed with what it expected and what it
 saw, so a reviewer can tell what was verified, what was skipped, and what is not
@@ -216,12 +232,15 @@ same *records*, so `validate` can write a sorted PMID manifest and diff against
 an earlier one:
 
 ```bash
-# Archive this export's PMID set (gzipped, one PMID per line).
-uv run pubmed2db validate data/json --manifest data/json/pmids.txt.gz
+# Archive this export's PMID set (gzipped, one PMID per line). Date-stamp it,
+# and keep it outside the export directory: one shared name means the next run
+# overwrites the manifest it is diffing against.
+uv run pubmed2db validate data/json --manifest data/manifests/pmids-20260820.txt.gz
 
 # Next month: report which PMIDs disappeared since that export.
 uv run pubmed2db validate data/json-new \
-    --previous-manifest data/json/pmids.txt.gz --manifest data/json-new/pmids.txt.gz
+    --previous-manifest data/manifests/pmids-20260820.txt.gz \
+    --manifest data/manifests/pmids-20260921.txt.gz
 ```
 
 A dropped PMID is fine if the database recorded a `DeleteCitation` for it; one

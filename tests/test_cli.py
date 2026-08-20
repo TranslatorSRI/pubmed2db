@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 
+import pytest
 from click.testing import CliRunner
 
 from pubmed2db.cli import main
@@ -147,28 +148,84 @@ def test_record_run_roundtrip(tmp_path):
 
 
 def test_connect_applies_duckdb_tuning(tmp_path):
-    """`connect` passes `threads`/`temp_directory` through to DuckDB."""
+    """`connect` passes `threads`/`memory_limit`/`temp_directory` to DuckDB."""
     from pubmed2db.db import connect
 
     spill = tmp_path / "spill"
-    con = connect(tmp_path / "tuned.duckdb", threads=2, temp_directory=spill)
+    con = connect(
+        tmp_path / "tuned.duckdb", threads=2, temp_directory=spill, memory_limit="1GB"
+    )
     try:
         assert con.execute("SELECT current_setting('threads')").fetchone()[0] == 2
         assert con.execute("SELECT current_setting('temp_directory')").fetchone()[0] == str(spill)
+        # DuckDB reports the limit back in its own units ("953.6 MiB" for 1GB).
+        assert _as_bytes(_setting(con, "memory_limit")) == pytest.approx(10**9, rel=0.01)
     finally:
         con.close()
 
 
 def test_cli_threads_and_temp_dir_options(tmp_path, loaded_db):
-    """The group-level `--threads`/`--temp-dir` options reach the connection."""
+    """The group-level DuckDB tuning options reach the connection."""
     db_path = loaded_db
 
     result = CliRunner().invoke(
         main,
-        ["--db", str(db_path), "--threads", "2", "--temp-dir", str(tmp_path / "spill"), "status"],
+        ["--db", str(db_path), "--threads", "2", "--memory-limit", "1GB",
+         "--temp-dir", str(tmp_path / "spill"), "status"],
     )
     assert result.exit_code == 0, result.output
     assert "Export:    ready" in result.output
+
+
+def _setting(con, name: str) -> str:
+    return con.execute(f"SELECT current_setting('{name}')").fetchone()[0]
+
+
+#: DuckDB reports a size in whichever unit fits, and the *default* limit is
+#: sized from the machine — on a large-memory cluster node that is TiB, so a
+#: GiB-only ladder turns this test into a KeyError on exactly the hardware it
+#: is written for.
+_UNITS = {"bytes": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3,
+          "TiB": 1024**4, "PiB": 1024**5}
+
+
+def _as_bytes(value: str) -> float:
+    """Parse DuckDB's '953.6 MiB' / '12.7 GiB' back into a number."""
+    number, unit = value.split()
+    return float(number) * _UNITS[unit]
+
+
+def test_connect_memory_limit_is_below_the_default(tmp_path):
+    """An explicit limit must actually shrink the default, not sit alongside it.
+
+    The cap is derived from the observed default rather than hard-coded. DuckDB
+    sizes that default from the cgroup (#36), so a fixed 1GB is only below it on
+    a machine with enough memory -- in a small container the default itself can
+    be under a gigabyte and the comparison inverts, failing a run in which
+    memory_limit was applied perfectly correctly.
+    """
+    from pubmed2db.db import connect
+
+    default_con = connect(tmp_path / "default.duckdb")
+    try:
+        default = _as_bytes(_setting(default_con, "memory_limit"))
+    finally:
+        default_con.close()
+
+    wanted = default / 2
+    capped_con = connect(tmp_path / "capped.duckdb", memory_limit=f"{int(wanted)}B")
+    try:
+        capped = _as_bytes(_setting(capped_con, "memory_limit"))
+    finally:
+        capped_con.close()
+
+    # The property under test: the explicit limit *replaces* the default.
+    assert capped < default
+    # And lands near what was asked for -- a sanity band, not a round-trip.
+    # DuckDB does not echo this setting back verbatim: it reports a 6.2 GiB
+    # request as "6.1 GiB" and a 1GB one as "953.6 MiB", so an exact comparison
+    # fails on the value the machine happens to hand it.
+    assert capped == pytest.approx(wanted, rel=0.05)
 
 
 def test_cli_rejects_a_non_positive_limit(tmp_path):
@@ -278,3 +335,41 @@ def test_cli_update_survives_a_failed_journal_refresh(staged_download, monkeypat
     con = connect(db_path)
     assert con.execute("SELECT count(*) FROM article").fetchone()[0] > 0
     con.close()
+
+
+#: The three group-level DuckDB knobs, and the environment variable each reads.
+#: `show_envvar=True` is what puts these names in `--help`; --memory-limit
+#: originally spelled its own out in prose instead, which is a second copy that
+#: can drift from the `envvar=` argument beside it.
+DUCKDB_KNOBS = [
+    ("--threads", "PUBMED2DB_THREADS"),
+    ("--temp-dir", "PUBMED2DB_DUCKDB_TEMP_DIR"),
+    ("--memory-limit", "PUBMED2DB_DUCKDB_MEMORY_LIMIT"),
+]
+
+
+@pytest.mark.parametrize("option,envvar", DUCKDB_KNOBS)
+def test_duckdb_knobs_advertise_their_env_var(option, envvar):
+    """`--help` names each knob's environment variable, via click not prose."""
+    result = CliRunner().invoke(main, ["--help"])
+    assert result.exit_code == 0, result.output
+    assert option in result.output
+    # click wraps help to the terminal width, so "[env var:" and the name can
+    # land on different lines. Collapse whitespace before matching.
+    flattened = " ".join(result.output.split())
+    # click renders these as "[env var: NAME; ...]" only when show_envvar is set.
+    assert f"env var: {envvar}" in flattened
+
+
+def test_env_var_names_are_written_down_once():
+    """No knob repeats its env var in the help *text* as well as the marker.
+
+    Two copies in one help string is what this replaced; the `[env var: ...]`
+    marker click generates is the single source.
+    """
+    result = CliRunner().invoke(main, ["--help"])
+    for _option, envvar in DUCKDB_KNOBS:
+        assert result.output.count(envvar) == 1, (
+            f"{envvar} appears more than once in --help; the click marker "
+            "should be its only mention"
+        )
