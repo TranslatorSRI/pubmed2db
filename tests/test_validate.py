@@ -608,6 +608,57 @@ def test_offline_results_survive_an_entrez_outage(export_dir, loaded_con, monkey
     assert report["checks"]["field_validation"] == {"sampled": 2, "checked": 0}
 
 
+def test_a_failed_run_writes_no_manifest(export_dir, monkeypatch, tmp_path, caplog):
+    """A manifest is the next run's baseline, so a failed run must not leave one.
+
+    05-validate.sbatch passes --manifest on every cluster run, which makes this
+    the default path rather than a deliberate choice. A truncated or half-written
+    export yields a short PMID set; adopting it as the baseline makes the *next*
+    run report the recovered corpus as "N added" while the real drops go
+    unnoticed -- the one comparison the manifest exists for.
+    """
+    import logging
+
+    # An unreadable shard is a FAIL, and is exactly the half-written export the
+    # structure check exists to catch.
+    shards = [*validate.find_shards(export_dir), export_dir / "pubmed_metadata_09999.ndjson"]
+    monkeypatch.setattr(validate, "find_shards", lambda _: shards)
+
+    manifest = tmp_path / "pmids.txt.gz"
+    with caplog.at_level(logging.WARNING, logger="pubmed2db.validate"):
+        report = validate.run_validation(export_dir, online=False, manifest_out=manifest)
+
+    assert report["status"] == "fail"
+    assert not manifest.exists()
+    # The report must not claim a manifest it did not write, or the next run's
+    # operator goes looking for a file that is not there.
+    assert report["inputs"]["manifest_written"] is None
+    assert any("not writing the PMID manifest" in r.getMessage() for r in caplog.records)
+
+
+def test_a_warning_still_writes_a_manifest(export_dir, loaded_con, monkeypatch, tmp_path):
+    """WARN is not FAIL: the usual warning says nothing about the PMID set.
+
+    "Entrez was unreachable" is a statement about the network, not about the
+    shard read that built the set -- and refusing to write on it would mean a
+    cluster with flaky egress never accumulates a baseline at all.
+    """
+    def dead(endpoint, params, **_):
+        if endpoint == "efetch.fcgi":
+            raise RuntimeError("eutils efetch.fcgi failed after 3 attempts")
+        return _fake_eutils_factory(_EFETCH)(endpoint, params)
+
+    monkeypatch.setattr(validate, "_eutils", dead)
+    manifest = tmp_path / "pmids.txt.gz"
+    report = validate.run_validation(
+        export_dir, con=loaded_con, email="me@example.com", manifest_out=manifest
+    )
+
+    assert report["status"] == "warn"
+    assert validate.read_manifest(manifest) == {1001, 1003}
+    assert report["inputs"]["manifest_written"] == str(manifest)
+
+
 def test_permanent_http_errors_are_not_retried(monkeypatch):
     """A 4xx (a bad api_key, say) fails on the first call: retrying cannot fix it."""
     import requests
@@ -649,6 +700,8 @@ def test_reinstated_pmid_is_not_an_explained_drop(export_dir, loaded_con, tmp_pa
     drops = report["checks"]["drops_since_previous"]
     assert drops["explained_by_deletion"] == []
     assert drops["unexplained"] == [1002]
+
+
 def test_start_line_reports_api_key_state_without_the_key(export_dir, monkeypatch, caplog):
     """The one thing a run is silently misconfigured on is the API key.
 

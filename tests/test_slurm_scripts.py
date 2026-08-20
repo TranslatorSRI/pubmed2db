@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -92,6 +93,75 @@ def test_dry_run_chains_all_steps_in_order() -> None:
     assert "--dependency" not in lines[0]
     for previous, line in zip(STEPS, lines[1:]):
         assert f"--dependency=afterok:<{previous}>" in line
+
+
+def test_chained_steps_are_killed_when_their_dependency_can_never_run() -> None:
+    """afterok alone does not cancel the rest of the chain; the flag does.
+
+    Slurm's default for a dependency that can never be satisfied is to leave the
+    dependent *pending forever* with reason DependencyNeverSatisfied, cancelling
+    it only where the site set kill_invalid_depend in slurm.conf. submit.sh's
+    header promises cancellation, so it has to ask for it explicitly -- otherwise
+    a load that fails at hour three leaves the export and validate squatting in
+    the queue.
+    """
+    result = run_submit("--dry-run", "all", NCBI_EMAIL="someone@example.org")
+    assert result.returncode == 0, result.stderr
+
+    lines = [line for line in result.stdout.splitlines() if line.startswith("sbatch")]
+    for line in lines[1:]:
+        assert "--kill-on-invalid-dep=yes" in line, line
+    # The first job has nothing to depend on, so the flag would be noise.
+    assert "--kill-on-invalid-dep" not in lines[0]
+
+
+def test_a_step_named_twice_is_submitted_once() -> None:
+    """`all validate` must not chain a second validate onto the first.
+
+    Two validates run against the same export, and the second rewrites the dated
+    manifest and report -- then, today's manifest now existing, skips it and
+    diffs against the run before. Cheaper to refuse the duplicate than to explain
+    the result.
+    """
+    result = run_submit("--dry-run", "all", "validate", NCBI_EMAIL="someone@example.org")
+    assert result.returncode == 0, result.stderr
+
+    lines = [line for line in result.stdout.splitlines() if line.startswith("sbatch")]
+    assert len(lines) == len(STEPS)
+    assert sum("05-validate.sbatch" in line for line in lines) == 1
+    assert "more than once" in result.stderr
+
+
+def test_a_federated_job_id_is_stripped_before_it_reaches_a_dependency() -> None:
+    """`sbatch --parsable` prints "jobid;clustername" on a multi-cluster site.
+
+    Interpolated whole, the suffix lands inside --dependency=afterok:12345;ht1,
+    which sbatch rejects -- so the chain breaks at submit time on exactly the
+    sites hardest to debug from here. This is the one test that runs the real
+    submit path rather than --dry-run, against a stub sbatch.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        stub_dir = Path(tmp)
+        sbatch = stub_dir / "sbatch"
+        sbatch.write_text('#!/bin/sh\necho "12345;ht1"\n')
+        sbatch.chmod(0o755)
+
+        result = subprocess.run(
+            ["bash", str(SUBMIT), "export", "validate"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": f"{stub_dir}:/usr/bin:/bin",
+                "HOME": str(REPO_ROOT),
+                "NCBI_EMAIL": "someone@example.org",
+                # Keep the stub run out of the real ./data directory.
+                "DATA_DIR": str(stub_dir / "data"),
+            },
+        )
+    assert result.returncode == 0, result.stderr
+    assert "job 12345 " in result.stdout or result.stdout.rstrip().endswith("job 12345")
+    assert "ht1" not in result.stdout
 
 
 def test_single_step_has_no_dependency() -> None:
@@ -315,3 +385,30 @@ def test_export_survives_an_uncreatable_spill_directory(sandbox: Path) -> None:
     assert "warning: cannot create" in result.stderr
     assert "--temp-dir" not in result.stdout
     assert "UV_ARGS" in result.stdout
+
+
+def test_a_trailing_slash_on_manifest_dir_still_excludes_todays_manifest(
+    sandbox: Path,
+) -> None:
+    """MANIFEST_DIR is environment-overridable, and the slash is a free typo.
+
+    The exclusion used to compare `find` output against "$manifest" as strings,
+    so `data/manifests/` made the two spellings of the same file -- one slash and
+    two -- never match. Today's manifest became the baseline and was then
+    overwritten by --manifest, i.e. drops_since_previous compared the export
+    against itself and reported zero drops however many there were. Excluding by
+    base name is what makes the spelling irrelevant.
+    """
+    import datetime
+
+    today = datetime.date.today().strftime("%Y%m%d")
+    (manifests(sandbox) / f"pmids-{today}.txt.gz").touch()
+    (manifests(sandbox) / "pmids-20260805.txt.gz").touch()
+
+    result = run_validate(
+        sandbox, NCBI_EMAIL="me@example.org", MANIFEST_DIR="data/manifests/"
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--previous-manifest data/manifests/pmids-20260805.txt.gz" in result.stdout
+    assert f"--previous-manifest data/manifests//pmids-{today}" not in result.stdout
+    assert f"--previous-manifest data/manifests/pmids-{today}" not in result.stdout
