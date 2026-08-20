@@ -13,10 +13,23 @@ on, and a copy left here rots into a contradiction of the code.
   `NCATSTranslator/Babel` `src/createcompendia/publications.py` so Babel reuses
   these downloads/exports instead of its own wget+TSV pipeline. Sharing the
   download cache works via `PYSTOW_HOME`.
-- **Confirm the Node Annotator JSON contract.** We currently emit sharded NDJSON,
-  one document per line keyed `PMID:<id>` with the DocumentMetadataAPI fields.
-  Verify this matches what Node Annotator's ElasticSearch ingest expects (id
-  field, shard sizing, gzip?).
+- **Confirm the Node Annotator JSON contract — and do it before the next
+  production export.** We emit sharded NDJSON, one document per line keyed
+  `PMID:<id>` with the DocumentMetadataAPI fields. Verify this matches what Node
+  Annotator's ElasticSearch ingest expects (id field, shard sizing, gzip).
+  **Two things changed under the ingest's feet** and neither can be checked from
+  this repo, because the consumer lives outside it:
+  - **Shards are gzipped by default now.** `data/json/pubmed_metadata_*.ndjson`
+    becomes `*.ndjson.gz`. `validate` handles both (`find_shards` matches either
+    extension), which is the *only* consumer this repo can speak for. If the
+    ingest globs `*.ndjson` or does not decompress, it reads **nothing** — an
+    empty ingest, not an error, which is the worst shape for a failure to take.
+    `--no-gzip` restores the old artifact if the answer is no.
+  - **Shard names lost their zero padding.** `pubmed_metadata_00000.ndjson`
+    became `pubmed_metadata_0.ndjson.gz`: DuckDB's `PER_THREAD_OUTPUT` names
+    files from `FILENAME_PATTERN '{i}'`, which emits a bare index. Anything
+    globbing `pubmed_metadata_*` is unaffected; anything matching the padded
+    form, or relying on the files sorting lexically past nine, is not.
 
 ## Validation (`validate`)
 
