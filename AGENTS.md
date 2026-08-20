@@ -27,6 +27,7 @@ explains its part; this table is only a map.
 | `src/pubmed2db/status.py` | Pipeline-readiness checks derived from DB state. |
 | `src/pubmed2db/util.py` | Shared helpers for the long steps: progress/ETA, durations, peak RSS. |
 | `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`, `status`, `validate`. |
+| `slurm/` | One `sbatch` script per pipeline step, `config.sh`, and `submit.sh`. See [`slurm/README.md`](./slurm/README.md). |
 
 ## Decisions that are not visible from the code
 
@@ -94,6 +95,27 @@ explains its part; this table is only a map.
   newest-first, so `--limit N` takes the head; `ensure()` skips by file name, so a
   republished file keeps stale bytes); both are pinned by tests in
   `tests/test_db_download.py`, whose docstrings say what they hold in place.
+
+- **The `#SBATCH` headers in `slurm/` are the only place an allocation is
+  written down**, and `slurm/README.md` deliberately does not repeat them — it
+  carries the *evidence* (dated run tables, peak RSS, the shard-read breakdown)
+  and the reasoning instead. The two have different lifecycles: a new run
+  appends a measurement, a changed cluster profile edits a header. Keeping both
+  runnable meant two places to edit with nothing to catch a missed one;
+  `test_readme_does_not_duplicate_the_allocations` holds the split. Don't
+  "helpfully" restore a copy-pasteable `srun --mem=…` to the README.
+- **Test the shell scripts by running them, not by reading them.** Every bug in
+  `slurm/` so far was invisible on inspection and would have fired on the
+  cluster, not locally: an empty array expanded under `set -u` is an error on
+  bash 3.2 (and sat on a *fallback* path), and `:=` restored a default the
+  config documented as disableable by setting it empty. `tests/test_slurm_scripts.py`
+  runs them against a stub `uv` that echoes its arguments, which is cheap enough
+  that new logic has no excuse. It also avoids `declare -A` so the scripts run
+  on bash 3.2, which is what makes them testable on a macOS dev box at all.
+  (One thing measured and found *not* to be a bug, so it is not re-litigated:
+  `[[ cond ]] && arr+=(...)` under `set -e` is harmless mid-script — non-final
+  commands of an AND-OR list are exempt. It bites only as the last statement of
+  a script or function.)
 
 ## Development
 
