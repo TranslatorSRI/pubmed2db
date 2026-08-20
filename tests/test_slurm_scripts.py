@@ -500,3 +500,43 @@ def test_shards_tracks_the_export_allocation() -> None:
     )
     # An explicit value still wins -- that is the documented override.
     assert shards(SHARDS="32") == "32"
+
+
+#: Every config.sh setting whose documented way to say "use the tool's own
+#: default" is to pass it empty. Each must use `=` rather than `:=`, or the
+#: default is silently restored and the operator gets the opposite of what they
+#: asked for.
+CLEARABLE_SETTINGS = ["LOAD_MEMORY_LIMIT", "EXPORT_MEMORY_LIMIT", "DUCKDB_TEMP_DIR"]
+
+
+@pytest.mark.parametrize("name", CLEARABLE_SETTINGS)
+def test_an_empty_value_stays_empty(name: str) -> None:
+    """`:=` restores the default on an empty value; `=` keeps it empty.
+
+    This has bitten once already: DUCKDB_TEMP_DIR documented "set it empty to
+    use DuckDB's default" while using `:=`, so it did the opposite. The two
+    memory limits were written the same way and missed, so the rule is pinned
+    for all three rather than for the instance that was noticed.
+    """
+    result = subprocess.run(
+        ["bash", "-c", f'source slurm/config.sh; printf "%s" "${name}"'],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT), name: ""},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "", (
+        f"{name} came back as {result.stdout!r} after being passed empty; "
+        "config.sh should use `=` rather than `:=` for it"
+    )
+
+
+@pytest.mark.parametrize("name", CLEARABLE_SETTINGS)
+def test_a_clearable_setting_still_has_a_default(name: str) -> None:
+    """`=` must not turn the setting into "empty unless you always pass it"."""
+    result = subprocess.run(
+        ["bash", "-c", f'source slurm/config.sh; printf "%s" "${name}"'],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout, f"{name} has no default at all"

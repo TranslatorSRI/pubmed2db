@@ -35,8 +35,15 @@
 # Both are starting points rather than measured optima (#37). They sit below
 # each step's --mem to leave room for the lxml tree, the parsed records and the
 # Arrow batch, which share the same cgroup and are not covered by DuckDB's limit.
-: "${LOAD_MEMORY_LIMIT:=48GB}"
-: "${EXPORT_MEMORY_LIMIT:=200GB}"
+#
+# `=` rather than `:=`, so `LOAD_MEMORY_LIMIT= ./slurm/submit.sh load` really
+# does leave DuckDB's own cgroup-derived default in place. With `:=` an empty
+# value is silently replaced by the default below, which is the opposite of what
+# passing it empty means — the same mistake DUCKDB_TEMP_DIR was fixed for and
+# these two were not. An empty value is safe all the way down: the CLI's option
+# is falsy, so `db.connect` never issues a SET.
+: "${LOAD_MEMORY_LIMIT=48GB}"
+: "${EXPORT_MEMORY_LIMIT=200GB}"
 
 # Fast local scratch for DuckDB to spill into. Only the export is likely to need
 # it; the loader inserts file-by-file. Set it to empty (DUCKDB_TEMP_DIR=) to
