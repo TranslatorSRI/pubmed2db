@@ -195,25 +195,32 @@ def _as_bytes(value: str) -> float:
     return float(number) * _UNITS[unit]
 
 
-def test_connect_memory_limit_is_below_machine_default(tmp_path):
+def test_connect_memory_limit_is_below_the_default(tmp_path):
     """An explicit limit must actually shrink the default, not sit alongside it.
 
-    Left alone DuckDB sets this from the *machine's* physical RAM, which on a
-    cluster node is far above the Slurm --mem the process really has -- the
-    reason a long load's memory climbs until it is OOM-killed.
+    The cap is derived from the observed default rather than hard-coded. DuckDB
+    sizes that default from the cgroup (#36), so a fixed 1GB is only below it on
+    a machine with enough memory -- in a small container the default itself can
+    be under a gigabyte and the comparison inverts, failing a run in which
+    memory_limit was applied perfectly correctly.
     """
     from pubmed2db.db import connect
 
     default_con = connect(tmp_path / "default.duckdb")
-    capped_con = connect(tmp_path / "capped.duckdb", memory_limit="1GB")
     try:
         default = _as_bytes(_setting(default_con, "memory_limit"))
-        capped = _as_bytes(_setting(capped_con, "memory_limit"))
-        assert capped < default
-        assert capped == pytest.approx(10**9, rel=0.01)
     finally:
         default_con.close()
+
+    wanted = int(default / 2)
+    capped_con = connect(tmp_path / "capped.duckdb", memory_limit=f"{wanted}B")
+    try:
+        capped = _as_bytes(_setting(capped_con, "memory_limit"))
+    finally:
         capped_con.close()
+
+    assert capped < default
+    assert capped == pytest.approx(wanted, rel=0.01)
 
 
 def test_cli_rejects_a_non_positive_limit(tmp_path):
