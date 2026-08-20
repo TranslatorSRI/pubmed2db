@@ -262,7 +262,12 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int | None, gzip_outp
                    "when the run fails, so a bad export cannot become the next "
                    "run's baseline.")
 @click.option("--sample-size", type=int, default=15, show_default=True,
-              help="Records sampled per shard for API field validation.")
+              help="Records sampled PER SHARD for API field validation, so the "
+                   "total is this times the shard count. Since the JSON export "
+                   "writes one shard per writer thread, that count follows the "
+                   "export's allocation rather than being fixed — the report's "
+                   "'N/shard x M shards' line says what a given run actually "
+                   "checked.")
 @click.option("--drop-sample", type=int, default=10, show_default=True,
               help="Dropped PMIDs sampled for deletion confirmation.")
 @click.option("--seed", type=int, default=0, show_default=True,

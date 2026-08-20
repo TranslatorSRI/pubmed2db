@@ -240,10 +240,13 @@ Both wrote byte-identical record sets (2M rows, `EXCEPT` in both directions
 returns nothing). Two things to read off the next cluster run, since neither can
 be predicted from a laptop:
 
-1. **Peak RSS.** The sort was the export's peak-memory event, so 256 GB is
-   probably now over-provisioned — but *how* over is a measurement, and asking
-   for less than the job needs is an OOM kill several minutes in.
-2. **Wall time**, which sets whether `--time=02:00:00` is still generous.
+1. **Peak RSS.** The sort was the export's peak-memory event, so the `--mem` in
+   `04-export.sbatch` is probably now over-provisioned — but *how* over is a
+   measurement, and asking for less than the job needs is an OOM kill several
+   minutes in.
+2. **Wall time**, which sets whether the header's `--time` is still generous.
+
+Tracked in #42; the header is the thing to edit once the numbers exist.
 
 Because the whole export is one statement, there are no per-batch progress
 lines any more; a heartbeat logs output size and current RSS once a minute
@@ -271,6 +274,14 @@ Notes on the knobs:
   oversubscribes the step that gets OOM-killed, and one set deliberately below
   it is also the only way `--shards` interacts with a group-level `--threads` —
   the `SET` overrides it for the duration of the COPY.
+- **`--sample-size` is per shard, so the field check scales with the shard
+  count.** `validate` samples that many records from *each* shard, and since
+  the export writes one shard per writer thread, the shard count follows
+  `--cpus-per-task` rather than being fixed. Halving the export's allocation
+  therefore halves how many records the next `validate` compares against
+  Entrez, without either flag changing. The report says what a run actually
+  checked — `(240 records sampled: 15/shard x 16 shards, seed 0)` — so read
+  that line rather than assuming the default means one number.
 - **Shards are gzipped by default.** `--gzip` is on unless you pass
   `--no-gzip`; compression happens as each shard is written (no separate
   re-read pass) and costs CPU rather than memory. A full corpus lands at
