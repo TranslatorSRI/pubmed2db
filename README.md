@@ -126,14 +126,17 @@ Only DOIs and PMCIDs are promoted into this field. Any other `ArticleId` type
 PubMed supplies (`pii`, `mid`, …) is still loaded and is available in the
 `article_id` table and the Parquet export.
 
-> **Databases built before this feature need rebuilding.** The identifiers come
-> from the `article_id` table, and until now that table was populated by an
+> **Databases loaded before 2026-08-04 need rebuilding before this field is
+> trustworthy.** `identifiers` reads the `article_id` table, and until
+> "Extract cited PMIDs and article IDs ourselves" that table was populated by an
 > upstream parser that also swept up every *cited reference's* DOI and PMCID (see
-> `CLAUDE.md`). Nothing detects the stale rows automatically, because the files
-> themselves have not changed. `load --force` re-parses the whole corpus and does
-> replace those rows, but it cannot undo a table that left the schema — such a
-> database still carries a populated `reference_citation`, which no reload clears
-> (see [`load --force` or a fresh database?](#load---force-or-a-fresh-database)).
+> `CLAUDE.md`). A database loaded after that is unaffected — this feature changed
+> nothing about how `article_id` is written. Nothing detects the stale rows
+> automatically, because the source files have not changed. `load --force`
+> re-parses the whole corpus and does replace those rows, but it cannot undo a
+> table that left the schema — a database that old still carries a populated
+> `reference_citation`, which no reload clears (see
+> [`load --force` or a fresh database?](#load---force-or-a-fresh-database)).
 > Load into a fresh one:
 >
 > ```bash
