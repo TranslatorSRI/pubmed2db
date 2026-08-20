@@ -112,6 +112,19 @@ def test_a_shard_that_vanishes_is_reported_not_raised(export_dir, monkeypatch):
     assert report["checks"]["structure"]["records_total"] == 2
 
 
+def test_offline_run_does_not_announce_entrez_work(export_dir, caplog):
+    """An --offline run announcing "comparing N records against Entrez" would
+    contradict its own start line: check_fields returns immediately offline."""
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="pubmed2db.validate"):
+        validate.run_validation(export_dir, online=False)
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("offline (no Entrez checks)" in m for m in messages), messages
+    assert not any("against Entrez" in m for m in messages), messages
+
+
 def test_duplicate_examples_are_distinct_pmids(export_dir):
     """One PMID exported many times must not consume every example slot.
 

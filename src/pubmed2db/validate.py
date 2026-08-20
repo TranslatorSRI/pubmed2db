@@ -1372,7 +1372,12 @@ def run_validation(
         api_key=api_key, email=email, previous=previous,
         entrez_low=entrez_low, entrez_high=entrez_high,
     )
-    logger.info("comparing %d sampled record(s) against Entrez...", len(structure.sample))
+    # `check_fields` returns immediately when offline, so announcing the
+    # comparison unconditionally contradicts the start line two lines up.
+    if online:
+        logger.info(
+            "comparing %d sampled record(s) against Entrez...", len(structure.sample)
+        )
     check_fields(
         report, structure.sample, online=online, api_key=api_key, email=email,
         abstract_threshold=abstract_threshold,
