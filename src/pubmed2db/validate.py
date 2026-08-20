@@ -1401,9 +1401,30 @@ def run_validation(
         previous_manifest=previous_manifest, con=con,
     )
 
+    # A manifest is a *baseline*: the next run diffs its export against it and
+    # reports what disappeared. Writing one from a failed run poisons that
+    # comparison — a truncated or half-written export yields a short PMID set,
+    # and the next run reports the recovered corpus as "N added" while the real
+    # drops go unnoticed. Since 05-validate.sbatch passes --manifest on every
+    # cluster run, that is now the default path rather than an explicit choice.
+    #
+    # WARN still writes, deliberately: the common warning is "Entrez was
+    # unreachable", which says nothing about the PMID set the shard read built.
+    # Only FAIL — no shards, unreadable shards, malformed records — means the
+    # set itself is not to be trusted.
+    manifest_written: Path | None = None
     if manifest_out is not None:
-        logger.info("writing PMID manifest to %s...", manifest_out)
-        write_manifest(structure.all_pmids, manifest_out)
+        if report.status == FAIL:
+            logger.warning(
+                "not writing the PMID manifest to %s: validation failed, so this "
+                "export's PMID set would be an untrustworthy baseline for the "
+                "next run's drop check",
+                manifest_out,
+            )
+        else:
+            logger.info("writing PMID manifest to %s...", manifest_out)
+            write_manifest(structure.all_pmids, manifest_out)
+            manifest_written = manifest_out
 
     logger.info(
         "validation finished in %s (peak RSS %.1f GiB)",
@@ -1423,7 +1444,7 @@ def run_validation(
             "database": None if con is None else "available",
             "previous_report": None if previous_report is None else str(previous_report),
             "previous_manifest": None if previous_manifest is None else str(previous_manifest),
-            "manifest_written": None if manifest_out is None else str(manifest_out),
+            "manifest_written": None if manifest_written is None else str(manifest_written),
             "online": online,
             "sample_size": sample_size,
             "drop_sample": drop_sample,

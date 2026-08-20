@@ -246,7 +246,9 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int, gzip_output: boo
                    "since that export.")
 @click.option("--manifest", "manifest", type=click.Path(dir_okay=False), default=None,
               help="Write this export's sorted PMID manifest here (gzipped), for a "
-                   "later run to diff against with --previous-manifest.")
+                   "later run to diff against with --previous-manifest. Skipped "
+                   "when the run fails, so a bad export cannot become the next "
+                   "run's baseline.")
 @click.option("--sample-size", type=int, default=15, show_default=True,
               help="Records sampled per shard for API field validation.")
 @click.option("--drop-sample", type=int, default=10, show_default=True,
