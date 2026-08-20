@@ -80,10 +80,15 @@ else
         exit 64
     fi
     validate_args+=(--email "$NCBI_EMAIL")
-    # Raises the rate limit from 3 to 10 req/s. Passed only when present; the
-    # key itself is never logged, here or in the report.
+    # Raises the rate limit from 3 to 10 req/s. Handed over as an environment
+    # variable rather than --api-key, because argv is world-readable through
+    # `ps` on a shared node and this is a credential; the CLI's option already
+    # declares envvar="NCBI_API_KEY", so the two are equivalent to click.
+    # Exported only when non-empty: config.sh's `:=` leaves an unset key as a
+    # plain shell variable, and exporting it empty would hand click "" instead
+    # of nothing, which reads as a key that is present but blank.
     if [[ -n "$NCBI_API_KEY" ]]; then
-        validate_args+=(--api-key "$NCBI_API_KEY")
+        export NCBI_API_KEY
     fi
 fi
 

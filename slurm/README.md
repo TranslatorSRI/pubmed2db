@@ -296,6 +296,13 @@ corpus it describes while still looking current — and one fixed name would be
 overwritten by the next run, leaving nothing to pass as `--previous-report`.
 Running `validate` by hand keeps the default location.
 
+**The API key is handed over as an environment variable, never as `--api-key`.**
+`argv` is world-readable through `ps` on a shared node, and the CLI's option
+already declares `envvar="NCBI_API_KEY"`, so the two are equivalent to `click`
+and only one of them leaks. It is exported only when non-empty: exported empty,
+`click` sees `""` — a key that is present but blank — instead of nothing at all.
+`NCBI_EMAIL` stays an explicit flag; it is contact details, not a credential.
+
 Set `VALIDATE_OFFLINE=1` for a node without egress, and `VALIDATE_FAIL_ON_WARN=1`
 to make warnings non-zero too.
 

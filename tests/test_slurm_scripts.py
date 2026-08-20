@@ -321,12 +321,36 @@ def test_validate_never_diffs_a_rerun_against_itself(sandbox: Path) -> None:
     assert f"--previous-manifest data/manifests/pmids-{today}" not in result.stdout
 
 
-def test_validate_passes_the_api_key_only_when_set(sandbox: Path) -> None:
-    without = run_validate(sandbox, NCBI_EMAIL="me@example.org")
-    assert "--api-key" not in without.stdout
+def test_the_api_key_never_reaches_argv(sandbox: Path) -> None:
+    """argv is world-readable through `ps` on a shared node, and this is a credential.
 
-    with_key = run_validate(sandbox, NCBI_EMAIL="me@example.org", NCBI_API_KEY="k")
-    assert "--api-key k" in with_key.stdout
+    The CLI's --api-key option declares envvar="NCBI_API_KEY", so exporting the
+    variable is equivalent to click and invisible to everyone else on the node.
+    The stub `uv` echoes its arguments, which is exactly what `ps` would show.
+    """
+    result = run_validate(sandbox, NCBI_EMAIL="me@example.org", NCBI_API_KEY="s3cret")
+    assert result.returncode == 0, result.stderr
+    assert "--api-key" not in result.stdout
+    assert "s3cret" not in result.stdout
+    assert "s3cret" not in result.stderr
+
+
+def test_the_api_key_is_exported_when_set_and_not_when_unset(sandbox: Path) -> None:
+    """Exported empty, click sees "" -- a key that is present but blank -- rather
+    than nothing at all, so the export is conditional."""
+    stub = sandbox / "bin" / "uv"
+    stub.write_text(
+        '#!/bin/sh\n'
+        'echo "UV_ARGS: $*"\n'
+        'echo "KEY_SEEN: ${NCBI_API_KEY-<unset>}"\n'
+    )
+    stub.chmod(0o755)
+
+    with_key = run_validate(sandbox, NCBI_EMAIL="me@example.org", NCBI_API_KEY="s3cret")
+    assert "KEY_SEEN: s3cret" in with_key.stdout
+
+    without = run_validate(sandbox, NCBI_EMAIL="me@example.org")
+    assert "KEY_SEEN: <unset>" in without.stdout
 
 
 def test_validate_offline_needs_no_email(sandbox: Path) -> None:
