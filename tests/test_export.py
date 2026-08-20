@@ -362,3 +362,104 @@ def test_json_export_writes_utf8_not_escapes(loaded_con, tmp_path):
     assert "Étude sur les protéines — a test".encode() in raw
     assert rb"\u00c9" not in raw.lower()   # not json.dumps(ensure_ascii=True)'s form
     assert _read_ndjson(paths)["PMID:1003"]["article_title"].startswith("Étude")
+
+
+def test_export_duration_covers_the_snapshot_not_just_the_copy(loaded_con, tmp_path, caplog):
+    """slurm/README.md tells operators to size --time from this line.
+
+    Materializing `_latest_snapshot` is a window function over the whole
+    `article` table -- the reason export memory scales with the database -- and
+    with the sort gone it is plausibly the dominant phase. A clock started after
+    it understates the job it is used to size.
+
+    Pinned by ordering rather than by timing: the clock must be read before the
+    snapshot statement runs, which a wall-clock assertion could only show
+    flakily on a fixture this small.
+    """
+    import logging
+
+    from pubmed2db import export as ex
+
+    events: list[str] = []
+    real_clock, real_execute = ex.time.monotonic, loaded_con.execute
+
+    def watched_clock():
+        events.append("clock")
+        return real_clock()
+
+    # DuckDB's `execute` is read-only on the connection, so watch it from a
+    # proxy rather than by patching the object.
+    class Watched:
+        def __getattr__(self, name):
+            return getattr(loaded_con, name)
+
+        def execute(self, sql, *args, **kwargs):
+            if "_latest_snapshot AS SELECT" in sql:
+                events.append("snapshot")
+            return real_execute(sql, *args, **kwargs)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(ex.time, "monotonic", watched_clock)
+    try:
+        with caplog.at_level(logging.INFO, logger="pubmed2db.export"):
+            ex.export_json(Watched(), tmp_path / "json")
+    finally:
+        monkey.undo()
+
+    assert "snapshot" in events, events
+    assert events.index("clock") < events.index("snapshot"), events
+    assert any(r.getMessage().startswith("exported ") for r in caplog.records)
+
+
+def test_the_heartbeat_survives_a_shard_vanishing(tmp_path):
+    """DuckDB writes this directory while the heartbeat reads it, so a shard can
+    disappear between the glob and the stat. Taking the thread down there would
+    leave a 20-minute export silent -- the failure it exists to prevent."""
+    from pubmed2db import export as ex
+
+    out = tmp_path / "json"
+    out.mkdir()
+    present = out / "pubmed_metadata_0.ndjson"
+    present.write_bytes(b"x" * 2048)
+    ghost = out / "pubmed_metadata_1.ndjson"
+    ghost.write_bytes(b"y" * 2048)
+
+    real_glob = ex._shard_paths
+
+    def racing(directory):
+        paths = real_glob(directory)
+        ghost.unlink()          # vanishes between the glob and the stat
+        return paths
+
+    ex._shard_paths = racing
+    try:
+        assert ex._shard_bytes(ex._shard_paths(out)) == 2048
+    finally:
+        ex._shard_paths = real_glob
+
+
+def test_the_heartbeat_thread_never_dies_on_an_error(tmp_path, caplog, monkeypatch):
+    """Any escape kills the thread and silences the run, so the loop swallows."""
+    import logging
+    import threading
+
+    from pubmed2db import export as ex
+
+    def boom(*_args):
+        raise RuntimeError("stat storm")
+
+    monkeypatch.setattr(ex, "_log_writing_progress", boom)
+    monkeypatch.setattr(ex, "_PROGRESS_INTERVAL_S", 0.01)
+
+    stop = threading.Event()
+    with caplog.at_level(logging.WARNING, logger="pubmed2db.export"):
+        thread = threading.Thread(target=ex._log_while_writing, args=(tmp_path, stop, 0.0))
+        thread.start()
+        threading.Event().wait(0.05)
+        still_running = thread.is_alive()
+        stop.set()
+        thread.join(timeout=2)
+
+    assert still_running, "the heartbeat died on the first error"
+    assert not thread.is_alive()
+    assert any("could not log export progress" in r.getMessage() for r in caplog.records)

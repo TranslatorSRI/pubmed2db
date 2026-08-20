@@ -238,10 +238,26 @@ def _shard_paths(out_dir: Path) -> list[Path]:
     )
 
 
+def _shard_bytes(paths: list[Path]) -> int:
+    """Total size of the shards that still exist, skipping any that vanish.
+
+    DuckDB is writing this directory while we read it, so a path can disappear
+    between the glob and the stat. That is a missing data point, not a reason to
+    take the heartbeat down.
+    """
+    total = 0
+    for path in paths:
+        try:
+            total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
 def _log_writing_progress(out_dir: Path, start: float) -> None:
     """Log how much shard output exists so far, and current RSS."""
     paths = _shard_paths(out_dir)
-    written = sum(p.stat().st_size for p in paths)
+    written = _shard_bytes(paths)
     elapsed = time.monotonic() - start
     current = current_rss_gib()
     logger.info(
@@ -261,12 +277,20 @@ def _log_while_writing(out_dir: Path, stop: threading.Event, start: float) -> No
     exactly what left the last run's ``--mem`` a guess. DuckDB releases the GIL
     while the statement runs, so this thread does get scheduled.
 
-    ponytail: bytes and RSS, no ETA — the total output size is not known until
-    it has been written. If a run ever needs one, split the COPY into PMID
-    ranges and count rows per range.
+    Bytes and RSS, no ETA — the total output size is not known until it has been
+    written. If a run ever needs one, split the COPY into PMID ranges and count
+    rows per range.
+
+    Nothing here is allowed to escape. An exception would kill this thread and
+    leave a 20-minute export completely silent, which is the failure the
+    heartbeat exists to prevent; logging the reason and carrying on is strictly
+    better than that.
     """
     while not stop.wait(_PROGRESS_INTERVAL_S):
-        _log_writing_progress(out_dir, start)
+        try:
+            _log_writing_progress(out_dir, start)
+        except Exception as exc:  # noqa: BLE001 - see the docstring
+            logger.warning("could not log export progress: %s", exc)
 
 
 def export_json(
@@ -299,6 +323,14 @@ def export_json(
         raise ValueError("shards must be >= 1")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Clock the whole export, not just the COPY. Materializing the snapshot is a
+    # window function over the entire `article` table -- the reason export memory
+    # scales with the database rather than the input file -- and with the sort
+    # gone it is plausibly the dominant phase. slurm/README.md tells operators to
+    # size --time from the line this feeds, so it must not start after the
+    # expensive part.
+    start = time.monotonic()
 
     # Materialize the latest-version snapshot once: `latest_article` is a window
     # function over the full `article` table, and both the count and the export
@@ -334,14 +366,19 @@ def export_json(
     escaped_dir = out_dir.as_posix().replace("'", "''")
     copy_sql = f"COPY ({_LATEST_METADATA_SQL}) TO '{escaped_dir}' ({', '.join(options)})"
 
-    start = time.monotonic()
-    stop = threading.Event()
-    heartbeat = threading.Thread(target=_log_while_writing, args=(out_dir, stop, start))
-    heartbeat.start()
     # `shards` is the thread cap for this statement only: one file per writer
     # thread is what PER_THREAD_OUTPUT gives us, so asking for N shards is
     # asking N threads to write. Restore whatever the connection had after.
+    #
+    # Read *before* the heartbeat starts: the thread is non-daemon and only
+    # stops when `stop` is set in the finally below, so a statement that raises
+    # between start() and the try would hang the interpreter instead of
+    # reporting the error.
     previous_threads = con.execute("SELECT current_setting('threads')").fetchone()[0]
+
+    stop = threading.Event()
+    heartbeat = threading.Thread(target=_log_while_writing, args=(out_dir, stop, start))
+    heartbeat.start()
     try:
         if shards is not None:
             con.execute(f"SET threads = {int(shards)}")
