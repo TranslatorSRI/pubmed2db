@@ -264,7 +264,13 @@ Notes on the knobs:
   writes one file per writer thread, so `--shards` caps the thread count for
   that statement; a run can produce fewer files than asked for, never more.
   Match it to `--cpus-per-task` rather than to the ingest's ideal file count —
-  the two are the same number now.
+  the two are the same number now, and `config.sh` derives `SHARDS` from
+  `SLURM_CPUS_PER_TASK` so they stay matched without anyone remembering to.
+  Setting it by hand still wins, but note what it costs: `export_json` runs
+  `SET threads = $SHARDS` for the statement, so a `SHARDS` above the allocation
+  oversubscribes the step that gets OOM-killed, and one set deliberately below
+  it is also the only way `--shards` interacts with a group-level `--threads` —
+  the `SET` overrides it for the duration of the COPY.
 - **Shards are gzipped by default.** `--gzip` is on unless you pass
   `--no-gzip`; compression happens as each shard is written (no separate
   re-read pass) and costs CPU rather than memory. A full corpus lands at

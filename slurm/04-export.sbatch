@@ -16,9 +16,17 @@
 # Slurm will not grow --mem mid-job, so an under-requested export is OOM-killed
 # partway through with nothing to show for it. Grab the memory up front.
 #
-# --cpus-per-task=8 helps the query (DuckDB parallelizes the snapshot, the
-# string_agg and the sort); the per-row JSON serialization is single-threaded,
-# and --shards does not want a CPU each.
+# --cpus-per-task=8 is now the write parallelism as well as the query's. DuckDB
+# parallelizes the snapshot and the string_agg, and since the COPY rewrite it
+# serializes the JSON across cores too -- there is no single-threaded Python
+# writer left, and no global sort. One file per writer thread is what
+# PER_THREAD_OUTPUT gives, so SHARDS defaults to this number (config.sh reads
+# SLURM_CPUS_PER_TASK); raising one without the other either oversubscribes the
+# allocation or leaves cores idle.
+#
+# The peak RSS and wall time in slurm/README.md's table predate that rewrite.
+# They are the numbers to beat, not the numbers to request -- the first run of
+# the new export re-baselines them.
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
