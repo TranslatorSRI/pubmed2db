@@ -104,6 +104,24 @@ explains its part; this table is only a map.
   runnable meant two places to edit with nothing to catch a missed one;
   `test_readme_does_not_duplicate_the_allocations` holds the split. Don't
   "helpfully" restore a copy-pasteable `srun --mem=…` to the README.
+- **`--dependency=afterok` does not cancel anything by default.** Slurm leaves a
+  dependent whose dependency can never be satisfied *pending forever* with
+  reason `DependencyNeverSatisfied`; it cancels only where the site set
+  `kill_invalid_depend` in `slurm.conf`. `submit.sh` therefore passes
+  `--kill-on-invalid-dep=yes` on every chained job, which is what makes its
+  header's promise true on any site. In the same family: `sbatch --parsable`
+  prints `jobid;clustername` on a multi-cluster site, so the id is truncated at
+  the `;` before it reaches the next `--dependency`. Neither is observable off
+  the cluster — both are pinned by tests in `tests/test_slurm_scripts.py`.
+- **Compare manifest paths by base name, never as strings.** `MANIFEST_DIR` is
+  environment-overridable, so `data/manifests/` and `data/manifests` both reach
+  `05-validate.sbatch`; the second spelling makes `$manifest` and `find`'s
+  output the same file but never string-equal, which silently let a same-day
+  re-run pick today's manifest as its own baseline and report zero drops. The
+  matching rule on the Python side is that a **`fail`** run writes no manifest
+  at all (a short PMID set from a truncated export would poison the next run's
+  drop check) while a **`warn`** run still does — the usual warning is "Entrez
+  was unreachable", which says nothing about the set the shard read built.
 - **Test the shell scripts by running them, not by reading them.** Every bug in
   `slurm/` so far was invisible on inspection and would have fired on the
   cluster, not locally: an empty array expanded under `set -u` is an error on

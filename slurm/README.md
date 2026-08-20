@@ -45,10 +45,11 @@ to export, which is the quickest way to confirm a step did what you expected.
 | `export` | `04-export.sbatch` | the big one; whole-corpus, memory is the constraint |
 | `validate` | `05-validate.sbatch` | small, needs internet, writes the PMID manifest |
 
-`validate` always writes a dated `--manifest`: it is the only record of *which*
-PMIDs an export contained, and the next run cannot diff against a manifest nobody
-wrote (#32). The script picks the newest earlier manifest as
-`--previous-manifest` automatically.
+`validate` passes a dated `--manifest` on every run: it is the only record of
+*which* PMIDs an export contained, and the next run cannot diff against a
+manifest nobody wrote (#32). The script picks the newest earlier manifest as
+`--previous-manifest` automatically. A run that *fails* writes no manifest, so a
+truncated export cannot become the next run's baseline.
 
 ## The scripts
 
@@ -273,6 +274,18 @@ export NCBI_EMAIL=you@example.org     # NCBI_API_KEY too, if you have one
 `--previous-manifest`. The first run after adopting this reports `skip` — it has
 nothing to compare against yet — and the run after it is the first that can
 actually catch a silent drop (#32).
+
+Two details are load-bearing, and both were bugs before they were features.
+Today's manifest is excluded from the `--previous-manifest` search **by base
+name**, not by comparing paths as strings: `MANIFEST_DIR` is overridable, and a
+trailing slash on it makes `data/manifests//pmids-…` and `data/manifests/pmids-…`
+the same file but never string-equal — enough to make a same-day re-run diff
+against itself and report zero drops. And `validate` skips the manifest write
+entirely when the run status is `fail`: a truncated or half-written export
+yields a short PMID set, and adopting that as the baseline makes the *next* run
+report the recovered corpus as "N added" while the real drops go unnoticed. A
+`warn` run still writes one, because the usual warning is "Entrez was
+unreachable", which says nothing about the PMID set the shard read built.
 
 **The script also moves the report.** `validate` on its own writes
 `validation_report.json` into the export directory; `05-validate.sbatch` passes
