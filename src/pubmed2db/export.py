@@ -119,14 +119,24 @@ def _year_from_medline_date(raw: str | None) -> str:
 #: 3-letter prefix so "March" and "Sept" both land. ``validate`` still calls the
 #: *Python* function to normalize the efetch side, so
 #: ``test_month_sql_matches_month_to_abbrev`` pins the two together.
+#:
+#: **Not bare ``trim()``.** SQL ``trim(x)`` strips spaces and nothing else,
+#: where Python's ``.strip()`` strips all whitespace — so a ``<Month>`` carrying
+#: a tab or a newline gave ``Mar`` from the Python function and ``''`` from the
+#: SQL. ``parse._raw_pubdate`` stores ``findtext("Month")`` verbatim, so such a
+#: record exported blank *and* was reported as a ``pub_month`` mismatch against
+#: efetch, which is a CORE_FIELDS error. ``_WS`` is the character set Python
+#: strips.
 _MONTHS_SQL = "[" + ", ".join(f"'{m}'" for m in _MONTH_ABBR) + "]"
+_WS = " \t\n\r\f\v"
+_TRIM_MONTH = f"trim(la.pub_month, E'{_WS}')"
 _MONTH_KEY_SQL = (
-    "upper(substr(trim(la.pub_month), 1, 1)) || lower(substr(trim(la.pub_month), 2, 2))"
+    f"upper(substr({_TRIM_MONTH}, 1, 1)) || lower(substr({_TRIM_MONTH}, 2, 2))"
 )
 _PUB_MONTH_SQL = f"""CASE
-        WHEN trim(COALESCE(la.pub_month, '')) = '' THEN ''
-        WHEN regexp_full_match(trim(la.pub_month), '[0-9]+')
-            THEN COALESCE(list_extract({_MONTHS_SQL}, TRY_CAST(trim(la.pub_month) AS BIGINT)), '')
+        WHEN trim(COALESCE(la.pub_month, ''), E'{_WS}') = '' THEN ''
+        WHEN regexp_full_match({_TRIM_MONTH}, '[0-9]+')
+            THEN COALESCE(list_extract({_MONTHS_SQL}, TRY_CAST({_TRIM_MONTH} AS BIGINT)), '')
         WHEN list_contains({_MONTHS_SQL}, {_MONTH_KEY_SQL}) THEN {_MONTH_KEY_SQL}
         ELSE ''
     END"""

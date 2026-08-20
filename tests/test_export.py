@@ -307,8 +307,14 @@ def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog)
 #: Month and MedlineDate spellings the two implementations must agree on --
 #: the parametrized cases above plus the edges an index-based SQL lookup can
 #: get wrong (0, out of range, whitespace, non-numeric).
+#: The tab/newline cases are not decoration: SQL `trim()` strips spaces only
+#: while Python's `.strip()` strips all whitespace, so " 3 " alone passed while
+#: "\tMar" gave "Mar" from the function and "" from the export. `parse`
+#: stores `findtext("Month")` verbatim, so a `<Month>` spanning a line does
+#: reach here.
 _MONTH_INPUTS = ["3", "03", " 3 ", "Mar", "March", "Sept", "SEPTEMBER", "sep",
-                 "Spring", "13", "0", "99999999999999999999", "", "  ", None]
+                 "Spring", "13", "0", "99999999999999999999", "", "  ", None,
+                 "\tMar", "3\n", "\n3", "\r\nMarch\t", "\t\n"]
 _MEDLINE_INPUTS = ["1998 Spring", "1978 Jul-Aug", "1998 Dec-1999 Jan", "1999-2000",
                    "  2001 Winter", "n.d.", "Spring 1998", "12345", "", None]
 
