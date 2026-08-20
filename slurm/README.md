@@ -31,8 +31,14 @@ Then check what shipped — small job, but it needs internet
 
 ```bash
 srun --mem=16G --time=02:00:00 \
-  uv run pubmed2db --data-dir data validate data/json --email you@example.org
+  uv run pubmed2db --data-dir data validate data/json \
+    --manifest "data/manifests/pmids-$(date +%Y%m%d).txt.gz" \
+    --email you@example.org
 ```
+
+Always pass `--manifest` on a corpus run: it is the only record of *which* PMIDs
+this export contained, and the next run cannot diff against a manifest nobody
+wrote (#32).
 
 ## Running `load`: how much memory? (`--mem`)
 
@@ -217,7 +223,18 @@ export, on a node that can reach the internet. Nothing like the export's 256 GB 
 ```bash
 srun --mem=16G --time=02:00:00 \
   uv run pubmed2db --data-dir data validate data/json \
-    --manifest data/json/pmids.txt.gz \
+    --manifest "data/manifests/pmids-$(date +%Y%m%d).txt.gz" \
+    --email you@example.org
+```
+
+Once a previous run's manifest exists, add it — this is the pair that makes the
+`drops_since_previous` check run at all:
+
+```bash
+srun --mem=16G --time=02:00:00 \
+  uv run pubmed2db --data-dir data validate data/json \
+    --manifest "data/manifests/pmids-$(date +%Y%m%d).txt.gz" \
+    --previous-manifest data/manifests/pmids-20260805.txt.gz \
     --email you@example.org
 ```
 
@@ -284,10 +301,21 @@ Notes on running it under Slurm specifically:
 - **Exit status is the gate**: `0` pass, `1` errors, `2` for warnings under
   `--fail-on-warn`. A batch script with `set -e` therefore stops on a bad export
   instead of publishing it.
-- **Keep the manifest between runs.** `--manifest` writes a sorted gzipped PMID
-  list next to the export; passing it to the next run as `--previous-manifest`
-  (along with `--previous-report`) is what catches an export that has the same
-  record count but silently lost records.
+- **Keep the manifest between runs, and date-stamp it outside the export
+  directory.** `--manifest` writes a sorted gzipped PMID list; passing it to the
+  next run as `--previous-manifest` (along with `--previous-report`) is what
+  catches an export that has the same record count but silently lost records.
+  Write it to `data/manifests/pmids-<date>.txt.gz`, **not** into `data/json/`,
+  for two reasons. One name for every run means the flags collide — the obvious
+  next invocation passes the same path as both `--previous-manifest` and
+  `--manifest`, so the run overwrites the very file it just diffed against, and
+  you can never compare run N against run N+2. And a manifest inside the export
+  directory describes data that gets republished under it: the next `export`
+  rewrites the shards in place, leaving a manifest that still looks current but
+  now describes the previous corpus. (It does *survive* — the export's stale
+  sweep only globs `pubmed_metadata_*.ndjson*` — which is the trap, not the
+  reassurance.) `validate` creates the parent directory itself, so the path
+  needs no setup.
 
 ## DuckDB tuning: `--threads`, `--memory-limit` and `--temp-dir`
 

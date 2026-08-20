@@ -232,12 +232,15 @@ same *records*, so `validate` can write a sorted PMID manifest and diff against
 an earlier one:
 
 ```bash
-# Archive this export's PMID set (gzipped, one PMID per line).
-uv run pubmed2db validate data/json --manifest data/json/pmids.txt.gz
+# Archive this export's PMID set (gzipped, one PMID per line). Date-stamp it,
+# and keep it outside the export directory: one shared name means the next run
+# overwrites the manifest it is diffing against.
+uv run pubmed2db validate data/json --manifest data/manifests/pmids-20260820.txt.gz
 
 # Next month: report which PMIDs disappeared since that export.
 uv run pubmed2db validate data/json-new \
-    --previous-manifest data/json/pmids.txt.gz --manifest data/json-new/pmids.txt.gz
+    --previous-manifest data/manifests/pmids-20260820.txt.gz \
+    --manifest data/manifests/pmids-20260921.txt.gz
 ```
 
 A dropped PMID is fine if the database recorded a `DeleteCitation` for it; one
