@@ -41,16 +41,33 @@ _VERSIONED_CHILDREN = (
 )
 
 #: Dimension/bookkeeping tables exported as-is.
-_OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid")
+_OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid", "pipeline_run")
 
 #: PubMed ``ArticleId/@IdType`` -> CURIE prefix for the JSON ``identifiers``
-#: field. The casing matches Babel's ``src/prefixes.py`` (``DOI = "doi"``,
-#: ``PMC = "PMC"``, ``PMID = "PMID"``) so our CURIEs join against the Babel
-#: publication compendium; ``DOI:`` would not. PubMed's ``pmc`` values already
-#: start with ``PMC``, hence the doubled ``PMC:PMC1234567``. Values are emitted
-#: verbatim, so consumers must match case-insensitively (DOIs are
-#: case-insensitive per spec and PubMed is not consistent).
-ID_PREFIXES = {"doi": "doi", "pmc": "PMC"}
+#: field. ``doi`` is lowercase to match Babel's ``src/prefixes.py``, so those
+#: CURIEs join against the Babel publication compendium; ``DOI:`` would not.
+#: PubMed's ``pmc`` values already start with ``PMC``, hence the doubled
+#: ``PMCID:PMC1234567``. Values are emitted verbatim, so consumers must match
+#: case-insensitively (DOIs are case-insensitive per spec and PubMed is not
+#: consistent).
+#:
+#: **The PMCID prefix is not settled.** Babel's ``prefixes.py`` says ``PMC``,
+#: this export says ``PMCID``, and neither the Core Components spec nor the
+#: DocumentMetadataAPI README carries a PMC example to arbitrate — the
+#: production endpoint does not resolve PMCIDs in either form. ``PMCID`` is our
+#: bet on where that lands. Tracked in issue #33, to be settled alongside
+#: NCATSTranslator/Babel#1044.
+ID_PREFIXES = {"doi": "doi", "pmc": "PMCID"}
+
+#: The same mapping as SQL, derived rather than restated: `validate` imports
+#: `ID_PREFIXES` to rebuild the CURIEs it expects, so a hand-written `CASE` here
+#: would let a new id type or a casing fix reach the validator without reaching
+#: the export, and every sampled record would be reported as a mismatch against
+#: a correct export. No `ELSE` branch: an unlisted type cannot pass the `WHERE`.
+_ID_CURIE_SQL = "CASE id_type " + " ".join(
+    f"WHEN '{t}' THEN '{prefix}:'" for t, prefix in ID_PREFIXES.items()
+) + " END"
+_ID_TYPES_SQL = ", ".join(f"'{t}'" for t in ID_PREFIXES)
 
 
 #: Month abbreviations, frozen rather than taken from ``calendar.month_abbr``:
@@ -77,7 +94,14 @@ def normalize_month(raw: str | None) -> str:
     if not raw:
         return ""
     raw = raw.strip()
-    if raw.isdigit():
+    # `raw.isascii() and raw.isdigit()`, not `isdigit()` alone, for two reasons.
+    # `"²".isdigit()` is True while `int("²")` raises, and this function now sees
+    # unconstrained MedlineDate CDATA rather than only a `<Month>` element, so
+    # that ValueError would escape `efetch_documents` and abort a whole
+    # validation run. And the SQL twin tests `[0-9]+`, which is ASCII-only:
+    # `"١٢"` is `isdigit()` *and* `isdecimal()`, so Python alone would answer
+    # `Dec` where the export passes `١٢` through verbatim.
+    if raw.isascii() and raw.isdigit():
         month = int(raw)
         return _MONTH_ABBR[month - 1] if 1 <= month <= 12 else ""
     key = raw[:3].capitalize()
@@ -133,9 +157,24 @@ def _year_from_medline_date(raw: str | None) -> str:
 
 
 #: Whatever follows the leading year of a ``MedlineDate``. The **whitespace** is
-#: load-bearing: it is what stops ``"1999-2000"`` (a year range, no month at all)
-#: from yielding ``"-2000"``.
+#: load-bearing twice over.
+#:
+#: It is what stops ``"1999-2000"`` (a year range, no month at all) from
+#: yielding ``"-2000"``. And it has to mean the *same thing* in both engines:
+#: DuckDB's RE2 reads ``\s`` as ``[\t\n\f\r ]``, excluding ``\v`` and every
+#: non-ASCII space, where Python's ``re`` includes both. Left as ``\s`` on both
+#: sides, ``"1998\xa0Spring"`` gave ``Spring`` from the Python twin and ``''``
+#: from the SQL — and since ``validate._text`` collapses whitespace before the
+#: efetch side reaches :func:`pub_month`, efetch always renders ``Spring``, so
+#: the disagreement surfaced as a ``pub_month`` mismatch. That is a CORE_FIELDS
+#: error: the same gating failure the ``_WS`` note below describes for
+#: ``<Month>``. :data:`_MEDLINE_SEP_SQL` is the RE2 class that tracks Python's
+#: ``\s``.
 _MEDLINE_MONTH_RE = re.compile(r"^\s*\d{4}\s+(.+?)\s*$")
+_MEDLINE_SEP_SQL = r"[\s\p{Z}\x0B]"
+_MEDLINE_MONTH_PATTERN_SQL = (
+    rf"^{_MEDLINE_SEP_SQL}*\d{{4}}{_MEDLINE_SEP_SQL}+(.+?){_MEDLINE_SEP_SQL}*$"
+)
 
 
 def _month_from_medline_date(raw: str | None) -> str:
@@ -144,6 +183,27 @@ def _month_from_medline_date(raw: str | None) -> str:
     The month-side sibling of :func:`_year_from_medline_date`: ``"1994 Sep-Dec"``
     -> ``"Sep-Dec"``, ``"1998 Spring"`` -> ``"Spring"``. Shapes with no month to
     recover ("1999-2000", "n.d.", "Spring 1998") give ``""`` rather than a guess.
+
+    **Verbatim includes the shapes that look wrong.** ``"1998 Dec-1999 Jan"``
+    exports ``pub_month`` as ``"Dec-1999 Jan"`` — a month field carrying a year —
+    and that is deliberate: it is what PubMed wrote and what its API renders
+    back, so the export mirrors it rather than inventing a tidier ``"Dec-Jan"``
+    that no source says. ``validate._VALID_MONTHS`` is a closed set that
+    excludes it *on purpose*, so such records stay visible as ``month-format``
+    warnings instead of being blessed. Export and checker disagreeing here is
+    the design, not a bug — this has been raised as one once already.
+
+    The wart is real, and it is answered by a *different* field rather than by
+    tidying this one: PR #17 adds a verbatim ``pub_date`` carrying PubMed's own
+    string on every record (``"1998 Dec-1999 Jan"``), the way ``esummary``'s
+    ``pubdate`` does. Consumers rendering a citation read that; the three parsed
+    fields stay parsed conveniences, and no arrangement of them can represent a
+    cross-year range anyway. Whether DocumentMetadataAPI consumers are content
+    to receive ``"pub_month": "Dec-1999 Jan"`` alongside it is the one part
+    still open, and is tracked in issue #43. If the answer comes back "blank it
+    instead", the change is here: gate this fallback on the closed set
+    ``validate._VALID_MONTHS`` already accepts, so cross-year shapes return
+    ``""`` while ``pub_date`` keeps the whole string.
     """
     if not raw:
         return ""
@@ -160,6 +220,16 @@ def pub_month(month: str | None, medline_date: str | None = None) -> str:
     mismatch against PubMed.
     """
     return normalize_month(month) or normalize_month(_month_from_medline_date(medline_date))
+
+
+#: **Not bare ``trim()``.** SQL ``trim(x)`` strips spaces and nothing else,
+#: where Python's ``.strip()`` strips all whitespace — so a month carrying a tab
+#: or a newline gave ``Mar`` from the Python twin and ``''`` from the SQL.
+#: ``parse._raw_pubdate`` stores ``findtext("Month")`` verbatim, so such a
+#: record exported blank *and* was reported as a ``pub_month`` mismatch against
+#: efetch, which is a CORE_FIELDS error. ``_WS`` is the character set Python
+#: strips, and every ``trim`` below names it.
+_WS = " \t\n\r\f\v"
 
 
 def pub_date(
@@ -217,14 +287,14 @@ def _normalize_month_sql(expr: str) -> str:
     ``\\p{L}+`` rather than ``[A-Za-z]+``: Python's ``str.isalpha()`` is
     Unicode-aware, and a non-ASCII spelling must not make the twins disagree.
     """
-    key = f"upper(substr(trim({expr}), 1, 1)) || lower(substr(trim({expr}), 2, 2))"
+    key = f"upper(substr(trim({expr}, E'{_WS}'), 1, 1)) || lower(substr(trim({expr}, E'{_WS}'), 2, 2))"
     return f"""CASE
-        WHEN trim(COALESCE({expr}, '')) = '' THEN ''
-        WHEN regexp_full_match(trim({expr}), '[0-9]+')
-            THEN COALESCE(list_extract({_MONTHS_SQL}, TRY_CAST(trim({expr}) AS BIGINT)), '')
-        WHEN list_contains({_MONTHS_SQL}, {key}) AND regexp_full_match(trim({expr}), '\\p{{L}}+')
+        WHEN trim(COALESCE({expr}, ''), E'{_WS}') = '' THEN ''
+        WHEN regexp_full_match(trim({expr}, E'{_WS}'), '[0-9]+')
+            THEN COALESCE(list_extract({_MONTHS_SQL}, TRY_CAST(trim({expr}, E'{_WS}') AS BIGINT)), '')
+        WHEN list_contains({_MONTHS_SQL}, {key}) AND regexp_full_match(trim({expr}, E'{_WS}'), '\\p{{L}}+')
             THEN {key}
-        ELSE trim({expr})
+        ELSE trim({expr}, E'{_WS}')
     END"""
 
 
@@ -233,7 +303,7 @@ def _normalize_month_sql(expr: str) -> str:
 #: *Python* twin to normalize the efetch side, so
 #: ``test_pub_month_sql_matches_python`` pins the two together.
 _MEDLINE_MONTH_SQL = (
-    f"regexp_extract(COALESCE(la.medline_date, ''), '{_MEDLINE_MONTH_RE.pattern}', 1)"
+    f"regexp_extract(COALESCE(la.medline_date, ''), '{_MEDLINE_MONTH_PATTERN_SQL}', 1)"
 )
 _PUB_MONTH_SQL = (
     f"COALESCE(NULLIF({_normalize_month_sql('la.pub_month')}, ''), "
@@ -246,12 +316,19 @@ _PUB_MONTH_SQL = (
 #: only runs when there is no ``MedlineDate``. ``concat_ws`` skips NULLs, which
 #: is what the ``NULLIF(..., '')`` wrappers are for — an absent month must not
 #: leave a double space behind.
+#:
+#: Every ``trim`` names :data:`_WS`, for the reason given above it: bare SQL
+#: ``trim`` strips spaces alone where the Python twin's ``.strip()`` strips all
+#: whitespace. Verified to matter here, not inherited on faith — a
+#: ``MedlineDate`` of ``"\t1998 Spring"`` and a ``pub_day`` of ``"\n15"`` each
+#: made the twins disagree while this used bare ``trim``.
 _PUB_DATE_SQL = f"""CASE
-        WHEN trim(COALESCE(la.medline_date, '')) <> '' THEN trim(la.medline_date)
+        WHEN trim(COALESCE(la.medline_date, ''), E'{_WS}') <> ''
+            THEN trim(la.medline_date, E'{_WS}')
         ELSE trim(concat_ws(' ',
-            NULLIF(trim(COALESCE(la.pub_year, '')), ''),
+            NULLIF(trim(COALESCE(la.pub_year, ''), E'{_WS}'), ''),
             NULLIF({_normalize_month_sql('la.pub_month')}, ''),
-            NULLIF(trim(COALESCE(la.pub_day, '')), '')))
+            NULLIF(trim(COALESCE(la.pub_day, ''), E'{_WS}'), '')), E'{_WS}')
     END"""
 
 #: ``_year_from_medline_date``'s fallback, same pattern, same pinning test
@@ -309,7 +386,7 @@ JSON_FIELDS = tuple(name for name, _ in _JSON_FIELDS)
 #: membership no longer depends on scan order, since each writer thread owns a
 #: file. Nothing downstream consumes the order — the ingest is an ElasticSearch
 #: bulk load, and `validate` sorts its own PMID manifest.
-_LATEST_METADATA_SQL = """
+_LATEST_METADATA_SQL = f"""
 WITH abs AS (
     SELECT pmid, source_file, string_agg(text, ' ' ORDER BY seq) AS abstract
     FROM abstract_text a
@@ -324,10 +401,10 @@ WITH abs AS (
 ),
 ids AS (
     SELECT pmid, source_file, list_sort(list_distinct(list(
-        CASE id_type WHEN 'doi' THEN 'doi:' ELSE 'PMC:' END || id_value
+        {_ID_CURIE_SQL} || id_value
     ))) AS identifiers
     FROM article_id ai
-    WHERE id_type IN ('doi', 'pmc')
+    WHERE id_type IN ({_ID_TYPES_SQL})
       -- Same reason as `abs` above: restrict before aggregating, so the
       -- group-by does not span the whole version history.
       AND EXISTS (
@@ -356,10 +433,26 @@ def _shard_paths(out_dir: Path) -> list[Path]:
     )
 
 
+def _shard_bytes(paths: list[Path]) -> int:
+    """Total size of the shards that still exist, skipping any that vanish.
+
+    DuckDB is writing this directory while we read it, so a path can disappear
+    between the glob and the stat. That is a missing data point, not a reason to
+    take the heartbeat down.
+    """
+    total = 0
+    for path in paths:
+        try:
+            total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
 def _log_writing_progress(out_dir: Path, start: float) -> None:
     """Log how much shard output exists so far, and current RSS."""
     paths = _shard_paths(out_dir)
-    written = sum(p.stat().st_size for p in paths)
+    written = _shard_bytes(paths)
     elapsed = time.monotonic() - start
     current = current_rss_gib()
     logger.info(
@@ -379,12 +472,20 @@ def _log_while_writing(out_dir: Path, stop: threading.Event, start: float) -> No
     exactly what left the last run's ``--mem`` a guess. DuckDB releases the GIL
     while the statement runs, so this thread does get scheduled.
 
-    ponytail: bytes and RSS, no ETA — the total output size is not known until
-    it has been written. If a run ever needs one, split the COPY into PMID
-    ranges and count rows per range.
+    Bytes and RSS, no ETA — the total output size is not known until it has been
+    written. If a run ever needs one, split the COPY into PMID ranges and count
+    rows per range.
+
+    Nothing here is allowed to escape. An exception would kill this thread and
+    leave a 20-minute export completely silent, which is the failure the
+    heartbeat exists to prevent; logging the reason and carrying on is strictly
+    better than that.
     """
     while not stop.wait(_PROGRESS_INTERVAL_S):
-        _log_writing_progress(out_dir, start)
+        try:
+            _log_writing_progress(out_dir, start)
+        except Exception as exc:  # noqa: BLE001 - see the docstring
+            logger.warning("could not log export progress: %s", exc)
 
 
 def export_json(
@@ -392,15 +493,17 @@ def export_json(
     out_dir: str | Path,
     *,
     shards: int | None = None,
-    gzip_output: bool = False,
+    gzip_output: bool = True,
 ) -> list[Path]:
     """Export the latest version of every abstract as sharded NDJSON.
 
     Each line is one document keyed by ``PMID:<id>`` using DocumentMetadataAPI
-    field names. With ``gzip_output=True`` each shard is compressed as it is
-    written (one pass, no separate re-read of the finished file), and the
-    output is still line-readable via ``zcat``. Returns the list of files
-    written.
+    field names. Shards are gzipped as they are written (one pass, no separate
+    re-read of the finished file) unless ``gzip_output=False``: NDJSON
+    compresses ~4-5x, which is the difference between shipping ~52 GiB and
+    ~12 GiB of a full corpus, and `validate` accepts either form without being
+    told which. The output stays line-readable via ``zcat``. Returns the list of
+    files written.
 
     DuckDB writes the JSON itself (``COPY ... (FORMAT JSON)``), one file per
     writer thread, rather than Python serializing row by row — the serialization
@@ -416,6 +519,14 @@ def export_json(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Clock the whole export, not just the COPY. Materializing the snapshot is a
+    # window function over the entire `article` table -- the reason export memory
+    # scales with the database rather than the input file -- and with the sort
+    # gone it is plausibly the dominant phase. slurm/README.md tells operators to
+    # size --time from the line this feeds, so it must not start after the
+    # expensive part.
+    start = time.monotonic()
+
     # Materialize the latest-version snapshot once: `latest_article` is a window
     # function over the full `article` table, and both the count and the export
     # query below would otherwise recompute it.
@@ -429,9 +540,14 @@ def export_json(
 
     # DuckDB appends to a per-thread output directory rather than clearing it,
     # so a previous run's shards would survive this one and be read back as if
-    # they were part of it. Only files matching our own naming are removed.
-    for stale in _shard_paths(out_dir):
-        stale.unlink()
+    # they were part of it. Only files matching our own naming are removed --
+    # and the count is logged, because silently deleting someone's export
+    # directory is not something to do without a line in the log.
+    stale = _shard_paths(out_dir)
+    for path in stale:
+        path.unlink()
+    if stale:
+        logger.info("removed %d shard file(s) from a previous export", len(stale))
 
     suffix = "ndjson.gz" if gzip_output else "ndjson"
     options = [
@@ -445,14 +561,19 @@ def export_json(
     escaped_dir = out_dir.as_posix().replace("'", "''")
     copy_sql = f"COPY ({_LATEST_METADATA_SQL}) TO '{escaped_dir}' ({', '.join(options)})"
 
-    start = time.monotonic()
-    stop = threading.Event()
-    heartbeat = threading.Thread(target=_log_while_writing, args=(out_dir, stop, start))
-    heartbeat.start()
     # `shards` is the thread cap for this statement only: one file per writer
     # thread is what PER_THREAD_OUTPUT gives us, so asking for N shards is
     # asking N threads to write. Restore whatever the connection had after.
+    #
+    # Read *before* the heartbeat starts: the thread is non-daemon and only
+    # stops when `stop` is set in the finally below, so a statement that raises
+    # between start() and the try would hang the interpreter instead of
+    # reporting the error.
     previous_threads = con.execute("SELECT current_setting('threads')").fetchone()[0]
+
+    stop = threading.Event()
+    heartbeat = threading.Thread(target=_log_while_writing, args=(out_dir, stop, start))
+    heartbeat.start()
     try:
         if shards is not None:
             con.execute(f"SET threads = {int(shards)}")
@@ -500,6 +621,20 @@ def export_parquet(
         tables, "latest version" if latest else "full history", out_dir,
     )
     run_start = time.monotonic()
+
+    # A re-export overwrites its own fixed set of file names, so the only file
+    # that can survive is one whose table left the schema — `reference_citation`
+    # is exactly that case. Left in place it reads as part of this export to
+    # anything globbing the directory. Same sweep the JSON export does.
+    keep = {f"{t}.parquet" for t in ("article", *_VERSIONED_CHILDREN, *_OTHER_TABLES)}
+    stale = [path for path in out_dir.glob("*.parquet") if path.name not in keep]
+    for path in stale:
+        path.unlink()
+    if stale:
+        logger.info(
+            "removed %d Parquet file(s) for table(s) no longer in the schema: %s",
+            len(stale), ", ".join(sorted(path.stem for path in stale)),
+        )
 
     def _progress(done: int) -> None:
         remaining = tables - done
