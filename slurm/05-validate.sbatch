@@ -114,8 +114,11 @@ else
     fi
 fi
 
-# `if` rather than `[[ ... ]] && ...`: under `set -e` the latter aborts the whole
-# script when the condition is false, because the && list's exit status is 1.
+# `if` rather than `[[ ... ]] && ...` as a hedge, not a fix: a false AND-OR list
+# is exempt from `set -e` where it sits mid-script, and only returns 1 -- killing
+# the job -- as the *last* statement of a script or function. Written as an `if`
+# so that appending to this block, or moving it to the end, stays safe. See
+# AGENTS.md, which records the measurement.
 if [[ "$VALIDATE_FAIL_ON_WARN" == "1" ]]; then
     validate_args+=(--fail-on-warn)
 fi
