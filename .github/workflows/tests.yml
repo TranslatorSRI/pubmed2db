@@ -17,10 +17,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The floor is what pyproject requires (hashlib.file_digest), and the
-        # ceiling is what a fresh `uv sync` would pick. Both, so a change that
-        # only works on one is caught here rather than on the cluster.
-        python-version: ["3.11", "3.13"]
+        # The floor is what pyproject requires (hashlib.file_digest); the
+        # ceiling is what the cluster actually runs (`uv run python --version`
+        # on ht1 reports 3.14.0). Both, so a change that only works on one is
+        # caught here rather than on the cluster.
+        python-version: ["3.11", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
