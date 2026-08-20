@@ -5,46 +5,86 @@ Notes for running the loader and the export on the shared cluster (the same one 
 
 ## TL;DR
 
-```bash
-# Put uv's package cache somewhere writable (~/.cache/uv may not be).
-export UV_CACHE_DIR="$PWD/../uv-cache"
-
-# Don't run on the login node. Cap DuckDB's cache below --mem so the rest of
-# the process (lxml, Arrow) has room inside the same cgroup -- see below.
-# Set it per-srun, not shell-wide: a later export in this shell would inherit it.
-srun --mem=64G --time=24:00:00 \
-  env PUBMED2DB_DUCKDB_MEMORY_LIMIT=48GB \
-  uv run pubmed2db --data-dir data load
-```
-
-`download → journals → load` can each be a separate `srun`, or use
-`uv run pubmed2db update` to do all three. `export` is a **much** bigger job than
-the load — see [Running `export`](#running-export) below:
+Each pipeline step is an `sbatch` script in this directory, sized from the
+measurements below. Submit them one at a time and read each log before starting
+the next:
 
 ```bash
-srun --mem=256G --cpus-per-task=8 --time=02:00:00 \
-  uv run pubmed2db export --format json --out data/json --shards 16
+export NCBI_EMAIL=you@example.org     # required by validate; NCBI_API_KEY optional
+
+./slurm/submit.sh download
+./slurm/submit.sh journals
+./slurm/submit.sh load
+./slurm/submit.sh export
+./slurm/submit.sh validate
 ```
 
-Then check what shipped — small job, but it needs internet
-(see [Running `validate`](#running-validate)):
+Or chain the whole pipeline and walk away — each step is submitted with
+`--dependency=afterok` on the one before, so a failure cancels the rest:
 
 ```bash
-srun --mem=16G --time=02:00:00 \
-  uv run pubmed2db --data-dir data validate data/json \
-    --manifest "data/manifests/pmids-$(date +%Y%m%d).txt.gz" \
-    --email you@example.org
+./slurm/submit.sh all
+./slurm/submit.sh --dry-run all       # print the sbatch commands without submitting
 ```
 
-Always pass `--manifest` on a corpus run: it is the only record of *which* PMIDs
-this export contained, and the next run cannot diff against a manifest nobody
-wrote (#32).
+Logs land in `data/logs/pubmed2db-<step>-<jobid>.out`. Between steps,
+`uv run pubmed2db status` reports what has been downloaded, loaded and is ready
+to export, which is the quickest way to confirm a step did what you expected.
+
+> **The `#SBATCH` headers in those scripts are the source of truth for what each
+> step requests.** This file explains *why* each figure is what it is and records
+> the runs it came from; it deliberately no longer repeats the flags, so a
+> changed profile is a one-file edit. `slurm/config.sh` holds the settings shared
+> across steps (data directory, shard count, DuckDB caps, NCBI credentials).
+
+| Step | Script | Shape |
+| --- | --- | --- |
+| `download` | `01-download.sbatch` | small, network-bound, long |
+| `journals` | `02-journals.sbatch` | small, network-bound |
+| `load` | `03-load.sbatch` | the long pole; memory-capped |
+| `export` | `04-export.sbatch` | the big one; whole-corpus, memory is the constraint |
+| `validate` | `05-validate.sbatch` | small, needs internet, writes the PMID manifest |
+
+`validate` always writes a dated `--manifest`: it is the only record of *which*
+PMIDs an export contained, and the next run cannot diff against a manifest nobody
+wrote (#32). The script picks the newest earlier manifest as
+`--previous-manifest` automatically.
+
+## The scripts
+
+```
+slurm/
+  config.sh            settings shared across steps; every value overridable from the environment
+  01-download.sbatch   \
+  02-journals.sbatch    |  one step each. The #SBATCH headers are the only place
+  03-load.sbatch        |  an allocation is written down.
+  04-export.sbatch      |
+  05-validate.sbatch   /
+  submit.sh            submits one step, several, or `all` chained with --dependency=afterok
+```
+
+Each script `cd`s to `$SLURM_SUBMIT_DIR` and sources `config.sh`, so **submit
+from the repository root**. `submit.sh` checks that for you, creates the log
+directory (sbatch refuses to start when it is missing, with an error that does
+not name the path), and refuses to submit a chain ending in an online `validate`
+when `NCBI_EMAIL` is unset — better than discovering it after the load has run.
+
+Override anything for one submission without editing a file:
+
+```bash
+SHARDS=32 ./slurm/submit.sh export
+DATA_DIR=/scratch/$USER/pubmed ./slurm/submit.sh all
+VALIDATE_OFFLINE=1 ./slurm/submit.sh validate
+```
+
+Steps remain ordinary scripts: `sbatch slurm/03-load.sbatch` works, and so does
+running the `uv run` line inside one directly on an interactive node.
 
 ## Running `load`: how much memory? (`--mem`)
 
-**Short answer: `--mem=64G` with `PUBMED2DB_DUCKDB_MEMORY_LIMIT` set below it.
-Our own per-file working set is ~1 GiB; everything above that is DuckDB's cache,
-and it will not restrain itself unless told to.**
+**Short answer: `03-load.sbatch` asks for a generous allocation and caps DuckDB's
+buffer pool below it. Our own per-file working set is ~1 GiB; everything above
+that is DuckDB's cache, and it will not restrain itself unless told to.**
 
 The loader holds one file at a time (full lxml tree + that file's parsed records
 + the Arrow batch), then inserts it and moves on. *Our* footprint does not grow
@@ -62,15 +102,13 @@ Arrow batch live in the same cgroup and count against the same `--mem`. A
 default that claims three quarters of the allocation leaves the rest of the
 process a quarter, and the loader's own footprint is not small.
 
-So cap it to buy that headroom back, not to rescue DuckDB from itself:
+So cap it to buy that headroom back, not to rescue DuckDB from itself. That is
+what `LOAD_MEMORY_LIMIT` in `slurm/config.sh` does.
 
-```bash
-srun --mem=64G env PUBMED2DB_DUCKDB_MEMORY_LIMIT=48GB uv run pubmed2db ... load
-```
-
-Set it on the `srun` rather than exporting it into your shell: it is a
-group-level setting every subcommand reads, so a shell-wide value silently caps
-a later `--mem=256G` export at the load's figure.
+The scripts pass it per-invocation (`env PUBMED2DB_DUCKDB_MEMORY_LIMIT=… uv run
+…`) rather than exporting it, and that detail matters if you run a step by hand:
+it is a group-level setting every subcommand reads, so a shell-wide value
+silently caps a later export at the load's much smaller figure.
 
 ### Reading the logged numbers
 
@@ -99,9 +137,9 @@ development; on the cluster it is always available.)
 
 After the Arrow bulk-insert change the load is ~5–6 s/file (≈2 s parse + ≈4 s
 insert) on a warm run, so ~1,500 files is **2–3 hours** single-threaded. A full
-baseline year from cold has run considerably slower, which is why the TL;DR asks
-for `--time=24:00:00`: over-requesting time is free, and being killed at hour six
-of a re-parse is not.
+baseline year from cold has run considerably slower, which is why
+`03-load.sbatch` asks for far more `--time` than the warm figure needs:
+over-requesting time is free, and being killed at hour six of a re-parse is not.
 
 Don't guess the next run's limit — the progress line reports the rate and the
 elapsed time to date, which is exactly what scales:
@@ -134,7 +172,8 @@ Three independent ways, in rough order of convenience:
    size` and wall time to stderr, independent of Slurm accounting:
 
    ```bash
-   srun --mem=64G /usr/bin/time -v uv run pubmed2db load
+   # Wrap the `uv run` line inside the relevant sbatch script, or interactively:
+   srun --mem=... /usr/bin/time -v uv run pubmed2db load
    ```
 
 > **Note:** `seff` is **not installed on `ht1.renci.org`** — use `sacct` or the
@@ -143,8 +182,8 @@ Three independent ways, in rough order of convenience:
 
 ## Running `export`
 
-**Short answer: `--mem=256G --cpus-per-task=8 --time=02:00:00`, run as its own
-job. Memory is the constraint here, not time — the JSON export is fast.**
+**Short answer: `./slurm/submit.sh export`, as its own job. Memory is the
+constraint here, not time — the JSON export is fast.**
 
 Unlike the load, export is a *whole-corpus* operation, so its memory scales with
 the size of the database rather than with the largest input file:
@@ -164,17 +203,14 @@ of magnitude above the loader's.
 | Earlier | — | 199.6 GiB | "a few hours" (before progress logging; never timed) |
 | 2026-07-30 | 40,901,984 | 201.1 GiB | **23m13s**, ≈30k documents/s |
 
-The 2026-07-30 run, on `ht1`, was exactly:
+For the record, that run was submitted as `srun --mem=256G --time=08:00:00
+--cpus-per-task 8` (01:25:01 started, 01:48:14 finished) — kept here as the
+provenance of the numbers above, not as a command to copy; `04-export.sbatch` is
+what to run.
 
-```bash
-srun --mem=256G --time=08:00:00 --cpus-per-task 8 \
-  uv run pubmed2db export --format json --out data/json --shards 16
-# 01:25:01 started, 01:48:14 finished
-```
-
-Treat **256 GB** as the working memory figure — it has been stable across runs
-and is why this needs a big node; do not copy the loader's 64 GB. Time is the
-cheap dimension: two hours is generous margin on 23 minutes.
+Treat **~200 GiB** as the working memory figure — it has been stable across runs
+and is why this needs a big node; do not copy the loader's allocation. Time is
+the cheap dimension: the script's limit is generous margin on 23 minutes.
 
 Both `export_json` and `export_parquet` log peak RSS on completion, and JSON
 logs progress with an ETA once a minute, so a real run tells you what to request
@@ -205,8 +241,8 @@ Notes on the knobs:
   `export_parquet` builds the same `_latest_snapshot`, then writes each table
   with a DuckDB `COPY ... TO`, so no full result set is pulled through Python.
   It has never been run against the full corpus, so that is reasoning rather
-  than a number: request the same 256 GB the first time and read the logged
-  peak RSS.
+  than a number: give it the same allocation as the JSON export the first time
+  and read the logged peak RSS.
 - **Run `export` in a separate `srun` from `load`.** `update` deliberately does
   not chain into it, and sizing one job for both means paying the export's memory
   for the load's several hours.
@@ -216,27 +252,24 @@ Notes on the knobs:
 
 ## Running `validate`
 
-**Short answer: `--mem=16G --time=02:00:00`, as its own job right after the
-export, on a node that can reach the internet. Nothing like the export's 256 GB —
-`validate` never touches `latest_article`.**
+**Short answer: `./slurm/submit.sh validate`, as its own job right after the
+export, on a node that can reach the internet. Its allocation is a small
+fraction of the export's — `validate` never touches `latest_article`.**
 
 ```bash
-srun --mem=16G --time=02:00:00 \
-  uv run pubmed2db --data-dir data validate data/json \
-    --manifest "data/manifests/pmids-$(date +%Y%m%d).txt.gz" \
-    --email you@example.org
+export NCBI_EMAIL=you@example.org     # NCBI_API_KEY too, if you have one
+./slurm/submit.sh validate
 ```
 
-Once a previous run's manifest exists, add it — this is the pair that makes the
-`drops_since_previous` check run at all:
+`05-validate.sbatch` handles the manifest bookkeeping that
+`drops_since_previous` needs: it writes this run's PMID set to
+`data/manifests/pmids-<today>.txt.gz` and passes the newest *earlier* manifest as
+`--previous-manifest`. The first run after adopting this reports `skip` — it has
+nothing to compare against yet — and the run after it is the first that can
+actually catch a silent drop (#32).
 
-```bash
-srun --mem=16G --time=02:00:00 \
-  uv run pubmed2db --data-dir data validate data/json \
-    --manifest "data/manifests/pmids-$(date +%Y%m%d).txt.gz" \
-    --previous-manifest data/manifests/pmids-20260805.txt.gz \
-    --email you@example.org
-```
+Set `VALIDATE_OFFLINE=1` for a node without egress, and `VALIDATE_FAIL_ON_WARN=1`
+to make warnings non-zero too.
 
 It reads the *export*, not the database: every line of every shard is
 `json.loads`-ed once (gzipped shards are decompressed on the fly), and the only
@@ -252,7 +285,7 @@ matters far less here than it does for `load`.
 | earlier (no API key) | 40,901,984 | 16 | 10m 51s | 5.2 GiB |
 | 2026-08-05 (API key) | 40,923,261 | 16, 52.0 GiB | **7m 57s** | **5.182 GiB** |
 
-So 16 GB is roughly 3× headroom, which is the margin to keep if you pass
+The script's allocation is roughly 3× that peak, which is the margin to keep if you pass
 `--previous-manifest`: that manifest is read into a second PMID set of
 comparable size. Both figures are in every report (`duration`,
 `peak_rss_gib`) — size the next run from those, not from this note. (The
@@ -327,16 +360,17 @@ script:
 # No PUBMED2DB_THREADS here on purpose: DuckDB already takes the pool size from
 # --cpus-per-task, so exporting SLURM_CPUS_PER_TASK by hand sets it to what it
 # would have been anyway. See below.
-export PUBMED2DB_DUCKDB_MEMORY_LIMIT=200GB
+export PUBMED2DB_DUCKDB_MEMORY_LIMIT="$EXPORT_MEMORY_LIMIT"   # see slurm/config.sh
 export PUBMED2DB_DUCKDB_TEMP_DIR=/local/scratch/duckdb_tmp
 
-srun --mem=256G --cpus-per-task=8 --time=08:00:00 \
-  uv run pubmed2db export --format json --out data/json --shards 16
-
 # Equivalently, explicit flags (note: before the subcommand):
-uv run pubmed2db --memory-limit 200GB \
+uv run pubmed2db --memory-limit "$EXPORT_MEMORY_LIMIT" \
   --temp-dir /local/scratch/duckdb_tmp export ...
 ```
+
+The sbatch scripts already do this — `EXPORT_MEMORY_LIMIT`, `LOAD_MEMORY_LIMIT`
+and `DUCKDB_TEMP_DIR` in `slurm/config.sh` are where to change it. The forms
+above are for running a step by hand.
 
 **DuckDB reads your allocation, not the node.** Both of its sized defaults come
 from the Slurm cgroup, measured on duckdb 1.5.4: `threads` from the CPU quota
@@ -355,8 +389,9 @@ headroom), not to stop an oversubscription that does not happen.
 `--mem`, which is the right shape but leaves only the remaining quarter for
 lxml, the parsed records and the Arrow batch — all of which count against the
 same `--mem`. Set it a comfortable margin below the allocation to widen that
-headroom: `48GB` under `--mem=64G`, `200GB` under `--mem=256G`. Both are
-starting points rather than measurements (#37). Setting it *too* low is not free
+headroom; `LOAD_MEMORY_LIMIT` and `EXPORT_MEMORY_LIMIT` in `slurm/config.sh`
+carry the current values. Both are starting points chosen to leave headroom
+rather than measured optima (#37). Setting it *too* low is not free
 either — DuckDB will spill to `--temp-dir` instead of caching, which shows up as
 a collapsed s/file rate.
 
