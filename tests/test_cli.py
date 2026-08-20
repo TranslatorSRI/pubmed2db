@@ -212,15 +212,20 @@ def test_connect_memory_limit_is_below_the_default(tmp_path):
     finally:
         default_con.close()
 
-    wanted = int(default / 2)
-    capped_con = connect(tmp_path / "capped.duckdb", memory_limit=f"{wanted}B")
+    wanted = default / 2
+    capped_con = connect(tmp_path / "capped.duckdb", memory_limit=f"{int(wanted)}B")
     try:
         capped = _as_bytes(_setting(capped_con, "memory_limit"))
     finally:
         capped_con.close()
 
+    # The property under test: the explicit limit *replaces* the default.
     assert capped < default
-    assert capped == pytest.approx(wanted, rel=0.01)
+    # And lands near what was asked for -- a sanity band, not a round-trip.
+    # DuckDB does not echo this setting back verbatim: it reports a 6.2 GiB
+    # request as "6.1 GiB" and a 1GB one as "953.6 MiB", so an exact comparison
+    # fails on the value the machine happens to hand it.
+    assert capped == pytest.approx(wanted, rel=0.05)
 
 
 def test_cli_rejects_a_non_positive_limit(tmp_path):
