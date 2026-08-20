@@ -614,6 +614,42 @@ def test_medline_date_year_is_not_a_false_mismatch(export_dir, loaded_con, monke
             if m["field"] in ("pub_year", "pub_month")] == []
 
 
+def test_a_full_month_name_in_a_medline_date_cannot_fail_the_run(
+    export_dir, loaded_con, monkeypatch
+):
+    """The one shape where the export and efetch's reconstruction cannot converge.
+
+    `pub_date` is the archival string verbatim, but efetch does not serve that
+    string -- `efetch_documents` reconstructs one, normalizing the month so the
+    <Year>+<Season> rendering converges (the test below). Where the baseline
+    holds a full month name the two therefore differ: "1998 September" exported
+    against "1998 Sep" reconstructed. Both are correct.
+
+    That is why `pub_date` is a SOFT field: it must still be compared and
+    reported, and it must not be able to fail a run whose export is right.
+    """
+    from pubmed2db.export import pub_date
+
+    assert pub_date(None, None, None, "1998 September") == "1998 September"
+    assert pub_date("1998", "September", None, None) == "1998 Sep"
+
+    assert "pub_date" in validate.SOFT_FIELDS
+    assert "pub_date" not in validate.CORE_FIELDS
+
+    seasonal = dict(_EFETCH)
+    seasonal[1003] = _EFETCH[1003].replace(
+        "<MedlineDate>1998 Spring</MedlineDate>",
+        "<Year>1998</Year><Month>September</Month>",
+    )
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(seasonal))
+    report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
+
+    fields = report["checks"]["field_validation"]
+    # Reported as a soft mismatch, and absent from the gated rate's numerator.
+    assert any(m["field"] == "pub_date" for m in fields["soft_mismatches"]), fields
+    assert all(m.get("field") != "pub_date" for m in fields["mismatches"]), fields
+
+
 def test_season_rendering_is_not_a_false_mismatch(export_dir, loaded_con, monkeypatch):
     """The <Year>+<Season> rendering must compare equal to the MedlineDate form.
 

@@ -71,11 +71,33 @@ EXPECTED_FIELDS = frozenset(JSON_FIELDS)
 
 #: Fields compared strictly against Entrez; a high mismatch rate here is an error.
 CORE_FIELDS = ("article_title", "volume", "issue",
-               "pub_year", "pub_month", "pub_day", "pub_date")
+               "pub_year", "pub_month", "pub_day")
 
-#: Fields sourced from the NLM Catalog dimension, not the article XML, so a
-#: mismatch vs. efetch is informational (the two sources can legitimately differ).
-SOFT_FIELDS = ("journal_name", "journal_abbrev")
+#: Fields compared and reported, but never able to fail the run — either because
+#: the two sides have different sources, or because a disagreement is evidence
+#: about efetch's *rendering* rather than about what we parsed.
+#:
+#: ``journal_name``/``journal_abbrev`` come from the NLM Catalog dimension rather
+#: than the article XML, so the two sources can legitimately differ.
+#:
+#: ``pub_date`` is here for the rendering reason, and it is worth spelling out
+#: because putting it in CORE_FIELDS looks obviously right:
+#:
+#: - It is **defined** as the archival string verbatim. efetch does not serve
+#:   that string; it serves a re-serialization, so ``efetch_documents`` has to
+#:   *reconstruct* one to compare against. Where the baseline holds
+#:   ``<MedlineDate>1998 September</MedlineDate>`` the export ships
+#:   ``"1998 September"`` while the reconstruction — which normalizes the month,
+#:   as it must for the ``<Year>+<Season>`` shape to converge — gives
+#:   ``"1998 Sep"``. Correct export, correct reconstruction, unequal strings.
+#:   AGENTS.md's rule applies directly: an efetch mismatch is not evidence about
+#:   what we parsed.
+#: - It is **correlated** with three fields already in CORE_FIELDS, being derived
+#:   from the same columns. Gating on it would let one date-rendering
+#:   disagreement contribute four mismatches instead of three, tightening the
+#:   FAIL threshold on exactly the records most likely to trip it — the same
+#:   reasoning that keeps the ``identifiers`` comparison advisory below.
+SOFT_FIELDS = ("journal_name", "journal_abbrev", "pub_date")
 
 _ID_RE = re.compile(r"^PMID:(\d+)$")
 
