@@ -114,6 +114,37 @@ faster on a 2M-document benchmark), and two things follow:
 Re-running an export first deletes the `pubmed_metadata_*` files already in the
 output directory, so a shorter run cannot leave a previous run's shards behind.
 
+### `pub_date` in the JSON export
+
+The three parsed date fields are conveniences, and no arrangement of them
+represents every `PubDate` PubMed publishes: a cross-year range like
+`<MedlineDate>1998 Dec-1999 Jan</MedlineDate>` (PMID:10188493) has no single
+month, so splitting it leaves a year inside `pub_month`. So every record also
+carries **`pub_date`**, PubMed's own date string verbatim — the same thing NCBI
+`esummary` ships as `pubdate`:
+
+```json
+{
+  "id": "PMID:10188493",
+  "pub_date": "1998 Dec-1999 Jan",
+  "pub_year": "1998",
+  "pub_month": "Dec-1999 Jan",
+  "pub_day": "",
+  "...": "..."
+}
+```
+
+Render citations from `pub_date`; sort and filter on `pub_year`. Neither has to
+parse the other. Records with an ordinary date get the same treatment —
+`"2019 Mar 15"` — so a consumer never needs to know which shape it is looking at.
+
+`pub_year` takes the **leading** year of a cross-year range, matching what NCBI's
+own `sortpubdate` does. A consumer that needs the trailing year reads it out of
+`pub_date`.
+
+> **`pub_date` is new, and a re-export is required to ship it.** An export made
+> before this field existed has eleven fields, not twelve.
+
 ### Identifiers in the JSON export
 
 Alongside the DocumentMetadataAPI fields, each JSON record carries an

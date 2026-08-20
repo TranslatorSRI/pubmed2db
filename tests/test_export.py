@@ -476,6 +476,33 @@ def test_pub_date_sql_matches_python(con):
         )
 
 
+def test_a_day_without_a_usable_month_is_dropped(con):
+    """"2019 15" reads as a date and is not one.
+
+    `normalize_month` blanks an out-of-range number, and `_MONTH_INPUTS` shows
+    those reach the export. Floating the day up next to the year would hand the
+    consumer this field exists for a plausible wrong answer; NCBI's own
+    `sortpubdate` drops precision in the same situation.
+    """
+    from pubmed2db.export import _PUB_DATE_SQL, pub_date
+
+    rows = [("2019", bad, "15", None) for bad in ("13", "0", "", None)]
+    got = _twin_rows(
+        con, _PUB_DATE_SQL, ["pub_year", "pub_month", "pub_day", "medline_date"], rows
+    )
+    for row, value in zip(rows, got):
+        assert value == "2019", row
+        assert pub_date(*row) == "2019", row
+
+    # ...and a usable month keeps it, including an approximate one.
+    keeps = [("2019", "Mar", "15", None), ("2019", "Sep-Dec", "15", None)]
+    got = _twin_rows(
+        con, _PUB_DATE_SQL, ["pub_year", "pub_month", "pub_day", "medline_date"], keeps
+    )
+    assert got == ["2019 Mar 15", "2019 Sep-Dec 15"]
+    assert [pub_date(*row) for row in keeps] == got
+
+
 def test_pub_year_sql_matches_year_from_medline_date(con):
     """Same contract for the MedlineDate year fallback."""
     from pubmed2db.export import _PUB_YEAR_SQL, _year_from_medline_date

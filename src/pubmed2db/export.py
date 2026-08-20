@@ -286,7 +286,16 @@ def pub_date(
     """
     if medline_date and medline_date.strip():
         return medline_date.strip()
-    parts = ((year or "").strip(), normalize_month(month), (day or "").strip())
+    # A day without a month is dropped, not floated up next to the year:
+    # `("2019", "13", "15")` would otherwise render "2019 15", which reads as a
+    # date to the consumer this field exists for and is not one. `normalize_month`
+    # blanks an out-of-range number, and `_MONTH_INPUTS` shows those do reach
+    # here. NCBI does the same thing in `sortpubdate` — an unusable component
+    # costs precision rather than producing a plausible wrong answer.
+    normalized_month = normalize_month(month)
+    parts = [(year or "").strip(), normalized_month]
+    if normalized_month:
+        parts.append((day or "").strip())
     return " ".join(part for part in parts if part)
 
 
@@ -340,6 +349,14 @@ _PUB_MONTH_SQL = (
 #: is none, and chasing it would waste a reader's time.
 _MONTH_FOR_DATE_SQL = _normalize_month_sql("la.pub_month")
 
+#: NULL, not ``''``, when the month blanked — ``concat_ws`` skips NULLs, so the
+#: day disappears rather than sitting beside the year and reading as a date.
+_STRIPPED_DAY_SQL = _strip_sql("COALESCE(la.pub_day, '')")
+_DAY_FOR_DATE_SQL = (
+    f"CASE WHEN {_MONTH_FOR_DATE_SQL} = '' THEN NULL "
+    f"ELSE NULLIF({_STRIPPED_DAY_SQL}, '') END"
+)
+
 #: ``pub_date``'s logic as SQL. ``concat_ws`` skips NULLs, which is what the
 #: ``NULLIF(..., '')`` wrappers are for — an absent month must not leave a
 #: double space behind.
@@ -355,7 +372,7 @@ _PUB_DATE_SQL = f"""CASE
         ELSE {_strip_sql("concat_ws(' ', " + ", ".join([
             "NULLIF(" + _strip_sql("COALESCE(la.pub_year, '')") + ", '')",
             "NULLIF(" + _MONTH_FOR_DATE_SQL + ", '')",
-            "NULLIF(" + _strip_sql("COALESCE(la.pub_day, '')") + ", '')",
+            _DAY_FOR_DATE_SQL,
         ]) + ")")}
     END"""
 

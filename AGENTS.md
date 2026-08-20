@@ -127,9 +127,12 @@ explains its part; this table is only a map.
   `pubdate` does. Consumers rendering a citation read `pub_date`; consumers
   sorting or filtering read `pub_year`; neither parses the other. `_PUB_DATE_SQL`
   takes `medline_date` whole when present, else assembles
-  `year + normalize_month(month) + day` — and note it calls
-  `_normalize_month_sql('la.pub_month')`, **not** `_PUB_MONTH_SQL`, which would
-  fold the `MedlineDate` back into a branch that only runs when there isn't one.
+  `year + normalize_month(month) + day`. It calls `_normalize_month_sql('la.pub_month')`
+  rather than `_PUB_MONTH_SQL` for clarity and one fewer `regexp_extract`, **not**
+  to avoid double-counting the `MedlineDate` — an earlier comment claimed that
+  hazard and it does not exist, since the branch only runs when the
+  `MedlineDate` is blank and a blank one contributes `''`, making the two
+  expressions provably equal there.
   The two renderings PubMed serves must converge on one string (efetch's
   `<Year>1994</Year><Season>Sep-Dec</Season>` and the baseline's
   `<MedlineDate>1994 Sep-Dec</MedlineDate>` both give `"1994 Sep-Dec"`); that is
