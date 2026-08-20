@@ -451,6 +451,15 @@ def check_structure(
                                 reservoir[j] = (pmid, doc)
                         seen_in_shard += 1
 
+                    # Reading the clock every record looks wasteful and is not:
+                    # `time.monotonic()` is ~25 ns against ~2.8 µs of per-record
+                    # work above (json.loads, the two set differences, the null
+                    # scan, the id regex, the reservoir draw), so gating on a
+                    # `records % N` counter instead saves ~1 s of a 7m 38s
+                    # corpus read. It would also cost the property the line is
+                    # for: progress is denominated in bytes, so a record-counted
+                    # gate would space the lines by record size rather than by
+                    # time, and these are meant to be a minute apart in a log.
                     now = time.monotonic()
                     if now - last_log >= _PROGRESS_INTERVAL_S and total_bytes:
                         elapsed = now - start
