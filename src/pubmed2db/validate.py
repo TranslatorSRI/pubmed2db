@@ -266,6 +266,24 @@ def find_shards(export_dir: Path) -> list[Path]:
     )
 
 
+def _shard_sizes(shards: list[Path]) -> dict[Path, int]:
+    """Byte size of each shard, ``0`` for one that cannot be stat'd.
+
+    `export` publishes in place (#24), so a re-run can replace or remove a shard
+    between :func:`find_shards` and here. That is the half-written export this
+    check exists to report, not a reason to abandon the run with a
+    ``FileNotFoundError`` — the read itself then fails and records the shard as
+    unreadable. Only the progress denominator is off, and only for that shard.
+    """
+    sizes = {}
+    for path in shards:
+        try:
+            sizes[path] = path.stat().st_size
+        except OSError:
+            sizes[path] = 0
+    return sizes
+
+
 def _open_text(path: Path):
     if path.name.endswith(".gz"):
         return gzip.open(path, "rt", encoding="utf-8")
@@ -352,7 +370,8 @@ def check_structure(
     # counting shards alone would report nothing at all for the common
     # single-shard export. Hence the raw handle below — `raw.tell()` is the
     # compressed offset for a .gz shard, which is the scale `st_size` is in.
-    total_bytes = sum(path.stat().st_size for path in shards)
+    shard_bytes = _shard_sizes(shards)
+    total_bytes = sum(shard_bytes.values())
     bytes_done = 0
     start = time.monotonic()
     last_log = start
@@ -451,7 +470,7 @@ def check_structure(
         except (OSError, EOFError) as exc:
             unreadable.append({"shard": path.name, "error": str(exc)})
 
-        bytes_done += path.stat().st_size
+        bytes_done += shard_bytes[path]
         for pmid, doc in reservoir:
             result.sample[pmid] = doc
 
@@ -1319,7 +1338,7 @@ def run_validation(
     logger.info(
         "starting validation: %d shard(s) in %s, %.1f GiB · database %s · %s",
         len(shards), export_dir,
-        sum(path.stat().st_size for path in shards) / 1024**3,
+        sum(_shard_sizes(shards).values()) / 1024**3,
         "available" if con is not None else "not available",
         "offline (no Entrez checks)" if not online
         else "online with an NCBI API key (10 req/s)" if api_key

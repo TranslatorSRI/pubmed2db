@@ -97,6 +97,21 @@ def test_structure_reports_identifier_coverage(export_dir):
     assert "50.0% doi" in validate.format_summary(report)
 
 
+def test_a_shard_that_vanishes_is_reported_not_raised(export_dir, monkeypatch):
+    """`export` publishes in place, so a shard can go between find_shards and the
+    read. That is the half-written export this check exists to catch -- it must
+    land in `unreadable_shards`, not take the whole run down."""
+    shards = [*validate.find_shards(export_dir), export_dir / "pubmed_metadata_09999.ndjson"]
+    monkeypatch.setattr(validate, "find_shards", lambda _: shards)
+
+    report = validate.run_validation(export_dir, online=False)
+
+    unreadable = report["checks"]["structure"]["unreadable_shards"]
+    assert [entry["shard"] for entry in unreadable] == ["pubmed_metadata_09999.ndjson"]
+    # The surviving shard was still read.
+    assert report["checks"]["structure"]["records_total"] == 2
+
+
 def test_duplicate_examples_are_distinct_pmids(export_dir):
     """One PMID exported many times must not consume every example slot.
 
