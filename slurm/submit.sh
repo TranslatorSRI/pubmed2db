@@ -7,8 +7,9 @@
 #   ./slurm/submit.sh all               # download -> journals -> load -> export -> validate
 #   ./slurm/submit.sh --dry-run all     # print the sbatch commands and stop
 #
-# Chained steps use --dependency=afterok, so a step that exits non-zero cancels
-# everything after it. That is the automated form of reading each log before
+# Chained steps use --dependency=afterok plus --kill-on-invalid-dep=yes, so a
+# step that exits non-zero cancels everything after it rather than leaving it
+# pending forever. That is the automated form of reading each log before
 # starting the next one -- but only for failures the exit status reports, which
 # is why `all` is the hands-off option and one-step-at-a-time remains the
 # careful one.
@@ -64,6 +65,28 @@ if [[ ${#requested[@]} -eq 0 ]]; then
     usage 64 >&2
 fi
 
+# Drop repeats, keeping the first position of each. `all validate` would
+# otherwise submit validate twice, the second gated on the first -- and a second
+# validate rewrites the dated manifest and report, then (today's manifest now
+# existing) diffs against the wrong baseline. A plain loop rather than an
+# associative array, for bash 3.2.
+deduped=()
+for step in "${requested[@]}"; do
+    seen=0
+    for kept in ${deduped[@]+"${deduped[@]}"}; do
+        if [[ "$kept" == "$step" ]]; then
+            seen=1
+            break
+        fi
+    done
+    if [[ "$seen" == "0" ]]; then
+        deduped+=("$step")
+    else
+        echo "note: $step was named more than once; submitting it once." >&2
+    fi
+done
+requested=("${deduped[@]}")
+
 if [[ ! -f pyproject.toml || ! -d slurm ]]; then
     echo "error: run this from the repository root (the sbatch scripts use paths relative to it)." >&2
     exit 64
@@ -99,7 +122,14 @@ previous_job=""
 for step in "${requested[@]}"; do
     args=("${common_args[@]}")
     if [[ -n "$previous_job" ]]; then
-        args+=(--dependency="afterok:$previous_job")
+        # --kill-on-invalid-dep is not redundant with afterok. When the
+        # dependency can never be satisfied, Slurm's *default* is to leave the
+        # dependent pending forever with reason DependencyNeverSatisfied --
+        # cancelling it only where the site set kill_invalid_depend in
+        # slurm.conf. Without this flag a load that fails at hour three leaves
+        # the export and validate squatting in the queue until someone notices,
+        # which is not what this script's header promises.
+        args+=(--dependency="afterok:$previous_job" --kill-on-invalid-dep=yes)
     fi
     args+=("$(step_file "$step")")
 
@@ -112,6 +142,11 @@ for step in "${requested[@]}"; do
     fi
 
     job_id=$(sbatch --parsable "${args[@]}")
+    # --parsable prints "jobid;clustername" on a federated/multi-cluster site
+    # and a bare jobid elsewhere. The suffix would land inside the next
+    # --dependency=afterok:... and be rejected at submit time, breaking the
+    # chain on exactly the sites where it is hardest to debug.
+    job_id="${job_id%%;*}"
     if [[ -n "$previous_job" ]]; then
         printf 'submitted %-9s job %s (after %s)\n' "$step" "$job_id" "$previous_job"
     else
