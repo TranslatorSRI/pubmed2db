@@ -181,10 +181,18 @@ def _setting(con, name: str) -> str:
     return con.execute(f"SELECT current_setting('{name}')").fetchone()[0]
 
 
+#: DuckDB reports a size in whichever unit fits, and the *default* limit is
+#: sized from the machine — on a large-memory cluster node that is TiB, so a
+#: GiB-only ladder turns this test into a KeyError on exactly the hardware it
+#: is written for.
+_UNITS = {"bytes": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3,
+          "TiB": 1024**4, "PiB": 1024**5}
+
+
 def _as_bytes(value: str) -> float:
     """Parse DuckDB's '953.6 MiB' / '12.7 GiB' back into a number."""
     number, unit = value.split()
-    return float(number) * {"KiB": 1024, "MiB": 1024**2, "GiB": 1024**3}[unit]
+    return float(number) * _UNITS[unit]
 
 
 def test_connect_memory_limit_is_below_machine_default(tmp_path):
