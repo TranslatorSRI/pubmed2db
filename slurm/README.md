@@ -274,14 +274,17 @@ Notes on the knobs:
   oversubscribes the step that gets OOM-killed, and one set deliberately below
   it is also the only way `--shards` interacts with a group-level `--threads` —
   the `SET` overrides it for the duration of the COPY.
-- **`--sample-size` is per shard, so the field check scales with the shard
-  count.** `validate` samples that many records from *each* shard, and since
-  the export writes one shard per writer thread, the shard count follows
-  `--cpus-per-task` rather than being fixed. Halving the export's allocation
-  therefore halves how many records the next `validate` compares against
-  Entrez, without either flag changing. The report says what a run actually
-  checked — `(240 records sampled: 15/shard x 16 shards, seed 0)` — so read
-  that line rather than assuming the default means one number.
+- **`--sample-size` is per shard, so `05-validate.sbatch` derives it from a
+  target total.** `validate` samples that many records from *each* shard, and
+  since the export writes one shard per writer thread the shard count follows
+  `--cpus-per-task`. Left alone, halving the export's allocation would halve how
+  many records the next `validate` compares against Entrez without either flag
+  changing. The script divides `VALIDATE_SAMPLE_TOTAL` (240 by default, what the
+  pre-2026 runs sampled as 15 × 16) by the shards actually on disk, so runs stay
+  comparable across allocations; set it empty to pass nothing and take the CLI's
+  own per-shard default. The report still says what a run checked —
+  `(240 records sampled: 30/shard x 8 shards, seed 0)` — and that line, not the
+  flag, is the one to read.
 - **Shards are gzipped by default.** `--gzip` is on unless you pass
   `--no-gzip`; compression happens as each shard is written (no separate
   re-read pass) and costs CPU rather than memory. A full corpus lands at

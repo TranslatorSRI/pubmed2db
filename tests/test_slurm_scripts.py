@@ -506,7 +506,8 @@ def test_shards_tracks_the_export_allocation() -> None:
 #: default" is to pass it empty. Each must use `=` rather than `:=`, or the
 #: default is silently restored and the operator gets the opposite of what they
 #: asked for.
-CLEARABLE_SETTINGS = ["LOAD_MEMORY_LIMIT", "EXPORT_MEMORY_LIMIT", "DUCKDB_TEMP_DIR"]
+CLEARABLE_SETTINGS = ["LOAD_MEMORY_LIMIT", "EXPORT_MEMORY_LIMIT", "DUCKDB_TEMP_DIR",
+                      "VALIDATE_SAMPLE_TOTAL"]
 
 
 @pytest.mark.parametrize("name", CLEARABLE_SETTINGS)
@@ -540,3 +541,41 @@ def test_a_clearable_setting_still_has_a_default(name: str) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout, f"{name} has no default at all"
+
+
+@pytest.mark.parametrize(
+    "shards,expected_per_shard",
+    [(16, "15"), (8, "30"), (1, "240"), (500, "1")],
+)
+def test_sample_size_targets_a_total_not_a_per_shard_count(
+    sandbox: Path, shards: int, expected_per_shard: str
+) -> None:
+    """`--sample-size` is per shard, and the shard count follows the export's
+    --cpus-per-task -- so a fixed per-shard number silently halves how much of
+    the corpus is checked when the export's allocation halves. The script
+    divides a target total by the shards actually on disk instead.
+
+    500 shards is the degenerate case: more shards than the target, where every
+    shard must still be sampled rather than rounding to zero.
+    """
+    for i in range(shards):
+        (sandbox / "data" / "json" / f"pubmed_metadata_{i}.ndjson.gz").touch()
+
+    result = run_validate(sandbox, NCBI_EMAIL="me@example.org")
+    assert result.returncode == 0, result.stderr
+    assert f"--sample-size {expected_per_shard}" in result.stdout, result.stdout
+
+
+def test_no_sample_size_is_passed_when_the_target_is_cleared(sandbox: Path) -> None:
+    """Cleared, the CLI's own per-shard default stands -- nothing is passed."""
+    (sandbox / "data" / "json" / "pubmed_metadata_0.ndjson.gz").touch()
+    result = run_validate(sandbox, NCBI_EMAIL="me@example.org", VALIDATE_SAMPLE_TOTAL="")
+    assert result.returncode == 0, result.stderr
+    assert "--sample-size" not in result.stdout
+
+
+def test_no_sample_size_is_passed_when_the_export_is_empty(sandbox: Path) -> None:
+    """No shards means nothing to divide by; validate reports that itself."""
+    result = run_validate(sandbox, NCBI_EMAIL="me@example.org")
+    assert result.returncode == 0, result.stderr
+    assert "--sample-size" not in result.stdout

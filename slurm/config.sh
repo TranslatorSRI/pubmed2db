@@ -26,6 +26,14 @@
 # --cpus-per-task=8 oversubscribes 2:1 on the one step that gets OOM-killed,
 # and would silently raise a group-level --threads set to run *below* an
 # allocation on a busy node. Change the sbatch header and this follows.
+# `validate` samples this many records *in total* for the Entrez field check,
+# not per shard — the CLI's --sample-size is per shard, and since the export
+# writes one shard per writer thread that would make the sample silently track
+# --cpus-per-task. 240 is what the pre-2026 corpus runs sampled (15 x 16
+# shards), so runs stay comparable when the shard count changes. Set it empty
+# to pass no --sample-size at all and take the CLI's own default.
+: "${VALIDATE_SAMPLE_TOTAL=240}"
+
 : "${SHARDS:=${SLURM_CPUS_PER_TASK:-8}}"
 
 # DuckDB's buffer-pool cap per step. These are NOT exported: the CLI reads
