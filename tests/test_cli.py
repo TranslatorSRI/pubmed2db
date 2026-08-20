@@ -323,3 +323,41 @@ def test_cli_update_survives_a_failed_journal_refresh(staged_download, monkeypat
     con = connect(db_path)
     assert con.execute("SELECT count(*) FROM article").fetchone()[0] > 0
     con.close()
+
+
+#: The three group-level DuckDB knobs, and the environment variable each reads.
+#: `show_envvar=True` is what puts these names in `--help`; --memory-limit
+#: originally spelled its own out in prose instead, which is a second copy that
+#: can drift from the `envvar=` argument beside it.
+DUCKDB_KNOBS = [
+    ("--threads", "PUBMED2DB_THREADS"),
+    ("--temp-dir", "PUBMED2DB_DUCKDB_TEMP_DIR"),
+    ("--memory-limit", "PUBMED2DB_DUCKDB_MEMORY_LIMIT"),
+]
+
+
+@pytest.mark.parametrize("option,envvar", DUCKDB_KNOBS)
+def test_duckdb_knobs_advertise_their_env_var(option, envvar):
+    """`--help` names each knob's environment variable, via click not prose."""
+    result = CliRunner().invoke(main, ["--help"])
+    assert result.exit_code == 0, result.output
+    assert option in result.output
+    # click wraps help to the terminal width, so "[env var:" and the name can
+    # land on different lines. Collapse whitespace before matching.
+    flattened = " ".join(result.output.split())
+    # click renders these as "[env var: NAME; ...]" only when show_envvar is set.
+    assert f"env var: {envvar}" in flattened
+
+
+def test_env_var_names_are_written_down_once():
+    """No knob repeats its env var in the help *text* as well as the marker.
+
+    Two copies in one help string is what this replaced; the `[env var: ...]`
+    marker click generates is the single source.
+    """
+    result = CliRunner().invoke(main, ["--help"])
+    for _option, envvar in DUCKDB_KNOBS:
+        assert result.output.count(envvar) == 1, (
+            f"{envvar} appears more than once in --help; the click marker "
+            "should be its only mention"
+        )

@@ -156,3 +156,162 @@ def test_readme_does_not_duplicate_the_allocations() -> None:
         "runnable srun allocations are back in slurm/README.md; the #SBATCH "
         f"headers are the source of truth: {offenders}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 05-validate.sbatch: manifest selection
+# --------------------------------------------------------------------------- #
+#
+# This is the only real logic in the sbatch scripts, and getting it wrong is
+# quiet: passing the wrong --previous-manifest still exits 0 and still writes a
+# report, it just compares against the wrong corpus. The script is exercised
+# with a stub `uv` on PATH that echoes its arguments, so the assertions are on
+# the command line the script would have run.
+
+
+VALIDATE_SCRIPT = SLURM_DIR / "05-validate.sbatch"
+
+
+@pytest.fixture
+def sandbox(tmp_path: Path) -> Path:
+    """A minimal repo the sbatch scripts can run inside, with `uv` stubbed."""
+    shutil.copytree(SLURM_DIR, tmp_path / "slurm")
+    (tmp_path / "pyproject.toml").touch()
+    (tmp_path / "data" / "json").mkdir(parents=True)
+    (tmp_path / "data" / "manifests").mkdir(parents=True)
+
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    uv = stub_dir / "uv"
+    uv.write_text('#!/bin/sh\necho "UV_ARGS: $*"\n')
+    uv.chmod(0o755)
+    return tmp_path
+
+
+def run_validate(sandbox: Path, **env: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "slurm/05-validate.sbatch"],
+        cwd=sandbox,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": f"{sandbox / 'bin'}:/usr/bin:/bin",
+            "HOME": str(sandbox),
+            "SLURM_SUBMIT_DIR": str(sandbox),
+            **env,
+        },
+    )
+
+
+def manifests(sandbox: Path) -> Path:
+    return sandbox / "data" / "manifests"
+
+
+def test_validate_writes_a_dated_manifest(sandbox: Path) -> None:
+    result = run_validate(sandbox, NCBI_EMAIL="me@example.org")
+    assert result.returncode == 0, result.stderr
+    assert "--manifest data/manifests/pmids-" in result.stdout
+
+
+def test_validate_reports_no_previous_manifest_on_a_first_run(sandbox: Path) -> None:
+    """The first run cannot compare, and should say so rather than stay silent."""
+    result = run_validate(sandbox, NCBI_EMAIL="me@example.org")
+    assert result.returncode == 0, result.stderr
+    assert "--previous-manifest" not in result.stdout
+    assert "no previous manifest" in result.stdout
+
+
+def test_validate_picks_the_newest_earlier_manifest(sandbox: Path) -> None:
+    """Names sort chronologically, so the latest earlier run wins."""
+    (manifests(sandbox) / "pmids-20260701.txt.gz").touch()
+    (manifests(sandbox) / "pmids-20260805.txt.gz").touch()
+
+    result = run_validate(sandbox, NCBI_EMAIL="me@example.org")
+    assert result.returncode == 0, result.stderr
+    assert "--previous-manifest data/manifests/pmids-20260805.txt.gz" in result.stdout
+    assert "20260701" not in result.stdout
+
+
+def test_validate_never_diffs_a_rerun_against_itself(sandbox: Path) -> None:
+    """A same-day re-run must compare against the previous *run*, not today's file.
+
+    The script writes today's manifest at the end, so on a second run that file
+    already exists. Picking it would compare the export against itself and
+    report no drops however many there were.
+    """
+    import datetime
+
+    today = datetime.date.today().strftime("%Y%m%d")
+    (manifests(sandbox) / f"pmids-{today}.txt.gz").touch()
+    (manifests(sandbox) / "pmids-20260805.txt.gz").touch()
+
+    result = run_validate(sandbox, NCBI_EMAIL="me@example.org")
+    assert result.returncode == 0, result.stderr
+    assert "--previous-manifest data/manifests/pmids-20260805.txt.gz" in result.stdout
+    assert f"--previous-manifest data/manifests/pmids-{today}" not in result.stdout
+
+
+def test_validate_passes_the_api_key_only_when_set(sandbox: Path) -> None:
+    without = run_validate(sandbox, NCBI_EMAIL="me@example.org")
+    assert "--api-key" not in without.stdout
+
+    with_key = run_validate(sandbox, NCBI_EMAIL="me@example.org", NCBI_API_KEY="k")
+    assert "--api-key k" in with_key.stdout
+
+
+def test_validate_offline_needs_no_email(sandbox: Path) -> None:
+    result = run_validate(sandbox, VALIDATE_OFFLINE="1")
+    assert result.returncode == 0, result.stderr
+    assert "--offline" in result.stdout
+    assert "--email" not in result.stdout
+
+
+def test_validate_online_without_an_email_fails(sandbox: Path) -> None:
+    result = run_validate(sandbox)
+    assert result.returncode == 64
+    assert "NCBI_EMAIL" in result.stderr
+    assert "UV_ARGS" not in result.stdout
+
+
+def test_fail_on_warn_is_off_by_default(sandbox: Path) -> None:
+    """The flag is opt-in, and enabling it reaches the command line.
+
+    The script spells this as a plain `if` rather than `[[ cond ]] && arr+=(...)`
+    as a hedge, not a fix: mid-script that form is harmless under `set -e`
+    (measured — the AND-OR list's non-final commands are exempt), but it returns
+    1 as the last statement of a script or function, so it breaks the moment
+    someone moves it or appends to the block. This test pins the behaviour, not
+    the spelling.
+    """
+    default = run_validate(sandbox, VALIDATE_OFFLINE="1")
+    assert default.returncode == 0, default.stderr
+    assert "--fail-on-warn" not in default.stdout
+
+    enabled = run_validate(sandbox, VALIDATE_OFFLINE="1", VALIDATE_FAIL_ON_WARN="1")
+    assert enabled.returncode == 0, enabled.stderr
+    assert "--fail-on-warn" in enabled.stdout
+
+
+def test_export_survives_an_uncreatable_spill_directory(sandbox: Path) -> None:
+    """The fallback path must not itself fail.
+
+    Expanding an empty array under `set -u` is an error on bash 3.2, and that is
+    exactly what this branch leaves behind when the spill directory cannot be
+    made — a second failure on the path handling the first.
+    """
+    result = subprocess.run(
+        ["bash", "slurm/04-export.sbatch"],
+        cwd=sandbox,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": f"{sandbox / 'bin'}:/usr/bin:/bin",
+            "HOME": str(sandbox),
+            "SLURM_SUBMIT_DIR": str(sandbox),
+            "DUCKDB_TEMP_DIR": "/proc/nope/xyz",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert "warning: cannot create" in result.stderr
+    assert "--temp-dir" not in result.stdout
+    assert "UV_ARGS" in result.stdout
