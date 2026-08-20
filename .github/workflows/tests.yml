@@ -1,0 +1,46 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A force-push or a quick follow-up commit should cancel the run it supersedes
+# rather than queue behind it.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor is what pyproject requires (hashlib.file_digest), and the
+        # ceiling is what a fresh `uv sync` would pick. Both, so a change that
+        # only works on one is caught here rather than on the cluster.
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install the project
+        run: uv sync --extra dev --python ${{ matrix.python-version }}
+
+      - name: Run the tests
+        # No network needed, by design — the fixtures are gzipped into temp
+        # files and every Entrez path is stubbed. A test that starts needing
+        # egress has broken that property and should fail here.
+        #
+        # `-v` names every test, which is what makes a second, narrower step
+        # unnecessary: tests/test_slurm_scripts.py shells out to bash and is the
+        # part a macOS dev box exercises differently, so it is worth seeing by
+        # name — but it is already in this run.
+        run: uv run --python ${{ matrix.python-version }} pytest -v
