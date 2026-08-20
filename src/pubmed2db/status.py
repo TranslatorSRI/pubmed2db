@@ -14,14 +14,7 @@ from datetime import datetime
 
 import duckdb
 
-#: Shared "downloaded but not (re)loaded" predicate: a file is pending if it was
-#: downloaded but never processed, or downloaded again since its last load (a
-#: changed published MD5). Used by both this module's pending_file_count() and
-#: summarize(), and by :func:`pubmed2db.load.needs_load`'s single-file check, so
-#: the rule can't drift apart between its callers.
-NEEDS_LOAD_SQL = (
-    "downloaded_at IS NOT NULL AND (processed_at IS NULL OR downloaded_at > processed_at)"
-)
+from .db import NEEDS_LOAD_SQL
 
 
 def articles_loaded(con: duckdb.DuckDBPyConnection) -> bool:
@@ -54,15 +47,14 @@ def last_run(con: duckdb.DuckDBPyConnection, step: str) -> datetime | None:
     return row[0] if row else None
 
 
-def export_readiness(con: duckdb.DuckDBPyConnection) -> dict:
-    """Whether ``export`` can run, and any warnings — shared by the ``export``
-    and ``status`` commands so their verdicts can't drift apart.
+def export_readiness(con: duckdb.DuckDBPyConnection) -> tuple[str | None, list[str]]:
+    """Whether ``export`` can run: ``(blocking error or None, warnings)``.
+
+    Shared by the ``export`` and ``status`` commands so their verdicts can't
+    drift apart.
     """
     if not articles_loaded(con):
-        return {
-            "blocked": True,
-            "warnings": ["No articles loaded; run `pubmed2db load` first."],
-        }
+        return "No articles loaded; run `pubmed2db load` first.", []
     warnings = []
     pending = pending_file_count(con)
     if pending:
@@ -75,7 +67,7 @@ def export_readiness(con: duckdb.DuckDBPyConnection) -> dict:
             "journal table is empty, so journal names will be blank; "
             "run `pubmed2db journals` to populate them."
         )
-    return {"blocked": False, "warnings": warnings}
+    return None, warnings
 
 
 def summarize(con: duckdb.DuckDBPyConnection) -> dict:
@@ -92,6 +84,8 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         last_download,
         loaded_files,
         last_load,
+        skipped_records,
+        baseline_years,
     ) = con.execute(
         """
         SELECT
@@ -103,7 +97,13 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
             count(*) FILTER (WHERE kind = 'update' AND downloaded_at IS NOT NULL),
             max(downloaded_at),
             count(*) FILTER (WHERE processed_at IS NOT NULL),
-            max(processed_at)
+            max(processed_at),
+            coalesce(sum(n_failed), 0) + coalesce(sum(n_book_records), 0),
+            -- More than one baseline year on disk means a new baseline landed:
+            -- every PMID is stored twice and only the newest year is exported.
+            list_sort(list(DISTINCT year_yy) FILTER (
+                WHERE kind = 'baseline' AND downloaded_at IS NOT NULL
+            ))
         FROM source_file
         """
     ).fetchone()
@@ -113,6 +113,13 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         """
         SELECT
             (SELECT count(*) FROM article),
+            -- Counting the view looks expensive — it is a window over the whole
+            -- `article` table — so this has already been "optimized" once into a
+            -- group-by over (pmid, file_order_key) anti-joined against
+            -- deleted_pmid. Don't: measured on 5-6M rows the two are within
+            -- noise (DuckDB prunes the view's projection, and the window was the
+            -- faster of the two), and the rewrite leaves a second copy of the
+            -- latest-version rule to keep in step with schema.sql.
             (SELECT count(*) FROM latest_article),
             (SELECT count(*) FROM journal)
         """
@@ -123,14 +130,14 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         "downloaded_files": downloaded,
         "baseline_files": baseline,
         "update_files": update,
+        "baseline_years": baseline_years or [],
         "last_download": last_download,
         "loaded_files": loaded_files,
         "pending_files": pending_files,
         "last_load": last_load,
+        "skipped_records": skipped_records,
         "article_versions": article_versions,
         "latest_documents": latest_documents,
         "journals": journals,
         "journals_refreshed": last_run(con, "journals"),
-        "articles_loaded": articles_loaded(con),
-        "journals_loaded": journals_loaded(con),
     }

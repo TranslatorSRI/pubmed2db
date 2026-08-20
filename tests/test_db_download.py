@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -49,6 +51,205 @@ def test_parse_md5_text(text, expected):
     assert parse_md5_text(text) == expected
 
 
+_GOOD_MD5 = "0123456789abcdef0123456789abcdef"
+
+
+class _FakeResponse:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def raise_for_status(self) -> None:
+        pass
+
+
+class _FakeEnsure:
+    """Stands in for a pystow module: skips by name, like the real ensure()."""
+
+    def __init__(self, path: Path, payload: bytes = b"fresh") -> None:
+        self.path = path
+        self.payload = payload
+        self.downloads = 0
+
+    def ensure(self, *, url: str) -> Path:
+        if not self.path.exists():
+            self.path.write_bytes(self.payload)
+            self.downloads += 1
+        return self.path
+
+    def join(self, *, name: str) -> Path:
+        return self.path
+
+
+def _sync_kind(con, monkeypatch, tmp_path, *, urls, body, registry=None, limit=None,
+               ensure_module=None, verify=False):
+    """Run download._sync_kind against a fake listing/server."""
+    from pubmed2db import download
+
+    if ensure_module is None:
+        blob = tmp_path / "blob.xml.gz"
+        blob.write_bytes(b"")
+        ensure_module = _FakeEnsure(blob)
+    monkeypatch.setattr(download, "_ensure_urls", lambda *a, **k: urls)
+    session = SimpleNamespace(get=lambda *a, **k: _FakeResponse(body))
+
+    return download._sync_kind(
+        con,
+        kind="update",
+        base_url="https://example.invalid/updatefiles/",
+        list_cache=tmp_path / "listing.html",
+        ensure_module=ensure_module,
+        registry=registry if registry is not None else {},
+        limit=limit,
+        verify=verify,
+        session=session,
+    )
+
+
+def test_sync_limit_takes_the_newest_files(con, monkeypatch, tmp_path):
+    """`--limit N` fetches the newest N: _ensure_urls sorts the listing newest-first."""
+    urls = [
+        f"https://example.invalid/updatefiles/pubmed25n{n:04d}.xml.gz"
+        for n in (1279, 1278, 1277, 3, 2, 1)
+    ]
+    _sync_kind(con, monkeypatch, tmp_path, urls=urls, body=f"MD5(x)= {_GOOD_MD5}", limit=3)
+
+    names = [
+        r[0] for r in con.execute("SELECT file_name FROM source_file ORDER BY file_name").fetchall()
+    ]
+    assert names == [
+        "pubmed25n1277.xml.gz",
+        "pubmed25n1278.xml.gz",
+        "pubmed25n1279.xml.gz",
+    ]
+
+
+def test_unusable_md5_sidecar_keeps_prior_checksum(con, monkeypatch, tmp_path):
+    """An error page served with HTTP 200 must not wipe the stored checksum --
+    that would flag every known file as changed and re-parse the whole corpus."""
+    from pubmed2db.db import register_source_file
+
+    file_name = "pubmed25n0001.xml.gz"
+    register_source_file(con, file_name, kind="update", published_md5=_GOOD_MD5)
+    before = con.execute(
+        "SELECT downloaded_at FROM source_file WHERE file_name = ?", [file_name]
+    ).fetchone()[0]
+
+    _sync_kind(
+        con,
+        monkeypatch,
+        tmp_path,
+        urls=[f"https://example.invalid/updatefiles/{file_name}"],
+        body="<html>Service temporarily unavailable</html>",
+        registry={file_name: _GOOD_MD5},
+    )
+
+    md5, downloaded_at = con.execute(
+        "SELECT published_md5, downloaded_at FROM source_file WHERE file_name = ?", [file_name]
+    ).fetchone()
+    assert md5 == _GOOD_MD5
+    assert downloaded_at == before  # not spuriously flagged as re-downloaded
+
+
+def test_changed_checksum_replaces_the_local_file(con, monkeypatch, tmp_path):
+    """ensure() skips by name, so a republished file needs its stale copy removed
+    first -- with --no-verify nothing else would notice the content is old."""
+    from pubmed2db.db import register_source_file
+
+    file_name = "pubmed25n0001.xml.gz"
+    old_md5 = "f" * 32
+    register_source_file(con, file_name, kind="update", published_md5=old_md5)
+
+    blob = tmp_path / file_name
+    blob.write_bytes(b"stale")
+    ensure_module = _FakeEnsure(blob, payload=b"fresh")
+
+    _sync_kind(
+        con,
+        monkeypatch,
+        tmp_path,
+        urls=[f"https://example.invalid/updatefiles/{file_name}"],
+        body=f"MD5(x)= {_GOOD_MD5}",
+        registry={file_name: old_md5},
+        ensure_module=ensure_module,
+    )
+
+    assert blob.read_bytes() == b"fresh"
+    assert ensure_module.downloads == 1
+
+
+def test_changed_checksum_does_not_download_an_absent_file_twice(con, monkeypatch, tmp_path):
+    """The stale local copy is dropped before the fetch, not after it."""
+    from pubmed2db.db import register_source_file
+
+    file_name = "pubmed25n0001.xml.gz"
+    old_md5 = "f" * 32
+    register_source_file(con, file_name, kind="update", published_md5=old_md5)
+    ensure_module = _FakeEnsure(tmp_path / file_name, payload=b"fresh")
+
+    _sync_kind(
+        con,
+        monkeypatch,
+        tmp_path,
+        urls=[f"https://example.invalid/updatefiles/{file_name}"],
+        body=f"MD5(x)= {_GOOD_MD5}",
+        registry={file_name: old_md5},
+        ensure_module=ensure_module,
+    )
+
+    assert ensure_module.downloads == 1
+
+
+def test_persistently_corrupt_file_is_discarded(con, monkeypatch, tmp_path):
+    """A re-download that is also corrupt must not be recorded as verified --
+    nor left on disk, where `load`'s directory glob would pick it up anyway."""
+    file_name = "pubmed25n0001.xml.gz"
+    blob = tmp_path / file_name
+    ensure_module = _FakeEnsure(blob, payload=b"corrupt")
+
+    results = _sync_kind(
+        con,
+        monkeypatch,
+        tmp_path,
+        urls=[f"https://example.invalid/updatefiles/{file_name}"],
+        body=f"MD5(x)= {_GOOD_MD5}",
+        ensure_module=ensure_module,
+        verify=True,
+    )
+
+    assert results == []
+    assert con.execute("SELECT count(*) FROM source_file").fetchone()[0] == 0
+    assert not blob.exists()
+
+
+def test_verify_only_hashes_new_or_changed_files(con, monkeypatch, tmp_path):
+    """Re-hashing an unchanged corpus costs tens of GiB of I/O and, since PubMed
+    files are immutable, never catches anything."""
+    from pubmed2db import download
+    from pubmed2db.db import register_source_file
+
+    file_name = "pubmed25n0001.xml.gz"
+    register_source_file(con, file_name, kind="update", published_md5=_GOOD_MD5)
+    blob = tmp_path / file_name
+    blob.write_bytes(b"whatever")
+
+    hashed = []
+    monkeypatch.setattr(download, "file_md5", lambda p: hashed.append(p) or _GOOD_MD5)
+
+    kwargs = dict(
+        urls=[f"https://example.invalid/updatefiles/{file_name}"],
+        body=f"MD5(x)= {_GOOD_MD5}",
+        ensure_module=_FakeEnsure(blob),
+        verify=True,
+    )
+    # Unchanged: same checksum as the registry -> no hashing at all.
+    _sync_kind(con, monkeypatch, tmp_path, registry={file_name: _GOOD_MD5}, **kwargs)
+    assert hashed == []
+
+    # Unknown to the registry -> hashed once.
+    _sync_kind(con, monkeypatch, tmp_path, registry={}, **kwargs)
+    assert hashed == [blob]
+
+
 def test_file_md5(tmp_path):
     import hashlib
 
@@ -60,88 +261,53 @@ def test_file_md5(tmp_path):
     assert file_md5(path) == hashlib.md5(payload).hexdigest()
 
 
-class _FakeResponse:
-    def __init__(self, text: str) -> None:
-        self.text = text
+def test_known_file_without_a_checksum_is_not_treated_as_new(con, monkeypatch, tmp_path):
+    """A registered file whose checksum is NULL -- an rsynced copy, or a sidecar
+    that has never been fetchable -- must not read as new on every sync: that
+    would re-stamp downloaded_at and re-parse the file on every run."""
+    from pubmed2db.db import register_source_file
 
-    def raise_for_status(self) -> None:
-        pass
-
-
-def _stub_sync(monkeypatch, tmp_path, urls, *, hashed):
-    """Stub every network/filesystem seam `_sync_kind` reaches through.
-
-    Records which URLs were fetched and which local files were MD5'd, which is
-    all the two behaviours under test are about.
-    """
-    from pubmed2db import download as dl
-
-    fetched: list[str] = []
-    monkeypatch.setattr(dl, "_ensure_urls", lambda *a, **k: list(urls))
-    monkeypatch.setattr(dl, "MD5_DIR", tmp_path / "md5")
-    monkeypatch.setattr(dl, "_save_md5_sidecar", lambda *a, **k: None)
-    monkeypatch.setattr(
-        dl.requests, "get",
-        lambda url, **k: (fetched.append(url), _FakeResponse("MD5(x)= " + "0" * 32))[1],
-    )
-
-    def fake_file_md5(path):
-        hashed.append(path.name)
-        return "0" * 32
-
-    monkeypatch.setattr(dl, "file_md5", fake_file_md5)
-
-    class _Module:
-        base = tmp_path
-
-        @staticmethod
-        def ensure(url):
-            p = tmp_path / url.rsplit("/", 1)[-1]
-            p.write_bytes(b"x")
-            return p
-
-    return fetched, _Module
-
-
-def test_limit_takes_the_newest_files(con, monkeypatch, tmp_path):
-    """`--limit N` means the N *newest* files, i.e. the tail of the listing.
-
-    The listing is chronological, so slicing from the front would hand back the
-    oldest baseline files -- useless for testing update-file handling, which is
-    what the flag is for.
-    """
-    from pubmed2db.download import _sync_kind
-
-    urls = [f"https://example.org/pubmed25n{i:04d}.xml.gz" for i in (1, 2, 3, 4)]
-    hashed: list[str] = []
-    fetched, module = _stub_sync(monkeypatch, tmp_path, urls, hashed=hashed)
+    file_name = "pubmed25n0001.xml.gz"
+    register_source_file(con, file_name, kind="update", published_md5=None)
+    before = con.execute(
+        "SELECT downloaded_at FROM source_file WHERE file_name = ?", [file_name]
+    ).fetchone()[0]
 
     _sync_kind(
-        con, kind="baseline", base_url="u", list_cache=tmp_path / "c",
-        ensure_module=module, registry={}, limit=2, verify=False,
+        con,
+        monkeypatch,
+        tmp_path,
+        urls=[f"https://example.invalid/updatefiles/{file_name}"],
+        body="<html>Service temporarily unavailable</html>",
+        registry={file_name: None},
     )
-    assert [u.rsplit("/", 1)[-1] for u in fetched] == [
-        "pubmed25n0003.xml.gz.md5", "pubmed25n0004.xml.gz.md5",
-    ]
+
+    assert con.execute(
+        "SELECT downloaded_at FROM source_file WHERE file_name = ?", [file_name]
+    ).fetchone()[0] == before
 
 
-def test_verify_skips_files_whose_checksum_has_not_moved(con, monkeypatch, tmp_path):
-    """Re-hashing an unchanged corpus costs tens of GiB of I/O and finds nothing.
+def test_a_missing_local_file_is_verified_when_refetched(con, monkeypatch, tmp_path):
+    """A known file that vanished locally is downloaded again even though its
+    published checksum never moved -- those bytes have never been hashed, so
+    --verify must not skip them."""
+    from pubmed2db.db import register_source_file
 
-    PubMed files are immutable, so verification only earns its keep on files that
-    are new or whose published checksum changed.
-    """
-    from pubmed2db.download import _sync_kind
+    file_name = "pubmed25n0001.xml.gz"
+    register_source_file(con, file_name, kind="update", published_md5=_GOOD_MD5)
+    blob = tmp_path / file_name  # absent: pruned, or an interrupted transfer
+    ensure_module = _FakeEnsure(blob, payload=b"corrupt")
 
-    urls = ["https://example.org/pubmed25n0001.xml.gz",
-            "https://example.org/pubmed25n0002.xml.gz"]
-    hashed: list[str] = []
-    _, module = _stub_sync(monkeypatch, tmp_path, urls, hashed=hashed)
-
-    # 0001 is already registered with the checksum the server reports; 0002 is new.
-    registry = {"pubmed25n0001.xml.gz": "0" * 32}
-    _sync_kind(
-        con, kind="baseline", base_url="u", list_cache=tmp_path / "c",
-        ensure_module=module, registry=registry, limit=None, verify=True,
+    results = _sync_kind(
+        con,
+        monkeypatch,
+        tmp_path,
+        urls=[f"https://example.invalid/updatefiles/{file_name}"],
+        body=f"MD5(x)= {_GOOD_MD5}",
+        registry={file_name: _GOOD_MD5},
+        ensure_module=ensure_module,
+        verify=True,
     )
-    assert hashed == ["pubmed25n0002.xml.gz"]
+
+    assert results == []
+    assert not blob.exists()

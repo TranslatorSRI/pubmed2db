@@ -16,39 +16,53 @@ from pathlib import Path
 
 import duckdb
 
+from .load import _VERSIONED_TABLES
 from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
+
+#: Rows pulled from DuckDB per fetch during the JSON export.
+_FETCH_BATCH = 5000
 
 #: Minimum gap between progress log lines, so large exports don't spam the log.
 #: A full corpus export runs ~15 min, so a minute between lines still gives a
 #: dozen-odd data points to watch RSS and the rate on.
 _PROGRESS_INTERVAL_S = 60.0
 
-#: Child tables whose rows belong to a specific article version (pmid, source_file).
-_VERSIONED_CHILDREN = (
-    "abstract_text",
-    "author",
-    "author_affiliation",
-    "mesh_heading",
-    "mesh_qualifier",
-    "publication_type",
-    "grant_",
-    "article_id",
-    "history",
+#: Child tables whose rows belong to a specific article version (pmid, source_file):
+#: everything the loader writes per version except `article` itself (exported from
+#: the latest-version snapshot) and `deleted_pmid` (exported in full below).
+_VERSIONED_CHILDREN = tuple(
+    t for t in _VERSIONED_TABLES if t not in ("article", "deleted_pmid")
 )
 
 #: Dimension/bookkeeping tables exported as-is.
-_OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid")
+_OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid", "pipeline_run")
 
 #: PubMed ``ArticleId/@IdType`` -> CURIE prefix for the JSON ``identifiers``
-#: field. The casing matches Babel's ``src/prefixes.py`` (``DOI = "doi"``,
-#: ``PMC = "PMC"``, ``PMID = "PMID"``) so our CURIEs join against the Babel
-#: publication compendium; ``DOI:`` would not. PubMed's ``pmc`` values already
-#: start with ``PMC``, hence the doubled ``PMC:PMC1234567``. Values are emitted
-#: verbatim, so consumers must match case-insensitively (DOIs are
-#: case-insensitive per spec and PubMed is not consistent).
-ID_PREFIXES = {"doi": "doi", "pmc": "PMC"}
+#: field. ``doi`` is lowercase to match Babel's ``src/prefixes.py``, so those
+#: CURIEs join against the Babel publication compendium; ``DOI:`` would not.
+#: PubMed's ``pmc`` values already start with ``PMC``, hence the doubled
+#: ``PMCID:PMC1234567``. Values are emitted verbatim, so consumers must match
+#: case-insensitively (DOIs are case-insensitive per spec and PubMed is not).
+#:
+#: **The PMCID prefix is not settled.** Babel's ``prefixes.py`` says ``PMC``,
+#: this export says ``PMCID``, and neither the Core Components spec nor the
+#: DocumentMetadataAPI README carries a PMC example to arbitrate — the
+#: production endpoint does not resolve PMCIDs in either form. ``PMCID`` is our
+#: bet on where that lands. Tracked in issue #33, to be settled alongside
+#: NCATSTranslator/Babel#1044.
+ID_PREFIXES = {"doi": "doi", "pmc": "PMCID"}
+
+#: The same mapping as SQL, derived rather than restated: `validate` imports
+#: `ID_PREFIXES` to rebuild the CURIEs it expects, so a hand-written `CASE` here
+#: would let a new id type or a casing fix reach the validator without reaching
+#: the export, and every sampled record would be reported as a mismatch against
+#: a correct export. No `ELSE` branch: an unlisted type cannot pass the `WHERE`.
+_ID_CURIE_SQL = "CASE id_type " + " ".join(
+    f"WHEN '{t}' THEN '{prefix}:'" for t, prefix in ID_PREFIXES.items()
+) + " END"
+_ID_TYPES_SQL = ", ".join(f"'{t}'" for t in ID_PREFIXES)
 
 
 #: Month abbreviations, frozen rather than taken from ``calendar.month_abbr``:
@@ -106,7 +120,7 @@ def _year_from_medline_date(raw: str | None) -> str:
 #: Joining `article_id` on (pmid, source_file) — the same key `abs` uses —
 #: confines the identifiers to the article's *latest* version, so a DOI or PMCID
 #: that only ever appeared on a superseded version does not leak into the export.
-_LATEST_METADATA_SQL = """
+_LATEST_METADATA_SQL = f"""
 WITH abs AS (
     SELECT pmid, source_file, string_agg(text, ' ' ORDER BY seq) AS abstract
     FROM abstract_text a
@@ -121,10 +135,10 @@ WITH abs AS (
 ),
 ids AS (
     SELECT pmid, source_file, list_sort(list_distinct(list(
-        CASE id_type WHEN 'doi' THEN 'doi:' ELSE 'PMC:' END || id_value
+        {_ID_CURIE_SQL} || id_value
     ))) AS identifiers
     FROM article_id ai
-    WHERE id_type IN ('doi', 'pmc')
+    WHERE id_type IN ({_ID_TYPES_SQL})
       -- Same reason as `abs` above: restrict before aggregating, so the
       -- group-by does not span the whole version history.
       AND EXISTS (
@@ -183,7 +197,6 @@ def export_json(
     out_dir: str | Path,
     *,
     shards: int = 1,
-    batch_size: int = 5000,
     gzip_output: bool = False,
 ) -> list[Path]:
     """Export the latest version of every abstract as sharded NDJSON.
@@ -215,17 +228,26 @@ def export_json(
     active_shards = min(shards, total) if total else 1
     suffix = ".ndjson.gz" if gzip_output else ".ndjson"
     paths = [out_dir / f"pubmed_metadata_{i:05d}{suffix}" for i in range(active_shards)]
-    opener = (lambda p: gzip.open(p, "wt", encoding="utf-8")) if gzip_output else (
-        lambda p: p.open("w", encoding="utf-8")
-    )
-    handles = [opener(path) for path in paths]
+
+    # Re-exporting into the same directory with fewer shards, or with the other
+    # --gzip setting, would otherwise leave earlier shards behind: a consumer
+    # globbing the directory then reads a mix of two exports.
+    keep = set(paths)
+    stale = [p for p in out_dir.glob("pubmed_metadata_*.ndjson*") if p not in keep]
+    for path in stale:
+        path.unlink()
+    if stale:
+        logger.info("removed %d shard file(s) from a previous export", len(stale))
+
+    opener = gzip.open if gzip_output else open
+    handles = [opener(path, "wt", encoding="utf-8") for path in paths]
     run_start = time.monotonic()
     last_log = run_start
     try:
         cur = con.execute(_LATEST_METADATA_SQL)
         index = 0
         while True:
-            rows = cur.fetchmany(batch_size)
+            rows = cur.fetchmany(_FETCH_BATCH)
             if not rows:
                 break
             for row in rows:
@@ -263,13 +285,6 @@ def export_json(
     return paths
 
 
-def _copy_parquet(con: duckdb.DuckDBPyConnection, query: str, path: Path) -> None:
-    # Escape single quotes so a path containing one (e.g. an apostrophe in a
-    # directory name) doesn't break out of the quoted string literal.
-    escaped_path = path.as_posix().replace("'", "''")
-    con.execute(f"COPY ({query}) TO '{escaped_path}' (FORMAT PARQUET)")
-
-
 def export_parquet(
     con: duckdb.DuckDBPyConnection,
     out_dir: str | Path,
@@ -291,13 +306,23 @@ def export_parquet(
         "starting Parquet export: %d table(s) (%s) to %s",
         tables, "latest version" if latest else "full history", out_dir,
     )
-    run_start = time.monotonic()
 
-    def _progress(done: int) -> None:
-        remaining = tables - done
-        elapsed = time.monotonic() - run_start
-        eta = eta_str(elapsed, done, remaining)
-        logger.info("progress: %d/%d tables, ~%s remaining", done, tables, eta)
+    # A re-export overwrites its own fixed set of file names, so the only file
+    # that can survive is one whose table left the schema — `reference_citation`
+    # is exactly that case. Left in place it reads as part of this export to
+    # anything globbing the directory. Same sweep the JSON export does.
+    keep = {f"{t}.parquet" for t in ("article", *_VERSIONED_CHILDREN, *_OTHER_TABLES)}
+    stale = [p for p in out_dir.glob("*.parquet") if p.name not in keep]
+    for path in stale:
+        path.unlink()
+    if stale:
+        logger.info(
+            "removed %d Parquet file(s) for table(s) no longer in the schema: %s",
+            len(stale), ", ".join(sorted(p.stem for p in stale)),
+        )
+
+    def _progress(path: Path) -> None:
+        logger.info("wrote %s (%d/%d)", path.name, len(written), tables)
 
     if latest:
         # Materialize once: `latest_article` is a window function over the full
@@ -308,9 +333,9 @@ def export_parquet(
     else:
         article_query = "SELECT * FROM article"
     article_path = out_dir / "article.parquet"
-    _copy_parquet(con, article_query, article_path)
+    con.sql(article_query).write_parquet(str(article_path))
     written.append(article_path)
-    _progress(len(written))
+    _progress(article_path)
 
     for table in _VERSIONED_CHILDREN:
         if latest:
@@ -322,16 +347,16 @@ def export_parquet(
         else:
             query = f"SELECT * FROM {table}"
         path = out_dir / f"{table}.parquet"
-        _copy_parquet(con, query, path)
+        con.sql(query).write_parquet(str(path))
         written.append(path)
-        _progress(len(written))
+        _progress(path)
 
     # Dimension / bookkeeping tables are exported in full regardless of `latest`.
     for table in _OTHER_TABLES:
         path = out_dir / f"{table}.parquet"
-        _copy_parquet(con, f"SELECT * FROM {table}", path)
+        con.sql(f"SELECT * FROM {table}").write_parquet(str(path))
         written.append(path)
-        _progress(len(written))
+        _progress(path)
 
     logger.info(
         "exported %d Parquet file(s) to %s (peak RSS %.1f GiB)",

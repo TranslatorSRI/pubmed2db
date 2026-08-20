@@ -71,13 +71,24 @@ def init_schema(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(schema_sql)
 
 
+#: Shared "downloaded but not (re)loaded" predicate: a file is pending if it was
+#: downloaded but never processed, or downloaded again since its last load (a
+#: changed published MD5). Used by :func:`pubmed2db.status.pending_file_count`
+#: and :func:`pubmed2db.status.summarize`, and by
+#: :func:`pubmed2db.load.needs_load`'s single-file check, so the rule can't
+#: drift apart between its callers.
+NEEDS_LOAD_SQL = (
+    "downloaded_at IS NOT NULL AND (processed_at IS NULL OR downloaded_at > processed_at)"
+)
+
+
 def register_source_file(
     con: duckdb.DuckDBPyConnection,
     file_name: str,
     *,
     kind: str,
     published_md5: str | None = None,
-    downloaded_at: bool = True,
+    mark_downloaded: bool = True,
 ) -> None:
     """Insert or update a row in the ``source_file`` registry.
 
@@ -85,7 +96,7 @@ def register_source_file(
     ``processed_at``/``n_articles`` from any prior load.
     """
     year_yy, file_number, order_key = parse_file_name(file_name)
-    ts = datetime.now(timezone.utc) if downloaded_at else None
+    ts = datetime.now(timezone.utc) if mark_downloaded else None
     con.execute(
         """
         INSERT INTO source_file

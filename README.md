@@ -50,9 +50,13 @@ export UV_CACHE_DIR=/path/to/writable/uv-cache
 ## Usage
 
 All commands share `--data-dir` (default `data/`), which sets the root for
-downloaded PubMed files and the database. `pubmed-downloader` creates its own
-`pubmed_downloader/` subdirectory inside it, so the layout under `data/` is
-managed automatically.
+downloaded PubMed files and the database. `pubmed-downloader` keeps its cache in
+a `pubmed/` subdirectory inside it (`data/pubmed/baseline/`,
+`data/pubmed/updates/`), so the layout under `data/` is managed automatically.
+
+Budget disk accordingly: the 2026 files alone are **51 GB of baseline and 13 GB
+of updates**, before the DuckDB database and any export. A new baseline year
+adds that much again — see [Re-running after a gap](#re-running-after-a-gap).
 
 ```bash
 # Download the baseline + update files to data/ (MD5-checked, incremental).
@@ -94,17 +98,23 @@ published them:
 ```json
 {
   "id": "PMID:30690000",
-  "identifiers": ["PMID:30690000", "PMC:PMC6423490", "doi:10.1016/j.ejphar.2019.01.030"],
+  "identifiers": ["PMID:30690000", "PMCID:PMC6423490", "doi:10.1016/j.ejphar.2019.01.030"],
   "journal_name": "European journal of pharmacology",
   "...": "..."
 }
 ```
 
-The prefixes deliberately match Babel's `src/prefixes.py` — `PMID`, lowercase
-`doi`, and `PMC` — so these CURIEs join directly against the Babel publication
-compendium. PubMed's PMCID values already begin with `PMC`, hence the doubled
-`PMC:PMC6423490`. A record with neither a DOI nor a PMCID still gets its own
-`["PMID:<id>"]`; the array is never empty and never null.
+`PMID` and the lowercase `doi` deliberately match Babel's `src/prefixes.py`, so
+those CURIEs join directly against the Babel publication compendium. PubMed's
+PMCID values already begin with `PMC`, hence the doubled `PMCID:PMC6423490`. A
+record with neither a DOI nor a PMCID still gets its own `["PMID:<id>"]`; the
+array is never empty and never null.
+
+> **The PMCID prefix may still change.** Babel uses `PMC`, this export uses
+> `PMCID`, and neither the Core Components specification nor the
+> DocumentMetadataAPI README has a PMC example to settle it; the production
+> endpoint does not resolve PMCIDs under either prefix. See
+> [#33](https://github.com/TranslatorSRI/pubmed2db/issues/33).
 
 > **Consumers must match identifiers case-insensitively.** Values are stored and
 > exported exactly as PubMed published them, with no case normalization (Babel
@@ -116,20 +126,22 @@ Only DOIs and PMCIDs are promoted into this field. Any other `ArticleId` type
 PubMed supplies (`pii`, `mid`, …) is still loaded and is available in the
 `article_id` table and the Parquet export.
 
-> **Databases built before this feature need rebuilding.** The identifiers come
-> from the `article_id` table, and until now that table was populated by an
+> **Databases loaded before 2026-08-04 need rebuilding before this field is
+> trustworthy.** `identifiers` reads the `article_id` table, and until
+> "Extract cited PMIDs and article IDs ourselves" that table was populated by an
 > upstream parser that also swept up every *cited reference's* DOI and PMCID (see
-> `CLAUDE.md`). Loading is idempotent, so re-running it simply replaces each
-> file's rows — but nothing detects the stale data automatically, because the
-> files themselves have not changed:
->
-> Note that `load --force` refreshes the *rows* but not the *schema*:
-> `schema.sql` uses `CREATE TABLE IF NOT EXISTS`, so an existing database keeps
-> `reference_citation.cited_pmid` as `TEXT` rather than the current `BIGINT`.
-> Build a fresh database if you want that column typed correctly.
+> `CLAUDE.md`). A database loaded after that is unaffected — this feature changed
+> nothing about how `article_id` is written. Nothing detects the stale rows
+> automatically, because the source files have not changed. `load --force`
+> re-parses the whole corpus and does replace those rows, but it cannot undo a
+> table that left the schema — a database that old still carries a populated
+> `reference_citation`, which no reload clears (see
+> [`load --force` or a fresh database?](#load---force-or-a-fresh-database)).
+> Load into a fresh one:
 >
 > ```bash
-> uv run pubmed2db --data-dir data load --force
+> rm data/pubmed.duckdb
+> uv run pubmed2db --data-dir data load
 > ```
 
 Three more group-level options tune DuckDB itself, which matters on a cluster
@@ -166,6 +178,11 @@ fails on warnings) so it can gate an HPC run; pass `--offline` to skip the
 network checks. Set `--email` (or `NCBI_EMAIL`) and optionally `--api-key` (or
 `NCBI_API_KEY`, which raises the rate limit) for the API checks.
 
+The STRUCTURE heading also carries the share of records that came out with each
+identifier type (`identifier_coverage` in the report). Nothing gates on it — one
+export in isolation cannot say whether 96% is right and 6% is not — but a rate
+that collapsed between two runs is invisible without the number.
+
 A long run narrates itself: one start line naming the shards and confirming
 whether the database and an API key were picked up (never the key itself), a
 progress line with an ETA once a minute while the shards are read, and a line
@@ -195,7 +212,7 @@ FIELD ACCURACY  (240 records sampled: 15/shard x 16 shards, seed 0)
 
 NOT CHECKED
   - compared strictly against Entrez: article_title, volume, issue, pub_year, ...
-  - identifiers other than the PMID (DOI, PMCID) are not part of this export
+  - compared but never fails the run (assigned upstream after our last update file): identifiers
   - MeSH terms, authors, affiliations and grants are stored in the DB, never exported
 ```
 
@@ -255,16 +272,61 @@ that are new or changed, and it cannot introduce duplicate data.
   later file recorded a `<DeleteCitation>` for it. Exports therefore see one row
   per PMID no matter how many versions are stored.
 
-**Watch for a new baseline year.** Each December PubMed publishes a fresh
-baseline (`pubmed26n*.xml.gz` after `pubmed25n*.xml.gz`), which is a complete
-re-issue of the corpus, not an increment. Downloading it makes ~1,300 files new
-at once, so the following `load` re-parses everything and the `article` table
-ends up holding a second full copy of every PMID. The result is still correct —
-`file_order_key` puts the newer year first, so `latest_article` resolves to it —
-but the database roughly doubles in size and the load takes as long as the
-original one. Check with `status` before starting: if `pending_files` is in the
-thousands rather than the dozens, a new baseline has landed, and building a
-fresh database from it is cheaper than growing the old one.
+### `load --force` or a fresh database?
+
+A normal incremental run only re-parses files whose published checksum moved, so
+neither a parser fix nor a schema change reaches data that is already loaded.
+Two ways to apply one, and they are not interchangeable:
+
+- **`load --force`** re-parses every local file and replaces its rows, so it
+  applies a *parsing* change to the whole corpus: roughly a baseline's worth of
+  time (~2–3 h), no re-download, and the database keeps its history.
+- **A fresh database** (delete `<data-dir>/pubmed.duckdb`, then `load`) is the
+  answer whenever the *schema* changed, and the safer default if you are unsure.
+
+The asymmetry is that `schema.sql` only ever adds: `CREATE TABLE IF NOT EXISTS`
+plus explicit `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations. Nothing
+drops a table or a column, so a forced reload refreshes the rows of tables that
+still exist while a table removed from the schema keeps its rows forever —
+`reference_citation`, dropped during development, is exactly that case. A forced
+reload also leaves any pre-existing wrong rows in place for files it re-parses
+identically.
+
+Rebuilding costs a full `load` and nothing else — the downloaded files are not
+touched — so unless the corpus is already loaded on a machine where 2–3 hours of
+`load` is cheaper than the disk churn, prefer the rebuild. At a new baseline year
+the question is moot: a fresh database is the recommended path anyway, since
+loading the new year into the old database stores a second version of every PMID
+(see above).
+
+**Watch for a new baseline year.** Around November–December PubMed publishes a
+fresh baseline for the *coming* year (`pubmed26n*.xml.gz` lands in late 2025,
+after `pubmed25n*.xml.gz`), which is a complete re-issue of the corpus, not an
+increment. Downloading it makes ~1,300 files new at once, so the following
+`load` re-parses everything and the `article` table ends up holding a second
+full copy of every PMID. The result is still correct — `file_order_key` puts the
+newer year first, so `latest_article` resolves to it — but the database roughly
+doubles in size and the load takes as long as the original one. `status` says so
+directly once a second baseline year is on disk, and `pending_files` in the
+thousands rather than the dozens is the same signal.
+
+**Prefer a fresh database at the year boundary**, for a reason beyond size: a
+grown database is *additive*. It can gain PMIDs but never lose them. A PMID that
+is in last year's baseline and absent from this year's, without a
+`<DeleteCitation>` ever reaching us — a missed updatefile, or a record PubMed
+drops quietly — keeps last year's row as its newest version and stays in every
+export from then on. A database built from the new baseline simply doesn't
+contain it.
+
+Either way, delete the previous year's files yourself:
+
+```bash
+rm data/pubmed/baseline/pubmed25n*.xml.gz data/pubmed/updates/pubmed25n*.xml.gz
+```
+
+`download` never removes anything. Once PubMed drops a file from its listing we
+stop hearing about it, so a full extra copy of the corpus sits in `data/` until
+you clear it — for 2026 that is 51 GB of baseline plus 13 GB of updates.
 
 Verification is on by default, but only hashes files that are new or whose
 published checksum changed — re-running `download` over an unchanged baseline
@@ -287,8 +349,8 @@ still fetched, so a changed published checksum is always detected.
 - This tool is intended to eventually replace the PubMed download in
   [Babel](https://github.com/NCATSTranslator/Babel) (`createcompendia/publications.py`).
 
-See [`CLAUDE.md`](./CLAUDE.md) for architecture and design decisions, and
-[`FUTURE.md`](./FUTURE.md) for known limitations and planned work.
+See [`AGENTS.md`](./AGENTS.md) for a map of the source and the design decisions
+behind it, and [`FUTURE.md`](./FUTURE.md) for known limitations and planned work.
 
 ## Information on running this pipeline
 
@@ -300,6 +362,12 @@ See [`CLAUDE.md`](./CLAUDE.md) for architecture and design decisions, and
   (≈30k documents/s) at a peak RSS of 201.1 GiB, run with `--mem 256G` (an earlier run peaked at 199.6 GiB).
   Unlike `load`, its memory scales with the whole database rather than the largest input file — see
   [`slurm/README.md`](./slurm/README.md#running-export) for why, and for what to request on a cluster.
+- **`export` publishes in place, not atomically.** Both formats write straight into `--out`:
+  the JSON export truncates each shard as it opens it (and removes shards left by a previous,
+  wider export), and the Parquet export replaces one table file at a time. A run that dies
+  partway — OOM, full disk — therefore leaves a half-written dataset that looks complete to
+  anything globbing the directory. Export into a fresh directory and swap it into place
+  yourself if consumers read the output while exports run.
 - **`export --format parquet` is untested at full scale.** Only the JSON export has been run against the
   whole corpus. Parquet should be the lighter of the two (each table is written by a DuckDB `COPY ... TO`
   rather than pulled through Python), but that is reasoning, not a measurement: request the same 256 GB
@@ -315,3 +383,8 @@ uv run pytest
 Tests gzip the readable XML fixtures under `tests/fixtures/` into temporary
 `pubmedNNnNNNN.xml.gz` files; scratch downloads and databases go under `./data`
 (gitignored).
+
+Helper scripts live in `scripts/` and document themselves — run one with
+`--help` for its usage and options. `benchmark_load.py` times parsing against
+insertion for a given file, which is where [`slurm/README.md`](slurm/README.md)'s
+memory and wall-time figures come from.

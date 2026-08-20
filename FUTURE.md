@@ -3,6 +3,10 @@
 Tracked follow-ups for pubmed2db. This is the initial implementation; the items
 below are deliberately deferred.
 
+When an item here gets its own issue, link the issue number in the entry (`(#30)`).
+When that issue closes, **delete the entry** — the issue is the record from then
+on, and a copy left here rots into a contradiction of the code.
+
 ## Integrations / goals
 
 - **Replace Babel's PubMed downloader.** Wire this tool into
@@ -16,13 +20,13 @@ below are deliberately deferred.
 
 ## Validation (`validate`)
 
-- **Richer deletion status.** Deletion confirmation currently treats "efetch
-  returns nothing" as deleted. Entrez `esummary` distinguishes deleted vs.
-  merged/moved records; use it to label merges explicitly rather than surfacing
-  them as "still live → review manually".
-- **Semantic field tolerance.** Journal name/abbrev come from the NLM Catalog
-  dimension, not the article XML, so they are compared as *soft* (warning-only)
-  fields; revisit if a stricter journal cross-check is wanted.
+- **Richer deletion status** (#30). Deletion confirmation currently treats
+  "efetch returns nothing" as deleted. Entrez `esummary` distinguishes deleted
+  vs. merged/moved records; use it to label merges explicitly rather than
+  surfacing them as "still live → review manually".
+- **Semantic field tolerance** (#31). Journal name/abbrev come from the NLM
+  Catalog dimension, not the article XML, so they are compared as *soft*
+  (warning-only) fields; revisit if a stricter journal cross-check is wanted.
 
 ## Upstream dependency (`cthoyt/pubmed-downloader`)
 
@@ -33,8 +37,8 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
   `pubmed_downloader.catalog.process_journal_overview()` no longer requires
   `start_year`/`end_year` (broken in ≤ 0.0.14 — those fields aren't in
   `J_Entrez.txt`, filed at https://github.com/cthoyt/pubmed-downloader/pull/16).
-  Then we can go back to using the library's `Journal` model
-  directly. See `CLAUDE.md`.
+  Then we can go back to using the library's `Journal` model directly. See
+  `load._parse_journal_overview` for what we do instead.
 - **`cites_pubmed_ids` never matches, but we no longer care.** `_extract_article`
   searches `medline_citation.findall(".//ReferenceList/Reference")`, but PubMed
   nests `<ReferenceList>` under `<PubmedData>`, so `Article.cites_pubmed_ids` is
@@ -56,7 +60,7 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
   A database built before the removal keeps a stale, populated table; `DROP TABLE
   reference_citation` clears it.
 
-### TODO: investigate the two reference bugs before reporting them upstream
+### TODO: investigate the two reference bugs before reporting them upstream (#34)
 
 Nothing has been filed against `cthoyt/pubmed-downloader` for either, and nothing
 should be until the open items below are answered. (The journal-model fix is the
@@ -99,12 +103,13 @@ with the previous code, and that is not corrected by a normal incremental run �
 `needs_load` only re-parses files whose checksum moved. Such a database also
 still has a populated `reference_citation` table, which nothing will clear.
 
-- [ ] Decide whether to re-load affected files with `load --force` (a full
-  re-parse, roughly a baseline's worth of time) or to rebuild from scratch, and
-  note the answer in the README's "Re-running after a gap" section. Rebuilding is
-  the simpler answer: `load --force` fixes `article_id`'s rows but leaves the
-  dropped `reference_citation` table sitting there, since `schema.sql` only ever
-  adds tables.
+- [x] **Rebuild from scratch, don't `load --force`.** Decided and written into
+  the README's "Re-running after a gap". `load --force` applies a parsing change
+  to the whole corpus, but `schema.sql` only ever adds — `CREATE TABLE IF NOT
+  EXISTS` plus `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` — so a table dropped
+  from the schema keeps its rows through any number of forced reloads, and
+  `reference_citation` is exactly that case. Both cost one full `load`; only the
+  rebuild is guaranteed to leave the shape the schema describes.
 
 ## Scale & performance (full PubMed is ~38M articles, ~1500+ files)
 
@@ -145,7 +150,16 @@ still has a populated `reference_citation` table, which nothing will clear.
   are deliberately still empty: a range has no single month, and inventing one
   would put a wrong value where there is currently an honest blank. Revisit only
   if a consumer needs an approximate month more than it needs correctness.
-- **`ELocationID` DOIs are not read.** The exported `identifiers` come from
+- **The PMCID CURIE prefix is not settled** ([#33](https://github.com/TranslatorSRI/pubmed2db/issues/33)).
+  We emit `PMCID:PMC1234567`. Babel's `src/prefixes.py` says `PMC`, and neither
+  the Core Components specification
+  ([CCWG#15](https://github.com/NCATSTranslator/Core-Components-Working-Group/issues/15))
+  nor the DocumentMetadataAPI README carries a PMC example to arbitrate; the
+  production endpoint resolves PMCIDs under neither form. To be settled
+  alongside [Babel#1044](https://github.com/NCATSTranslator/Babel/issues/1044) —
+  a change is a one-line edit to `export.ID_PREFIXES` plus a re-export, since
+  `identifiers` is derived at export and never stored.
+- **`ELocationID` DOIs are not read** (#35). The exported `identifiers` come from
   `PubmedData/ArticleIdList` only — the same place Babel reads, and the
   authoritative one. A DOI can also appear as
   `Article/ELocationID[@EIdType="doi"]`, normally as a duplicate; parse it as a

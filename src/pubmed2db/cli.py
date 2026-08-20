@@ -13,24 +13,37 @@ from click.core import ParameterSource
 from . import __version__
 from .db import connect
 
-DEFAULT_DATA_DIR = os.environ.get("PUBMED2DB_DATA_DIR", "data")
+def _load_local(con, *, force: bool, require_files: bool) -> None:
+    """Load every downloaded file, reporting the counts the CLI prints.
 
+    Scans the download directories rather than one sync's results, so files
+    downloaded by an earlier run aren't skipped. Shared by `load` and `update`,
+    which differ only in whether an empty directory is an error.
+    """
+    from .download import local_files
+    from .load import load_files
 
-def _local_files() -> list[tuple[Path, str]]:
-    """Enumerate already-downloaded PubMed files (baseline + updates)."""
-    from pubmed_downloader.api import BASELINE_MODULE, UPDATES_MODULE
-
-    files: list[tuple[Path, str]] = []
-    for module, kind in ((BASELINE_MODULE, "baseline"), (UPDATES_MODULE, "update")):
-        files.extend((path, kind) for path in Path(module.base).glob("*.xml.gz"))
-    return files
+    files = local_files()
+    if require_files and not files:
+        raise click.ClickException("No downloaded files found; run `pubmed2db download` first.")
+    loaded, failed = load_files(con, files, force=force)
+    click.echo(f"Loaded {loaded} file(s); {len(files)} local file(s) checked.")
+    if failed:
+        raise click.ClickException(
+            f"{len(failed)} file(s) failed to load: {', '.join(failed)}"
+        )
 
 
 def _sync_options(f):
     """Shared ``--baseline/--updates/--limit/--verify`` options for ``download``
     and ``update``, which both call :func:`pubmed2db.download.sync`."""
     f = click.option("--verify/--no-verify", default=True, help="Verify downloaded files against MD5.")(f)
-    f = click.option("--limit", type=int, default=None, help="Only sync the newest N files (testing).")(f)
+    f = click.option(
+        "--limit",
+        type=click.IntRange(min=1),
+        default=None,
+        help="Only sync the newest N files (testing).",
+    )(f)
     f = click.option("--updates/--no-updates", default=True, help="Sync update files.")(f)
     f = click.option("--baseline/--no-baseline", default=True, help="Sync baseline files.")(f)
     return f
@@ -40,33 +53,39 @@ def _sync_options(f):
 @click.version_option(__version__)
 @click.option(
     "--data-dir",
-    default=DEFAULT_DATA_DIR,
+    default="data",
     show_default=True,
+    envvar="PUBMED2DB_DATA_DIR",
+    show_envvar=True,
     help="Root directory for downloaded PubMed files and the database.",
 )
 @click.option(
     "--db",
     default=None,
     show_default=False,
+    envvar="PUBMED2DB_DB",
+    show_envvar=True,
     help="Path to the DuckDB database (default: <data-dir>/pubmed.duckdb).",
 )
 @click.option(
     "--threads",
-    type=int,
+    type=click.IntRange(min=1),
     default=None,
     envvar="PUBMED2DB_THREADS",
+    show_envvar=True,
     help=(
         "Cap DuckDB's thread pool (default: the machine's core count, which "
-        "oversubscribes a smaller Slurm allocation). Env: PUBMED2DB_THREADS."
+        "oversubscribes a smaller Slurm allocation)."
     ),
 )
 @click.option(
     "--temp-dir",
     default=None,
     envvar="PUBMED2DB_DUCKDB_TEMP_DIR",
+    show_envvar=True,
     help=(
         "Where DuckDB spills when a query exceeds memory (point at local "
-        "scratch for large exports). Env: PUBMED2DB_DUCKDB_TEMP_DIR."
+        "scratch for large exports)."
     ),
 )
 @click.option(
@@ -99,9 +118,7 @@ def main(
     # resolve under data_dir rather than ~/.data.
     os.environ["PYSTOW_HOME"] = str(Path(data_dir).resolve())
     ctx.ensure_object(dict)
-    ctx.obj["db"] = db or os.environ.get(
-        "PUBMED2DB_DB", str(Path(data_dir) / "pubmed.duckdb")
-    )
+    ctx.obj["db"] = db or str(Path(data_dir) / "pubmed.duckdb")
     ctx.obj["threads"] = threads
     ctx.obj["temp_dir"] = temp_dir
     ctx.obj["memory_limit"] = memory_limit
@@ -150,20 +167,8 @@ def load(ctx: click.Context, force: bool) -> None:
     Loads article data only. Run `pubmed2db journals` to (re)load the journal
     dimension used at export time, or `pubmed2db update` to do everything.
     """
-    from .load import load_files
-
     with closing(_connect(ctx)) as con:
-        files = _local_files()
-        if not files:
-            raise click.ClickException(
-                "No downloaded files found; run `pubmed2db download` first."
-            )
-        loaded, failed = load_files(con, files, force=force)
-        click.echo(f"Loaded {loaded} of {len(files)} file(s).")
-        if failed:
-            raise click.ClickException(
-                f"{len(failed)} file(s) failed to load: {', '.join(failed)}"
-            )
+        _load_local(con, force=force, require_files=True)
 
 
 @main.command()
@@ -175,7 +180,13 @@ def load(ctx: click.Context, force: bool) -> None:
     help="Export format.",
 )
 @click.option("--out", required=True, type=click.Path(file_okay=False), help="Output directory.")
-@click.option("--shards", type=int, default=1, show_default=True, help="JSON: number of NDJSON shards.")
+@click.option(
+    "--shards",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="JSON: number of NDJSON shards.",
+)
 @click.option("--gzip/--no-gzip", "gzip_output", default=False, help="JSON: gzip each shard as it's written.")
 @click.option(
     "--latest/--all",
@@ -191,19 +202,22 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int, gzip_output: boo
 
     # Flags that only apply to the other format are silently inert otherwise,
     # which is an expensive thing to discover after a 20-minute export.
-    for option, applies_to in (("shards", "json"), ("gzip_output", "json"), ("latest", "parquet")):
+    for flag, option, applies_to in (
+        ("--shards", "shards", "json"),
+        ("--gzip", "gzip_output", "json"),
+        ("--latest", "latest", "parquet"),
+    ):
         if fmt != applies_to and ctx.get_parameter_source(option) == ParameterSource.COMMANDLINE:
             click.echo(
-                f"Warning: --{option.replace('_output', '')} only applies to "
-                f"--format {applies_to}; ignoring it.",
+                f"Warning: {flag} only applies to --format {applies_to}; ignoring it.",
                 err=True,
             )
 
     with closing(_connect(ctx)) as con:
-        readiness = export_readiness(con)
-        if readiness["blocked"]:
-            raise click.ClickException(readiness["warnings"][0])
-        for warning in readiness["warnings"]:
+        error, warnings = export_readiness(con)
+        if error:
+            raise click.ClickException(error)
+        for warning in warnings:
             click.echo(f"Warning: {warning}", err=True)
 
         if ctx.obj.get("verbose"):
@@ -358,6 +372,16 @@ def status(ctx: click.Context) -> None:
             f"downloaded ({s['baseline_files']} baseline, {s['update_files']} update)"
         )
         click.echo(f"           last download: {_fmt_ts(s['last_download'])}")
+        if len(s["baseline_years"]) > 1:
+            years = ", ".join(f"20{y:02d}" for y in s["baseline_years"])
+            click.echo(
+                f"           {len(s['baseline_years'])} baseline years present ({years}); "
+                f"only 20{s['baseline_years'][-1]:02d} is exported"
+            )
+            click.echo(
+                '           the older year(s) are dead weight — see the README\'s '
+                '"Re-running after a gap"'
+            )
         click.echo(
             f"Journals:  {s['journals']} loaded; "
             f"last refresh: {_fmt_ts(s['journals_refreshed'])}"
@@ -372,16 +396,21 @@ def status(ctx: click.Context) -> None:
                 "→ run `pubmed2db load`"
             )
         click.echo(f"           last load: {_fmt_ts(s['last_load'])}")
+        if s["skipped_records"]:
+            # Records the loader could not store: extractor rejections plus book
+            # citations. Kept visible because they are otherwise invisible —
+            # they never become rows, so no count downstream is short.
+            click.echo(f"           {s['skipped_records']} record(s) skipped while parsing")
         click.echo(
             f"           {s['article_versions']} article version(s); "
             f"{s['latest_documents']} latest document(s)"
         )
 
-        readiness = export_readiness(con)
-        if readiness["blocked"]:
-            click.echo(f"Export:    blocked — {readiness['warnings'][0]}")
-        elif readiness["warnings"]:
-            click.echo(f"Export:    ready, but: {'; '.join(readiness['warnings'])}")
+        error, warnings = export_readiness(con)
+        if error:
+            click.echo(f"Export:    blocked — {error}")
+        elif warnings:
+            click.echo(f"Export:    ready, but: {'; '.join(warnings)}")
         else:
             click.echo("Export:    ready")
 
@@ -400,23 +429,22 @@ def update(
 ) -> None:
     """Download, refresh journals, and load — for scheduled runs."""
     from .download import sync
-    from .load import load_files, load_journals
+    from .load import load_journals
 
     with closing(_connect(ctx)) as con:
         results = sync(con, baseline=baseline, updates=updates, limit=limit, verify=verify)
         click.echo(f"Synced {len(results)} file(s).")
-        n = load_journals(con)
-        click.echo(f"Loaded {n} journals.")
-        # Scan the full local directory (like `load`), not just the files this
-        # run's sync() happened to return, so previously-downloaded-but-not-yet
-        # loaded files aren't silently skipped.
-        files = _local_files()
-        loaded, failed = load_files(con, files, force=force)
-        click.echo(f"Loaded {loaded} of {len(files)} file(s).")
-        if failed:
-            raise click.ClickException(
-                f"{len(failed)} file(s) failed to load: {', '.join(failed)}"
+        # The journal refresh is the least critical of the three steps: don't
+        # let an NLM Catalog outage throw away a completed download and skip the
+        # load. The previous journal dimension stays in place.
+        try:
+            n = load_journals(con)
+            click.echo(f"Loaded {n} journals.")
+        except Exception as exc:  # noqa: BLE001 - any failure here is non-fatal
+            click.echo(
+                f"Journal refresh failed ({exc}); keeping the existing journals.", err=True
             )
+        _load_local(con, force=force, require_files=False)
 
 
 if __name__ == "__main__":
