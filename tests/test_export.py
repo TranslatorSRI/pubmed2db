@@ -354,9 +354,16 @@ def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog)
 _MONTH_INPUTS = ["3", "03", " 3 ", "Mar", "March", "Sept", "SEPTEMBER", "sep",
                  "Spring", "Sep-Dec", "Winter", "Frühling",
                  "13", "0", "99999999999999999999", "", "  ", None,
-                 "\tMar", "3\n", "\n3", "\r\nMarch\t", "\t\n", "\tSep-Dec"]
+                 "\tMar", "3\n", "\n3", "\r\nMarch\t", "\t\n", "\tSep-Dec",
+                 "²", "١٢", "3²"]
+#: The non-ASCII and vertical-tab separators are the cases the pinning test
+#: could not previously reach: every entry used a plain space, so it could not
+#: see that RE2's `\s` is `[\t\n\f\r ]` while Python's includes `\v` and
+#: Unicode spaces. The `"²"`/`"١٢"` month entries above are the matching pair —
+#: `isdigit()` admits both, `int()` parses only one, and SQL's `[0-9]+` neither.
 _MEDLINE_INPUTS = ["1998 Spring", "1994 Sep-Dec", "1978 Jul-Aug", "1998 September",
                    "1998 Dec-1999 Jan", "1999-2000",
+                   "1998\xa0Spring", "1998\x0bSpring", "1998\u2003Sep-Dec",
                    "  2001 Winter", "n.d.", "Spring 1998", "12345", "", None]
 
 

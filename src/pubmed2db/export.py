@@ -94,7 +94,14 @@ def normalize_month(raw: str | None) -> str:
     if not raw:
         return ""
     raw = raw.strip()
-    if raw.isdigit():
+    # `raw.isascii() and raw.isdigit()`, not `isdigit()` alone, for two reasons.
+    # `"²".isdigit()` is True while `int("²")` raises, and this function now sees
+    # unconstrained MedlineDate CDATA rather than only a `<Month>` element, so
+    # that ValueError would escape `efetch_documents` and abort a whole
+    # validation run. And the SQL twin tests `[0-9]+`, which is ASCII-only:
+    # `"١٢"` is `isdigit()` *and* `isdecimal()`, so Python alone would answer
+    # `Dec` where the export passes `١٢` through verbatim.
+    if raw.isascii() and raw.isdigit():
         month = int(raw)
         return _MONTH_ABBR[month - 1] if 1 <= month <= 12 else ""
     key = raw[:3].capitalize()
@@ -122,9 +129,24 @@ def _year_from_medline_date(raw: str | None) -> str:
 
 
 #: Whatever follows the leading year of a ``MedlineDate``. The **whitespace** is
-#: load-bearing: it is what stops ``"1999-2000"`` (a year range, no month at all)
-#: from yielding ``"-2000"``.
+#: load-bearing twice over.
+#:
+#: It is what stops ``"1999-2000"`` (a year range, no month at all) from
+#: yielding ``"-2000"``. And it has to mean the *same thing* in both engines:
+#: DuckDB's RE2 reads ``\s`` as ``[\t\n\f\r ]``, excluding ``\v`` and every
+#: non-ASCII space, where Python's ``re`` includes both. Left as ``\s`` on both
+#: sides, ``"1998\xa0Spring"`` gave ``Spring`` from the Python twin and ``''``
+#: from the SQL — and since ``validate._text`` collapses whitespace before the
+#: efetch side reaches :func:`pub_month`, efetch always renders ``Spring``, so
+#: the disagreement surfaced as a ``pub_month`` mismatch. That is a CORE_FIELDS
+#: error: the same gating failure the ``_WS`` note below describes for
+#: ``<Month>``. :data:`_MEDLINE_SEP_SQL` is the RE2 class that tracks Python's
+#: ``\s``.
 _MEDLINE_MONTH_RE = re.compile(r"^\s*\d{4}\s+(.+?)\s*$")
+_MEDLINE_SEP_SQL = r"[\s\p{Z}\x0B]"
+_MEDLINE_MONTH_PATTERN_SQL = (
+    rf"^{_MEDLINE_SEP_SQL}*\d{{4}}{_MEDLINE_SEP_SQL}+(.+?){_MEDLINE_SEP_SQL}*$"
+)
 
 
 def _month_from_medline_date(raw: str | None) -> str:
@@ -133,6 +155,17 @@ def _month_from_medline_date(raw: str | None) -> str:
     The month-side sibling of :func:`_year_from_medline_date`: ``"1994 Sep-Dec"``
     -> ``"Sep-Dec"``, ``"1998 Spring"`` -> ``"Spring"``. Shapes with no month to
     recover ("1999-2000", "n.d.", "Spring 1998") give ``""`` rather than a guess.
+
+    **Verbatim includes the shapes that look wrong.** ``"1998 Dec-1999 Jan"``
+    exports ``pub_month`` as ``"Dec-1999 Jan"`` — a month field carrying a year —
+    and that is deliberate: it is what PubMed wrote and what its API renders
+    back, so the export mirrors it rather than inventing a tidier ``"Dec-Jan"``
+    that no source says. ``validate._VALID_MONTHS`` is a closed set that
+    excludes it *on purpose*, so such records stay visible as ``month-format``
+    warnings instead of being blessed. Export and checker disagreeing here is
+    the design, not a bug — this has been raised as one once already. Revisit if
+    a consumer of the export asks for a different representation; until then the
+    warning is the record that the shape exists.
     """
     if not raw:
         return ""
@@ -192,7 +225,7 @@ def _normalize_month_sql(expr: str) -> str:
 #: *Python* twin to normalize the efetch side, so
 #: ``test_pub_month_sql_matches_python`` pins the two together.
 _MEDLINE_MONTH_SQL = (
-    f"regexp_extract(COALESCE(la.medline_date, ''), '{_MEDLINE_MONTH_RE.pattern}', 1)"
+    f"regexp_extract(COALESCE(la.medline_date, ''), '{_MEDLINE_MONTH_PATTERN_SQL}', 1)"
 )
 _PUB_MONTH_SQL = (
     f"COALESCE(NULLIF({_normalize_month_sql('la.pub_month')}, ''), "
