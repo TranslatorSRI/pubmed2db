@@ -44,12 +44,13 @@ _VERSIONED_CHILDREN = (
 _OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid", "pipeline_run")
 
 #: PubMed ``ArticleId/@IdType`` -> CURIE prefix for the JSON ``identifiers``
-#: field. The casing matches Babel's ``src/prefixes.py`` (``DOI = "doi"``,
-#: ``PMC = "PMC"``, ``PMID = "PMID"``) so our CURIEs join against the Babel
-#: publication compendium; ``DOI:`` would not. PubMed's ``pmc`` values already
-#: start with ``PMC``, hence the doubled ``PMC:PMC1234567``. Values are emitted
-#: verbatim, so consumers must match case-insensitively (DOIs are
-#: case-insensitive per spec and PubMed is not consistent).
+#: field. ``doi`` is lowercase to match Babel's ``src/prefixes.py``, so those
+#: CURIEs join against the Babel publication compendium; ``DOI:`` would not.
+#: PubMed's ``pmc`` values already start with ``PMC``, hence the doubled
+#: ``PMCID:PMC1234567``. Values are emitted verbatim, so consumers must match
+#: case-insensitively (DOIs are case-insensitive per spec and PubMed is not
+#: consistent).
+#:
 #: **The PMCID prefix is not settled.** Babel's ``prefixes.py`` says ``PMC``,
 #: this export says ``PMCID``, and neither the Core Components spec nor the
 #: DocumentMetadataAPI README carries a PMC example to arbitrate — the
