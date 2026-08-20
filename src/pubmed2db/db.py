@@ -45,11 +45,12 @@ def connect(
     the node. ``temp_directory`` is where DuckDB spills when a query exceeds its
     memory budget — worth pointing at local scratch for `export`.
 
-    ``memory_limit`` (e.g. ``"48GB"``) caps DuckDB's buffer pool. It has the same
-    problem ``threads`` does, and it matters more: left alone DuckDB sets the
-    limit to ~80% of the *machine's* physical RAM, so on a large node it will
-    happily cache its way past a much smaller ``--mem`` cgroup and be OOM-killed.
-    Set it below your allocation on any long load.
+    ``memory_limit`` (e.g. ``"48GB"``) caps DuckDB's buffer pool. Unlike
+    ``threads`` this default is *not* node-sized — DuckDB reads the Slurm cgroup
+    and takes ~76% of ``--mem`` (measured on duckdb 1.5.4). What that limit does
+    not cover is the problem: the lxml tree, the parsed records and the Arrow
+    batch share the same cgroup and get only the remaining quarter. Set it a
+    margin below your allocation on any long load to widen that headroom.
     """
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
