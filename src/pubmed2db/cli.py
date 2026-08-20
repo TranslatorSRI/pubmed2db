@@ -74,8 +74,9 @@ def _sync_options(f):
     envvar="PUBMED2DB_THREADS",
     show_envvar=True,
     help=(
-        "Cap DuckDB's thread pool (default: the machine's core count, which "
-        "oversubscribes a smaller Slurm allocation)."
+        "Cap DuckDB's thread pool (default: the Slurm allocation's "
+        "--cpus-per-task, or the machine's core count off a cluster). Rarely "
+        "needed; use it to leave a busy node headroom."
     ),
 )
 @click.option(

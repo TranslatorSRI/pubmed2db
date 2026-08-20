@@ -40,17 +40,20 @@ def connect(
 ) -> duckdb.DuckDBPyConnection:
     """Open (creating if needed) the DuckDB database and ensure the schema.
 
-    ``threads`` caps DuckDB's thread pool, which otherwise sizes itself from the
-    machine's core count and so oversubscribes a Slurm allocation smaller than
-    the node. ``temp_directory`` is where DuckDB spills when a query exceeds its
-    memory budget — worth pointing at local scratch for `export`.
+    ``threads`` caps DuckDB's thread pool. It is rarely needed: DuckDB reads the
+    Slurm cgroup's CPU quota and already sizes the pool from ``--cpus-per-task``
+    (measured on duckdb 1.5.4 — 2 threads under ``--cpus-per-task=2`` on a
+    64-core node), falling back to the core count off a cluster. Pass it to
+    leave headroom on a busy node, not to rescue an oversubscribed allocation.
+    ``temp_directory`` is where DuckDB spills when a query exceeds its memory
+    budget — worth pointing at local scratch for `export`.
 
-    ``memory_limit`` (e.g. ``"48GB"``) caps DuckDB's buffer pool. Unlike
-    ``threads`` this default is *not* node-sized — DuckDB reads the Slurm cgroup
-    and takes ~76% of ``--mem`` (measured on duckdb 1.5.4). What that limit does
-    not cover is the problem: the lxml tree, the parsed records and the Arrow
-    batch share the same cgroup and get only the remaining quarter. Set it a
-    margin below your allocation on any long load to widen that headroom.
+    ``memory_limit`` (e.g. ``"48GB"``) caps DuckDB's buffer pool. Its default is
+    allocation-scaled the same way — ~76% of ``--mem`` — so this is not about a
+    node-sized cache either. What that limit does *not* cover is the problem:
+    the lxml tree, the parsed records and the Arrow batch share the same cgroup
+    and get only the remaining quarter. Set it a margin below your allocation on
+    any long load to widen that headroom.
     """
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)

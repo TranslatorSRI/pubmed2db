@@ -146,8 +146,9 @@ PubMed supplies (`pii`, `mid`, …) is still loaded and is available in the
 
 Three more group-level options tune DuckDB itself, which matters on a cluster:
 
-- `--threads N` (`PUBMED2DB_THREADS`) caps the thread pool, which otherwise comes
-  from the machine's core count and oversubscribes a smaller allocation.
+- `--threads N` (`PUBMED2DB_THREADS`) caps the thread pool. Rarely needed on
+  Slurm: DuckDB reads the cgroup's CPU quota and already sizes the pool from
+  `--cpus-per-task` (it uses the machine's core count only off a cluster).
 - `--memory-limit SIZE` (`PUBMED2DB_DUCKDB_MEMORY_LIMIT`, e.g. `48GB`) caps the
   buffer pool. DuckDB does read the Slurm cgroup, defaulting to ~76% of `--mem`
   (measured on duckdb 1.5.4), so this is not about rescuing it from a node-sized

@@ -48,19 +48,22 @@ explains its part; this table is only a map.
   written down). A denormalized `article.identifiers` column would have
   duplicated the data *and* forced a full corpus reload to backfill it, which is
   the reason not to, and the reason is not visible from the query.
-- **Two memory numbers mislead, and both have bitten.** DuckDB's default
-  `memory_limit` is ~80% of physical RAM off a cluster, but **it does read a
-  Slurm cgroup** — measured at ~76% of `--mem` on duckdb 1.5.4 (6.1 GiB under
-  `--mem=8G`, 47.3 GiB under `--mem=62G`). So the buffer pool is not what
+- **DuckDB reads the Slurm cgroup. Both of its sized defaults do — we guessed
+  otherwise twice and were wrong twice.** Measured on duckdb 1.5.4:
+  `memory_limit` is ~76% of `--mem` (6.1 GiB under `--mem=8G`, 47.3 GiB under
+  `--mem=62G`; ~80% of physical RAM off a cluster) and `threads` is
+  `--cpus-per-task` (2 under `--cpus-per-task=2` on a 64-core node — and via the
+  cgroup's CPU quota, not an affinity mask, which read the full 64). **Do not
+  reason from "DuckDB cannot see the allocation"; measure it.** Both claims
+  reached the docs, the `--help` text and an issue before anyone ran the
+  one-line probe in #36/#38 that disproves them. So the buffer pool is not what
   overruns the allocation; what its limit does not cover is, since the lxml
   tree, the parsed records and the Arrow batch share the same cgroup and the
-  default already claims three quarters of it. (`threads` is still sized from
-  the machine's core count as far as we know — untested against
-  `--cpus-per-task`.) And `util.peak_rss_gib` is `ru_maxrss`, a high-water mark
-  that only ever rises, so
-  a climbing per-file "peak" is not evidence of a leak; `current_rss_gib` is the
-  one that can fall — which is why the load and validate progress lines log
-  both. Before diagnosing loader memory, read `slurm/README.md` → "Running
+  default already claims three quarters of it.
+- **Two memory numbers mislead, and both have bitten.** `util.peak_rss_gib` is
+  `ru_maxrss`, a high-water mark that only ever rises, so a climbing per-file
+  "peak" is not evidence of a leak; `current_rss_gib` is the one that can fall —
+  which is why the load and validate progress lines log both. Before diagnosing loader memory, read `slurm/README.md` → "Running
   `load`: how much memory?".
 - **An efetch mismatch is not evidence about what we parsed.** `validate`
   compares the export against Entrez `efetch`, but efetch output is a

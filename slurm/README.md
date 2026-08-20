@@ -191,10 +191,10 @@ Notes on the knobs:
 - **CPUs help the query, not the writer.** DuckDB parallelizes the snapshot,
   the `string_agg` and the sort across cores, while the per-row JSON
   serialization stays single-threaded. `--cpus-per-task 8` is what the measured
-  run used and is a sensible default. Note it did *not* pass `--threads`, so
-  DuckDB sized its own pool from the node's cores, and the run was still fast —
-  so treat `--threads` as insurance against contention on a busy node, not as
-  something the export needs.
+  run used and is a sensible default. It did *not* pass `--threads` and did not
+  need to: DuckDB reads the cgroup, so the pool was already the 8 CPUs asked
+  for. Treat `--threads` as a way to run below your allocation on a busy node,
+  not as something the export needs.
 - **Parquet should be the lighter of the two — but is unmeasured.**
   `export_parquet` builds the same `_latest_snapshot`, then writes each table
   with a DuckDB `COPY ... TO`, so no full result set is pulled through Python.
@@ -296,7 +296,9 @@ three also read an environment variable — usually the easier form in a batch
 script:
 
 ```bash
-export PUBMED2DB_THREADS="${SLURM_CPUS_PER_TASK:-4}"
+# No PUBMED2DB_THREADS here on purpose: DuckDB already takes the pool size from
+# --cpus-per-task, so exporting SLURM_CPUS_PER_TASK by hand sets it to what it
+# would have been anyway. See below.
 export PUBMED2DB_DUCKDB_MEMORY_LIMIT=200GB
 export PUBMED2DB_DUCKDB_TEMP_DIR=/local/scratch/duckdb_tmp
 
@@ -304,22 +306,22 @@ srun --mem=256G --cpus-per-task=8 --time=08:00:00 \
   uv run pubmed2db export --format json --out data/json --shards 16
 
 # Equivalently, explicit flags (note: before the subcommand):
-uv run pubmed2db --threads 8 --memory-limit 200GB \
+uv run pubmed2db --memory-limit 200GB \
   --temp-dir /local/scratch/duckdb_tmp export ...
 ```
 
-**Two of the three defaults come from the machine rather than your allocation.**
-`memory_limit` is the exception: DuckDB reads the Slurm cgroup and defaults to
-~76% of `--mem` (measured on duckdb 1.5.4). The catch is what that limit
-*covers* — DuckDB's buffer pool only, not the rest of a process sharing the same
-cgroup.
+**DuckDB reads your allocation, not the node.** Both of its sized defaults come
+from the Slurm cgroup, measured on duckdb 1.5.4: `threads` from the CPU quota
+(2 under `--cpus-per-task=2`, on a node whose `os.cpu_count()` is 64) and
+`memory_limit` from the memory quota (~76% of `--mem`). Neither flag below is
+rescuing DuckDB from a node-sized default — that was this repo's belief twice
+over, and both halves of it were wrong (#36, #38).
 
-**`--threads`** caps DuckDB's thread pool. Left alone, DuckDB sizes the pool
-from the *machine's* core count rather than your allocation, so on a 64-core
-node with `--cpus-per-task=8` it may run 64 threads inside a cgroup that permits
-8 — contention, plus per-thread operator state that isn't free at a 200 GiB
-peak. In practice the measured export ran fine without it, so reach for this
-only if a run is slower than the numbers above or the node is busy.
+**`--threads`** caps DuckDB's thread pool, and on Slurm you almost never need
+it: the pool is already `--cpus-per-task`. Note DuckDB is reading the cgroup's
+CPU quota, not a CPU affinity mask — affinity in the measured run was the full
+64. Reach for `--threads` to run *below* your allocation (leaving a busy node
+headroom), not to stop an oversubscription that does not happen.
 
 **`--memory-limit`** caps the buffer pool. Left alone DuckDB takes ~76% of
 `--mem`, which is the right shape but leaves only the remaining quarter for
