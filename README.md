@@ -169,6 +169,11 @@ fails on warnings) so it can gate an HPC run; pass `--offline` to skip the
 network checks. Set `--email` (or `NCBI_EMAIL`) and optionally `--api-key` (or
 `NCBI_API_KEY`, which raises the rate limit) for the API checks.
 
+The STRUCTURE heading also carries the share of records that came out with each
+identifier type (`identifier_coverage` in the report). Nothing gates on it — one
+export in isolation cannot say whether 96% is right and 6% is not — but a rate
+that collapsed between two runs is invisible without the number.
+
 Stdout is a test report: every check is listed with what it expected and what it
 saw, so a reviewer can tell what was verified, what was skipped, and what is not
 covered at all. Abridged, from a full-corpus run:

@@ -32,6 +32,7 @@ sections skipped otherwise.
 from __future__ import annotations
 
 import difflib
+from collections import Counter
 import gzip
 import json
 import logging
@@ -335,6 +336,11 @@ def check_structure(
     #: times spends one of the 20 example slots rather than all of them, and
     #: `duplicates.count` stays a count of distinct offending PMIDs.
     duplicated: set[int] = set()
+    #: CURIE prefix -> records carrying at least one identifier with it. A DOI
+    #: rate that collapsed between two exports is invisible to every check here
+    #: — nothing about one export in isolation says 96.7% is right and 6% is
+    #: not — so record the rate and let a reader compare it to the last run.
+    with_prefix: Counter[str] = Counter()
 
     for shard_index, path in enumerate(shards):
         rng = random.Random(seed + shard_index)
@@ -386,6 +392,10 @@ def check_structure(
                             duplicates.append(pmid)
                         result.all_pmids.add(pmid)
 
+                    with_prefix.update(
+                        {c.split(":", 1)[0] for c in doc.get("identifiers") or []}
+                    )
+
                     if doc.get("pub_month") not in _VALID_MONTHS:
                         invalid_months.append(
                             {"shard": path.name, "line": lineno, "pub_month": doc.get("pub_month")}
@@ -417,6 +427,14 @@ def check_structure(
         "invalid_months": invalid_months.examples,
         "unreadable_shards": unreadable.examples,
         "duplicate_pmids": duplicates.examples,
+        "identifier_coverage": {
+            prefix: {
+                "records": with_prefix[prefix],
+                "pct": round(100 * with_prefix[prefix] / result.records_total, 2)
+                if result.records_total else 0.0,
+            }
+            for prefix in ID_PREFIXES.values()
+        },
     }
     report.checks["structure"] = result_dict
 
@@ -1448,6 +1466,12 @@ def format_summary(report: dict) -> str:
         if not rows:
             continue
         heading = section.upper()
+        if section == "structure" and struct.get("identifier_coverage"):
+            carried = ", ".join(
+                f"{v['pct']:.1f}% {prefix}"
+                for prefix, v in struct["identifier_coverage"].items()
+            )
+            heading += f"  ({carried})"
         if section == "field accuracy" and fv.get("sampled"):
             heading += (
                 f"  ({fv['sampled']:,} records sampled: {inputs.get('sample_size')}/shard "

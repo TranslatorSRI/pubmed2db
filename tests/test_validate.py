@@ -84,6 +84,19 @@ def test_offline_structure_passes(export_dir):
     assert report["checks"]["structure"]["records_total"] == 2
 
 
+def test_structure_reports_identifier_coverage(export_dir):
+    """The share of records carrying each identifier type is reported.
+
+    No check gates on it — one export in isolation cannot say whether 96% or 6%
+    is right — but a collapse between two runs is invisible without the number.
+    """
+    report = validate.run_validation(export_dir, online=False)
+    coverage = report["checks"]["structure"]["identifier_coverage"]
+    assert coverage["doi"] == {"records": 1, "pct": 50.0}
+    assert coverage["PMCID"] == {"records": 1, "pct": 50.0}
+    assert "50.0% doi" in validate.format_summary(report)
+
+
 def test_duplicate_examples_are_distinct_pmids(export_dir):
     """One PMID exported many times must not consume every example slot.
 
