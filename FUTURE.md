@@ -146,6 +146,15 @@ still has a populated `reference_citation` table, which nothing will clear.
   are deliberately still empty: a range has no single month, and inventing one
   would put a wrong value where there is currently an honest blank. Revisit only
   if a consumer needs an approximate month more than it needs correctness.
+- **The PMCID CURIE prefix is not settled** ([#33](https://github.com/TranslatorSRI/pubmed2db/issues/33)).
+  We emit `PMCID:PMC1234567`. Babel's `src/prefixes.py` says `PMC`, and neither
+  the Core Components specification
+  ([CCWG#15](https://github.com/NCATSTranslator/Core-Components-Working-Group/issues/15))
+  nor the DocumentMetadataAPI README carries a PMC example to arbitrate; the
+  production endpoint resolves PMCIDs under neither form. To be settled
+  alongside [Babel#1044](https://github.com/NCATSTranslator/Babel/issues/1044) —
+  a change is a one-line edit to `export.ID_PREFIXES` plus a re-export, since
+  `identifiers` is derived at export and never stored.
 - **`ELocationID` DOIs are not read.** The exported `identifiers` come from
   `PubmedData/ArticleIdList` only — the same place Babel reads, and the
   authoritative one. A DOI can also appear as

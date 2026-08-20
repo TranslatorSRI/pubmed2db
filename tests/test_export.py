@@ -68,8 +68,8 @@ def test_json_export_uses_spec_fields(loaded_con, tmp_path):
     assert one == {
         "id": "PMID:1001",
         # v2's PMCID (PMC7654321), not v1's PMC1234567, and no `pii`. Sorted,
-        # so uppercase "PMC:" precedes lowercase "doi:", with the PMID first.
-        "identifiers": ["PMID:1001", "PMC:PMC7654321", "doi:10.1038/example1001"],
+        # so uppercase "PMCID:" precedes lowercase "doi:", with the PMID first.
+        "identifiers": ["PMID:1001", "PMCID:PMC7654321", "doi:10.1038/example1001"],
         "journal_name": "Nature",
         "journal_abbrev": "Nature",
         "article_title": "Revised title for article one.",

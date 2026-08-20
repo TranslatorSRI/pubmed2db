@@ -98,17 +98,23 @@ published them:
 ```json
 {
   "id": "PMID:30690000",
-  "identifiers": ["PMID:30690000", "PMC:PMC6423490", "doi:10.1016/j.ejphar.2019.01.030"],
+  "identifiers": ["PMID:30690000", "PMCID:PMC6423490", "doi:10.1016/j.ejphar.2019.01.030"],
   "journal_name": "European journal of pharmacology",
   "...": "..."
 }
 ```
 
-The prefixes deliberately match Babel's `src/prefixes.py` — `PMID`, lowercase
-`doi`, and `PMC` — so these CURIEs join directly against the Babel publication
-compendium. PubMed's PMCID values already begin with `PMC`, hence the doubled
-`PMC:PMC6423490`. A record with neither a DOI nor a PMCID still gets its own
-`["PMID:<id>"]`; the array is never empty and never null.
+`PMID` and the lowercase `doi` deliberately match Babel's `src/prefixes.py`, so
+those CURIEs join directly against the Babel publication compendium. PubMed's
+PMCID values already begin with `PMC`, hence the doubled `PMCID:PMC6423490`. A
+record with neither a DOI nor a PMCID still gets its own `["PMID:<id>"]`; the
+array is never empty and never null.
+
+> **The PMCID prefix may still change.** Babel uses `PMC`, this export uses
+> `PMCID`, and neither the Core Components specification nor the
+> DocumentMetadataAPI README has a PMC example to settle it; the production
+> endpoint does not resolve PMCIDs under either prefix. See
+> [#33](https://github.com/TranslatorSRI/pubmed2db/issues/33).
 
 > **Consumers must match identifiers case-insensitively.** Values are stored and
 > exported exactly as PubMed published them, with no case normalization (Babel
