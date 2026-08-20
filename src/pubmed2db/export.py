@@ -7,33 +7,37 @@ nulls, for absent values. Parquet export keeps PubMed's own field names.
 
 from __future__ import annotations
 
-import gzip
-import json
 import logging
 import re
+import threading
 import time
 from pathlib import Path
 
 import duckdb
 
-from .load import _VERSIONED_TABLES
 from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
 
-logger = logging.getLogger(__name__)
+#: Shard filename stem; DuckDB appends the writer-thread index and the extension.
+_SHARD_STEM = "pubmed_metadata_"
 
-#: Rows pulled from DuckDB per fetch during the JSON export.
-_FETCH_BATCH = 5000
+logger = logging.getLogger(__name__)
 
 #: Minimum gap between progress log lines, so large exports don't spam the log.
 #: A full corpus export runs ~15 min, so a minute between lines still gives a
 #: dozen-odd data points to watch RSS and the rate on.
 _PROGRESS_INTERVAL_S = 60.0
 
-#: Child tables whose rows belong to a specific article version (pmid, source_file):
-#: everything the loader writes per version except `article` itself (exported from
-#: the latest-version snapshot) and `deleted_pmid` (exported in full below).
-_VERSIONED_CHILDREN = tuple(
-    t for t in _VERSIONED_TABLES if t not in ("article", "deleted_pmid")
+#: Child tables whose rows belong to a specific article version (pmid, source_file).
+_VERSIONED_CHILDREN = (
+    "abstract_text",
+    "author",
+    "author_affiliation",
+    "mesh_heading",
+    "mesh_qualifier",
+    "publication_type",
+    "grant_",
+    "article_id",
+    "history",
 )
 
 #: Dimension/bookkeeping tables exported as-is.
@@ -44,7 +48,8 @@ _OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid", "pipe
 #: CURIEs join against the Babel publication compendium; ``DOI:`` would not.
 #: PubMed's ``pmc`` values already start with ``PMC``, hence the doubled
 #: ``PMCID:PMC1234567``. Values are emitted verbatim, so consumers must match
-#: case-insensitively (DOIs are case-insensitive per spec and PubMed is not).
+#: case-insensitively (DOIs are case-insensitive per spec and PubMed is not
+#: consistent).
 #:
 #: **The PMCID prefix is not settled.** Babel's ``prefixes.py`` says ``PMC``,
 #: this export says ``PMCID``, and neither the Core Components spec nor the
@@ -88,11 +93,6 @@ def month_to_abbrev(raw: str | None) -> str:
     return key if key in _MONTH_ABBR else ""
 
 
-def _s(value: object) -> str:
-    """Render a value as a string, mapping ``None`` to ``""`` per the spec."""
-    return "" if value is None else str(value)
-
-
 _MEDLINE_YEAR_RE = re.compile(r"^\s*(\d{4})")
 
 
@@ -113,6 +113,72 @@ def _year_from_medline_date(raw: str | None) -> str:
     return match.group(1) if match else ""
 
 
+#: ``month_to_abbrev``'s logic as a SQL expression over ``la.pub_month``, built
+#: from the same ``_MONTH_ABBR`` tuple so the abbreviations cannot drift. The
+#: shape mirrors the Python: numeric months index the list (out-of-range gives
+#: NULL, hence the COALESCE), textual ones are matched on their capitalized
+#: 3-letter prefix so "March" and "Sept" both land. ``validate`` still calls the
+#: *Python* function to normalize the efetch side, so
+#: ``test_month_sql_matches_month_to_abbrev`` pins the two together.
+#:
+#: **Not bare ``trim()``.** SQL ``trim(x)`` strips spaces and nothing else,
+#: where Python's ``.strip()`` strips all whitespace — so a ``<Month>`` carrying
+#: a tab or a newline gave ``Mar`` from the Python function and ``''`` from the
+#: SQL. ``parse._raw_pubdate`` stores ``findtext("Month")`` verbatim, so such a
+#: record exported blank *and* was reported as a ``pub_month`` mismatch against
+#: efetch, which is a CORE_FIELDS error. ``_WS`` is the character set Python
+#: strips.
+_MONTHS_SQL = "[" + ", ".join(f"'{m}'" for m in _MONTH_ABBR) + "]"
+_WS = " \t\n\r\f\v"
+_TRIM_MONTH = f"trim(la.pub_month, E'{_WS}')"
+_MONTH_KEY_SQL = (
+    f"upper(substr({_TRIM_MONTH}, 1, 1)) || lower(substr({_TRIM_MONTH}, 2, 2))"
+)
+_PUB_MONTH_SQL = f"""CASE
+        WHEN trim(COALESCE(la.pub_month, ''), E'{_WS}') = '' THEN ''
+        WHEN regexp_full_match({_TRIM_MONTH}, '[0-9]+')
+            THEN COALESCE(list_extract({_MONTHS_SQL}, TRY_CAST({_TRIM_MONTH} AS BIGINT)), '')
+        WHEN list_contains({_MONTHS_SQL}, {_MONTH_KEY_SQL}) THEN {_MONTH_KEY_SQL}
+        ELSE ''
+    END"""
+
+#: ``_year_from_medline_date``'s fallback, same pattern, same pinning test
+#: (``test_pub_year_sql_matches_year_from_medline_date``). ``regexp_extract``
+#: returns ``''`` when nothing matches, which is already the spec's value.
+_PUB_YEAR_SQL = (
+    "COALESCE(NULLIF(la.pub_year, ''), "
+    f"regexp_extract(COALESCE(la.medline_date, ''), '{_MEDLINE_YEAR_RE.pattern}', 1))"
+)
+
+#: The JSON record: output field name -> SQL expression, in emitted order.
+#:
+#: This is the **single definition** of what a document contains. The export is
+#: one ``COPY ... (FORMAT JSON)`` built from this list rather than a Python loop
+#: over rows, so there is no second place where the DocumentMetadataAPI names,
+#: the empty-string-not-null rule, or the field order is written down;
+#: ``validate`` imports :data:`JSON_FIELDS` instead of restating them.
+_JSON_FIELDS: tuple[tuple[str, str], ...] = (
+    ("id", "'PMID:' || la.pmid"),
+    # The LEFT JOIN yields NULL, not an empty list, for a PMID with neither a
+    # DOI nor a PMCID; such a record still gets its own PMID CURIE.
+    ("identifiers", "list_prepend('PMID:' || la.pmid, COALESCE(ids.identifiers, []::VARCHAR[]))"),
+    ("journal_name", "COALESCE(j.title, '')"),
+    ("journal_abbrev", "COALESCE(j.abbreviation_iso, j.abbreviation_medline, '')"),
+    ("article_title", "COALESCE(la.article_title, '')"),
+    ("volume", "COALESCE(la.volume, '')"),
+    ("issue", "COALESCE(la.issue, '')"),
+    # Falls back to the year inside a free-text MedlineDate, which is the only
+    # place these records carry one. See _year_from_medline_date.
+    ("pub_year", _PUB_YEAR_SQL),
+    ("pub_month", _PUB_MONTH_SQL),
+    ("pub_day", "COALESCE(la.pub_day, '')"),
+    ("abstract", "COALESCE(abs.abstract, '')"),
+)
+
+#: The exported field names, in order — an external contract with Node Annotator
+#: / ElasticSearch, and what ``validate`` checks every record against.
+JSON_FIELDS = tuple(name for name, _ in _JSON_FIELDS)
+
 #: Abstract section ``label``s ("BACKGROUND", "METHODS", ...) are deliberately
 #: dropped: the consumer is a full-text search index, which wants prose, not
 #: headings.
@@ -120,6 +186,12 @@ def _year_from_medline_date(raw: str | None) -> str:
 #: Joining `article_id` on (pmid, source_file) — the same key `abs` uses —
 #: confines the identifiers to the article's *latest* version, so a DOI or PMCID
 #: that only ever appeared on a superseded version does not leak into the export.
+#:
+#: **No ORDER BY.** Sorting 40.9M rows by PMID cost ~3 minutes before the first
+#: row could be written and was the export's peak-memory event (issue #8); shard
+#: membership no longer depends on scan order, since each writer thread owns a
+#: file. Nothing downstream consumes the order — the ingest is an ElasticSearch
+#: bulk load, and `validate` sorts its own PMID manifest.
 _LATEST_METADATA_SQL = f"""
 WITH abs AS (
     SELECT pmid, source_file, string_agg(text, ' ' ORDER BY seq) AS abstract
@@ -148,69 +220,118 @@ ids AS (
     GROUP BY pmid, source_file
 )
 SELECT
-    la.pmid,
-    j.title                AS journal_name,
-    COALESCE(j.abbreviation_iso, j.abbreviation_medline) AS journal_abbrev,
-    la.article_title,
-    la.volume,
-    la.issue,
-    la.pub_year,
-    la.pub_month,
-    la.pub_day,
-    la.medline_date,
-    abs.abstract,
-    ids.identifiers
+    PROJECTION
 FROM _latest_snapshot la
 LEFT JOIN journal j ON la.nlm_catalog_id = j.nlm_catalog_id
 LEFT JOIN abs ON abs.pmid = la.pmid AND abs.source_file = la.source_file
 LEFT JOIN ids ON ids.pmid = la.pmid AND ids.source_file = la.source_file
-ORDER BY la.pmid
-"""
+""".replace(
+    "PROJECTION",
+    ",\n    ".join(f'{expr} AS "{name}"' for name, expr in _JSON_FIELDS),
+)
 
 
-def _document(row: tuple) -> dict[str, str | list[str]]:
-    (
-        pmid, journal_name, journal_abbrev, title, volume, issue,
-        year, month, day, medline_date, abstract, identifiers,
-    ) = row
-    return {
-        "id": f"PMID:{pmid}",
-        # The LEFT JOIN yields NULL, not an empty list, for a PMID with neither
-        # a DOI nor a PMCID; such a record still gets its own PMID CURIE.
-        "identifiers": [f"PMID:{pmid}", *(identifiers or [])],
-        "journal_name": _s(journal_name),
-        "journal_abbrev": _s(journal_abbrev),
-        "article_title": _s(title),
-        "volume": _s(volume),
-        "issue": _s(issue),
-        # Falls back to the year inside a free-text MedlineDate, which is the
-        # only place these records carry one. See _year_from_medline_date.
-        "pub_year": _s(year) or _year_from_medline_date(medline_date),
-        "pub_month": month_to_abbrev(month),
-        "pub_day": _s(day),
-        "abstract": _s(abstract),
-    }
+def _shard_paths(out_dir: Path) -> list[Path]:
+    """The shard files this export owns, sorted — its output and its leftovers."""
+    return sorted(
+        p for p in out_dir.glob(f"{_SHARD_STEM}*")
+        if p.name.endswith((".ndjson", ".ndjson.gz"))
+    )
+
+
+def _shard_bytes(paths: list[Path]) -> int:
+    """Total size of the shards that still exist, skipping any that vanish.
+
+    DuckDB is writing this directory while we read it, so a path can disappear
+    between the glob and the stat. That is a missing data point, not a reason to
+    take the heartbeat down.
+    """
+    total = 0
+    for path in paths:
+        try:
+            total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _log_writing_progress(out_dir: Path, start: float) -> None:
+    """Log how much shard output exists so far, and current RSS."""
+    paths = _shard_paths(out_dir)
+    written = _shard_bytes(paths)
+    elapsed = time.monotonic() - start
+    current = current_rss_gib()
+    logger.info(
+        "writing: %.1f GiB across %d shard(s) · %.0f MiB/s · elapsed %s · RSS %s",
+        written / 1024**3, len(paths),
+        written / 1024**2 / elapsed if elapsed else 0.0,
+        fmt_duration(elapsed),
+        "n/a" if current is None else f"{current:.1f} GiB",
+    )
+
+
+def _log_while_writing(out_dir: Path, stop: threading.Event, start: float) -> None:
+    """Log progress every ``_PROGRESS_INTERVAL_S`` until ``stop`` is set.
+
+    The whole export is now a single ``COPY``, so there are no batches to log
+    between — but this is the job that gets OOM-killed, and a silent process is
+    exactly what left the last run's ``--mem`` a guess. DuckDB releases the GIL
+    while the statement runs, so this thread does get scheduled.
+
+    Bytes and RSS, no ETA — the total output size is not known until it has been
+    written. If a run ever needs one, split the COPY into PMID ranges and count
+    rows per range.
+
+    Nothing here is allowed to escape. An exception would kill this thread and
+    leave a 20-minute export completely silent, which is the failure the
+    heartbeat exists to prevent; logging the reason and carrying on is strictly
+    better than that.
+    """
+    while not stop.wait(_PROGRESS_INTERVAL_S):
+        try:
+            _log_writing_progress(out_dir, start)
+        except Exception as exc:  # noqa: BLE001 - see the docstring
+            logger.warning("could not log export progress: %s", exc)
 
 
 def export_json(
     con: duckdb.DuckDBPyConnection,
     out_dir: str | Path,
     *,
-    shards: int = 1,
-    gzip_output: bool = False,
+    shards: int | None = None,
+    gzip_output: bool = True,
 ) -> list[Path]:
     """Export the latest version of every abstract as sharded NDJSON.
 
     Each line is one document keyed by ``PMID:<id>`` using DocumentMetadataAPI
-    field names. With ``gzip_output=True`` each shard is compressed as it is
-    written (one pass, no separate re-read of the finished file), and the
-    output is still line-readable via ``zcat``. Returns the list of files
-    written.
+    field names. Shards are gzipped as they are written (one pass, no separate
+    re-read of the finished file) unless ``gzip_output=False``: NDJSON
+    compresses ~4-5x, which is the difference between shipping ~52 GiB and
+    ~12 GiB of a full corpus, and `validate` accepts either form without being
+    told which. The output stays line-readable via ``zcat``. Returns the list of
+    files written.
+
+    DuckDB writes the JSON itself (``COPY ... (FORMAT JSON)``), one file per
+    writer thread, rather than Python serializing row by row — the serialization
+    then runs in C++ across every thread instead of on one core, which is where
+    this export used to spend ~80% of its wall time. ``shards`` caps the number
+    of writer threads, and so the number of files; the default is DuckDB's own
+    thread count (see the group-level ``--threads``). A small dataset can be
+    written by fewer threads than asked for, so it is a **maximum**, not a
+    guarantee.
     """
-    if shards < 1:
+    if shards is not None and shards < 1:
         raise ValueError("shards must be >= 1")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Clock the whole export, not just the COPY. Materializing the snapshot is a
+    # window function over the entire `article` table -- the reason export memory
+    # scales with the database rather than the input file -- and with the sort
+    # gone it is plausibly the dominant phase. slurm/README.md tells operators to
+    # size --time from the line this feeds, so it must not start after the
+    # expensive part.
+    start = time.monotonic()
 
     # Materialize the latest-version snapshot once: `latest_article` is a window
     # function over the full `article` table, and both the count and the export
@@ -218,71 +339,70 @@ def export_json(
     con.execute("CREATE OR REPLACE TEMP TABLE _latest_snapshot AS SELECT * FROM latest_article")
     total = con.execute("SELECT count(*) FROM _latest_snapshot").fetchone()[0]
     logger.info(
-        "starting JSON export: %d document(s) to %d shard(s) in %s%s",
-        total, shards, out_dir, " (gzip)" if gzip_output else "",
+        "starting JSON export: %d document(s) to %s in %s%s",
+        total, f"at most {shards} shard(s)" if shards else "one shard per thread",
+        out_dir, " (gzip)" if gzip_output else "",
     )
 
-    # Only open as many shard files as there are documents to distribute, so a
-    # dataset smaller than `shards` doesn't leave extra empty files on disk that
-    # this function's own return value never mentions.
-    active_shards = min(shards, total) if total else 1
-    suffix = ".ndjson.gz" if gzip_output else ".ndjson"
-    paths = [out_dir / f"pubmed_metadata_{i:05d}{suffix}" for i in range(active_shards)]
-
-    # Re-exporting into the same directory with fewer shards, or with the other
-    # --gzip setting, would otherwise leave earlier shards behind: a consumer
-    # globbing the directory then reads a mix of two exports.
-    keep = set(paths)
-    stale = [p for p in out_dir.glob("pubmed_metadata_*.ndjson*") if p not in keep]
+    # DuckDB appends to a per-thread output directory rather than clearing it,
+    # so a previous run's shards would survive this one and be read back as if
+    # they were part of it. Only files matching our own naming are removed --
+    # and the count is logged, because silently deleting someone's export
+    # directory is not something to do without a line in the log.
+    stale = _shard_paths(out_dir)
     for path in stale:
         path.unlink()
     if stale:
         logger.info("removed %d shard file(s) from a previous export", len(stale))
 
-    opener = gzip.open if gzip_output else open
-    handles = [opener(path, "wt", encoding="utf-8") for path in paths]
-    run_start = time.monotonic()
-    last_log = run_start
+    suffix = "ndjson.gz" if gzip_output else "ndjson"
+    options = [
+        "FORMAT JSON", "PER_THREAD_OUTPUT true", "OVERWRITE_OR_IGNORE true",
+        f"FILENAME_PATTERN '{_SHARD_STEM}{{i}}'", f"FILE_EXTENSION '{suffix}'",
+    ]
+    if gzip_output:
+        options.append("COMPRESSION 'gzip'")
+    # Escape single quotes so a path containing one doesn't break out of the
+    # quoted string literal (same reason as _copy_parquet).
+    escaped_dir = out_dir.as_posix().replace("'", "''")
+    copy_sql = f"COPY ({_LATEST_METADATA_SQL}) TO '{escaped_dir}' ({', '.join(options)})"
+
+    # `shards` is the thread cap for this statement only: one file per writer
+    # thread is what PER_THREAD_OUTPUT gives us, so asking for N shards is
+    # asking N threads to write. Restore whatever the connection had after.
+    #
+    # Read *before* the heartbeat starts: the thread is non-daemon and only
+    # stops when `stop` is set in the finally below, so a statement that raises
+    # between start() and the try would hang the interpreter instead of
+    # reporting the error.
+    previous_threads = con.execute("SELECT current_setting('threads')").fetchone()[0]
+
+    stop = threading.Event()
+    heartbeat = threading.Thread(target=_log_while_writing, args=(out_dir, stop, start))
+    heartbeat.start()
     try:
-        cur = con.execute(_LATEST_METADATA_SQL)
-        index = 0
-        while True:
-            rows = cur.fetchmany(_FETCH_BATCH)
-            if not rows:
-                break
-            for row in rows:
-                handles[index % active_shards].write(
-                    json.dumps(_document(row), ensure_ascii=False) + "\n"
-                )
-                index += 1
-
-            now = time.monotonic()
-            if now - last_log >= _PROGRESS_INTERVAL_S and total:
-                elapsed = now - run_start
-                remaining = total - index
-                # Rate and current RSS alongside the ETA: the export is the job
-                # that gets OOM-killed, so watching RSS climb during the run is
-                # what tells you the next --mem, and the rate sizes --time.
-                current = current_rss_gib()
-                logger.info(
-                    "progress: %s/%s documents (%.1f%%) · %.1fk docs/s · "
-                    "elapsed %s · RSS %s · ~%s remaining",
-                    f"{index:,}", f"{total:,}", 100 * index / total,
-                    index / elapsed / 1000 if elapsed else 0.0,
-                    fmt_duration(elapsed),
-                    "n/a" if current is None else f"{current:.1f} GiB",
-                    eta_str(elapsed, index, remaining),
-                )
-                last_log = now
+        if shards is not None:
+            con.execute(f"SET threads = {int(shards)}")
+        con.execute(copy_sql)
     finally:
-        for handle in handles:
-            handle.close()
+        stop.set()
+        heartbeat.join()
+        if shards is not None:
+            con.execute(f"SET threads = {int(previous_threads)}")
 
+    paths = _shard_paths(out_dir)
     logger.info(
-        "exported %d documents to %d shard(s) in %s (peak RSS %.1f GiB)",
-        index, len(paths), out_dir, peak_rss_gib(),
+        "exported %d documents to %d shard(s) in %s in %s (peak RSS %.1f GiB)",
+        total, len(paths), out_dir, fmt_duration(time.monotonic() - start), peak_rss_gib(),
     )
     return paths
+
+
+def _copy_parquet(con: duckdb.DuckDBPyConnection, query: str, path: Path) -> None:
+    # Escape single quotes so a path containing one (e.g. an apostrophe in a
+    # directory name) doesn't break out of the quoted string literal.
+    escaped_path = path.as_posix().replace("'", "''")
+    con.execute(f"COPY ({query}) TO '{escaped_path}' (FORMAT PARQUET)")
 
 
 def export_parquet(
@@ -306,23 +426,27 @@ def export_parquet(
         "starting Parquet export: %d table(s) (%s) to %s",
         tables, "latest version" if latest else "full history", out_dir,
     )
+    run_start = time.monotonic()
 
     # A re-export overwrites its own fixed set of file names, so the only file
     # that can survive is one whose table left the schema — `reference_citation`
     # is exactly that case. Left in place it reads as part of this export to
     # anything globbing the directory. Same sweep the JSON export does.
     keep = {f"{t}.parquet" for t in ("article", *_VERSIONED_CHILDREN, *_OTHER_TABLES)}
-    stale = [p for p in out_dir.glob("*.parquet") if p.name not in keep]
+    stale = [path for path in out_dir.glob("*.parquet") if path.name not in keep]
     for path in stale:
         path.unlink()
     if stale:
         logger.info(
             "removed %d Parquet file(s) for table(s) no longer in the schema: %s",
-            len(stale), ", ".join(sorted(p.stem for p in stale)),
+            len(stale), ", ".join(sorted(path.stem for path in stale)),
         )
 
-    def _progress(path: Path) -> None:
-        logger.info("wrote %s (%d/%d)", path.name, len(written), tables)
+    def _progress(done: int) -> None:
+        remaining = tables - done
+        elapsed = time.monotonic() - run_start
+        eta = eta_str(elapsed, done, remaining)
+        logger.info("progress: %d/%d tables, ~%s remaining", done, tables, eta)
 
     if latest:
         # Materialize once: `latest_article` is a window function over the full
@@ -333,9 +457,9 @@ def export_parquet(
     else:
         article_query = "SELECT * FROM article"
     article_path = out_dir / "article.parquet"
-    con.sql(article_query).write_parquet(str(article_path))
+    _copy_parquet(con, article_query, article_path)
     written.append(article_path)
-    _progress(article_path)
+    _progress(len(written))
 
     for table in _VERSIONED_CHILDREN:
         if latest:
@@ -347,16 +471,16 @@ def export_parquet(
         else:
             query = f"SELECT * FROM {table}"
         path = out_dir / f"{table}.parquet"
-        con.sql(query).write_parquet(str(path))
+        _copy_parquet(con, query, path)
         written.append(path)
-        _progress(path)
+        _progress(len(written))
 
     # Dimension / bookkeeping tables are exported in full regardless of `latest`.
     for table in _OTHER_TABLES:
         path = out_dir / f"{table}.parquet"
-        con.sql(f"SELECT * FROM {table}").write_parquet(str(path))
+        _copy_parquet(con, f"SELECT * FROM {table}", path)
         written.append(path)
-        _progress(path)
+        _progress(len(written))
 
     logger.info(
         "exported %d Parquet file(s) to %s (peak RSS %.1f GiB)",

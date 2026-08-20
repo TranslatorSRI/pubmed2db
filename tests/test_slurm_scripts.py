@@ -462,3 +462,41 @@ def test_validate_omits_previous_report_on_a_first_run(sandbox: Path) -> None:
     result = run_validate(sandbox, NCBI_EMAIL="me@example.org")
     assert result.returncode == 0, result.stderr
     assert "--previous-report" not in result.stdout
+
+
+def test_shards_tracks_the_export_allocation() -> None:
+    """`--shards` is the export's thread count now, not just a file count.
+
+    `export_json` runs `SET threads = $SHARDS` for the COPY, so a SHARDS above
+    `--cpus-per-task` oversubscribes the one step that gets OOM-killed. Deriving
+    it from SLURM_CPUS_PER_TASK is what keeps the two matched; this asserts the
+    derivation, and that the fallback matches what 04-export.sbatch requests so
+    an off-cluster or `--dry-run` reading agrees with a real one.
+    """
+    import re
+
+    header = (SLURM_DIR / "04-export.sbatch").read_text()
+    match = re.search(r"#SBATCH --cpus-per-task=(\d+)", header)
+    assert match, "04-export.sbatch no longer declares --cpus-per-task"
+    cpus = match.group(1)
+
+    def shards(**env: str) -> str:
+        result = subprocess.run(
+            ["bash", "-c", 'source slurm/config.sh; printf "%s" "$SHARDS"'],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+            env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT), **env},
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    # On the cluster it follows the allocation Slurm actually granted...
+    assert shards(SLURM_CPUS_PER_TASK="4") == "4"
+    assert shards(SLURM_CPUS_PER_TASK="8") == "8"
+    # ...and off it, the fallback is what the header asks for, so the two
+    # readings cannot disagree.
+    assert shards() == cpus, (
+        f"config.sh falls back to {shards()} shards while 04-export.sbatch asks "
+        f"for {cpus} CPUs; SET threads = SHARDS would oversubscribe"
+    )
+    # An explicit value still wins -- that is the documented override.
+    assert shards(SHARDS="32") == "32"

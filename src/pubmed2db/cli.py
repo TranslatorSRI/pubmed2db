@@ -185,18 +185,30 @@ def load(ctx: click.Context, force: bool) -> None:
 @click.option(
     "--shards",
     type=click.IntRange(min=1),
-    default=1,
-    show_default=True,
-    help="JSON: number of NDJSON shards.",
+    default=None,
+    help=(
+        "JSON: maximum number of NDJSON shards (default: one per DuckDB "
+        "thread). DuckDB writes one file per writer thread, so this also caps "
+        "the export's write parallelism; a small dataset may use fewer."
+    ),
 )
-@click.option("--gzip/--no-gzip", "gzip_output", default=False, help="JSON: gzip each shard as it's written.")
+@click.option(
+    "--gzip/--no-gzip",
+    "gzip_output",
+    default=True,
+    show_default=True,
+    help=(
+        "JSON: gzip each shard as it's written. NDJSON compresses ~4-5x, and "
+        "`validate` reads either form without being told which."
+    ),
+)
 @click.option(
     "--latest/--all",
     default=True,
     help="Parquet: export only the latest version (default) or full history.",
 )
 @click.pass_context
-def export(ctx: click.Context, fmt: str, out: str, shards: int, gzip_output: bool, latest: bool) -> None:
+def export(ctx: click.Context, fmt: str, out: str, shards: int | None, gzip_output: bool, latest: bool) -> None:
     """Export the latest abstracts to JSON, or the database to Parquet."""
     from .export import export_json, export_parquet
     from .status import export_readiness
@@ -250,7 +262,12 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int, gzip_output: boo
                    "when the run fails, so a bad export cannot become the next "
                    "run's baseline.")
 @click.option("--sample-size", type=int, default=15, show_default=True,
-              help="Records sampled per shard for API field validation.")
+              help="Records sampled PER SHARD for API field validation, so the "
+                   "total is this times the shard count. Since the JSON export "
+                   "writes one shard per writer thread, that count follows the "
+                   "export's allocation rather than being fixed — the report's "
+                   "'N/shard x M shards' line says what a given run actually "
+                   "checked.")
 @click.option("--drop-sample", type=int, default=10, show_default=True,
               help="Dropped PMIDs sampled for deletion confirmation.")
 @click.option("--seed", type=int, default=0, show_default=True,

@@ -13,10 +13,23 @@ on, and a copy left here rots into a contradiction of the code.
   `NCATSTranslator/Babel` `src/createcompendia/publications.py` so Babel reuses
   these downloads/exports instead of its own wget+TSV pipeline. Sharing the
   download cache works via `PYSTOW_HOME`.
-- **Confirm the Node Annotator JSON contract.** We currently emit sharded NDJSON,
-  one document per line keyed `PMID:<id>` with the DocumentMetadataAPI fields.
-  Verify this matches what Node Annotator's ElasticSearch ingest expects (id
-  field, shard sizing, gzip?).
+- **Confirm the Node Annotator JSON contract — and do it before the next
+  production export.** We emit sharded NDJSON, one document per line keyed
+  `PMID:<id>` with the DocumentMetadataAPI fields. Verify this matches what Node
+  Annotator's ElasticSearch ingest expects (id field, shard sizing, gzip).
+  **Two things changed under the ingest's feet** and neither can be checked from
+  this repo, because the consumer lives outside it:
+  - **Shards are gzipped by default now.** `data/json/pubmed_metadata_*.ndjson`
+    becomes `*.ndjson.gz`. `validate` handles both (`find_shards` matches either
+    extension), which is the *only* consumer this repo can speak for. If the
+    ingest globs `*.ndjson` or does not decompress, it reads **nothing** — an
+    empty ingest, not an error, which is the worst shape for a failure to take.
+    `--no-gzip` restores the old artifact if the answer is no.
+  - **Shard names lost their zero padding.** `pubmed_metadata_00000.ndjson`
+    became `pubmed_metadata_0.ndjson.gz`: DuckDB's `PER_THREAD_OUTPUT` names
+    files from `FILENAME_PATTERN '{i}'`, which emits a bare index. Anything
+    globbing `pubmed_metadata_*` is unaffected; anything matching the padded
+    form, or relying on the files sorting lexically past nine, is not.
 
 ## Validation (`validate`)
 
@@ -127,10 +140,15 @@ still has a populated `reference_citation` table, which nothing will clear.
 - **`latest_article` view** runs a window over the entire `article` table on every
   read. At full scale, consider an index on `article(pmid, file_order_key)` or
   materializing the latest set into a table before export.
-- **JSON export's global sort** (`ORDER BY la.pmid`) sorts the whole latest set to
-  keep round-robin sharding deterministic. Sharding on `pmid % shards` would remove
-  it; measure first, since restricting the abstract aggregation to the latest
-  snapshot already cut into the same peak. Tracked in issue #8.
+- **JSON export throughput — done.** The export was a single Python loop calling
+  `json.dumps` per row behind a full `ORDER BY la.pmid`; the sort delayed the
+  first written row by ~3 minutes of an 18-minute run and was the job's
+  peak-memory event, and the loop then serialized 40.9M documents on one core
+  while the other seven idled. DuckDB now writes the NDJSON itself
+  (`COPY ... FORMAT JSON`, one file per writer thread) with no sort: 3x faster
+  end-to-end on a 2M-document benchmark (112.9s → 35.5s), byte-identical record
+  sets. Closes issue #8. **Still to record from a cluster run:** the new peak
+  RSS, which decides whether `--mem=256G` can come down.
 - **No indexes** are created on the big per-version tables yet (kept lean for bulk
   load). Add them if interactive querying of the DB becomes a use case.
 

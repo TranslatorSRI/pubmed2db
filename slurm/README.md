@@ -197,8 +197,7 @@ the size of the database rather than with the largest input file:
 
 - `export_json` first materializes `latest_article` into a temp table
   (`_latest_snapshot`) — a window function over the entire `article` table.
-- The export query then joins that against a `string_agg` of every abstract and
-  sorts the whole result by PMID (`ORDER BY la.pmid`).
+- The export query then joins that against a `string_agg` of every abstract.
 
 Neither step can be done a file at a time, which is why the numbers are an order
 of magnitude above the loader's.
@@ -208,42 +207,94 @@ of magnitude above the loader's.
 | Run | Documents | Peak RSS | Wall time |
 | --- | --- | --- | --- |
 | Earlier | — | 199.6 GiB | "a few hours" (before progress logging; never timed) |
-| 2026-07-30 | 40,901,984 | 201.1 GiB | **23m13s**, ≈30k documents/s |
+| 2026-07-30 | 40,901,984 | 201.1 GiB | 23m 13s, ≈30k documents/s |
+| 2026-08-05 | 40,923,261 | 201.0 GiB | 18m 06s, ≈38k documents/s |
 
-For the record, that run was submitted as `srun --mem=256G --time=08:00:00
---cpus-per-task 8` (01:25:01 started, 01:48:14 finished) — kept here as the
-provenance of the numbers above, not as a command to copy; `04-export.sbatch` is
-what to run.
+Those three runs all predate the `COPY`-based writer. **They are the numbers to
+beat, not the numbers to request** — see "What changed" below; the first run of
+the new export should be sized from the table above and will re-baseline it.
 
-Treat **~200 GiB** as the working memory figure — it has been stable across runs
-and is why this needs a big node; do not copy the loader's allocation. Time is
-the cheap dimension: the script's limit is generous margin on 23 minutes.
+For the record, the 2026-08-05 run on `ht1` was submitted as `srun --mem=256G
+--cpus-per-task=8 --time=02:00:00` (12:14:50 started, 12:32:56 finished) — kept
+here as the provenance of the numbers above, not as a command to copy;
+`04-export.sbatch` is what to run.
 
-Both `export_json` and `export_parquet` log peak RSS on completion, and JSON
-logs progress with an ETA once a minute, so a real run tells you what to request
-next time:
+Treat **~200 GiB** as the working memory figure until a new one is measured — it
+was stable across all three runs, and is why this needs a big node; do not copy
+the loader's allocation. Time is the cheap dimension: the script's limit is
+generous margin on 18 minutes.
+
+### What changed (and what to record next run)
+
+The export used to serialize every document in a single Python loop and sort the
+whole corpus by PMID first. Both are gone: DuckDB now writes the NDJSON itself
+(`COPY ... FORMAT JSON`, one file per writer thread) and the query has no
+`ORDER BY`. On a 2M-document copy of the database, same machine, same query:
+
+| | Wall time | Rate |
+| --- | --- | --- |
+| Python loop + `ORDER BY` | 112.9s | 17.7k docs/s |
+| `COPY`, no sort | **35.5s** | **56.2k docs/s** |
+
+Both wrote byte-identical record sets (2M rows, `EXCEPT` in both directions
+returns nothing). Two things to read off the next cluster run, since neither can
+be predicted from a laptop:
+
+1. **Peak RSS.** The sort was the export's peak-memory event, so the `--mem` in
+   `04-export.sbatch` is probably now over-provisioned — but *how* over is a
+   measurement, and asking for less than the job needs is an OOM kill several
+   minutes in.
+2. **Wall time**, which sets whether the header's `--time` is still generous.
+
+Tracked in #42; the header is the thing to edit once the numbers exist.
+
+Because the whole export is one statement, there are no per-batch progress
+lines any more; a heartbeat logs output size and current RSS once a minute
+instead, and `-v` additionally enables DuckDB's own progress bar:
 
 ```
-INFO pubmed2db.export: progress: 33,385,000/40,901,984 documents (81.6%) · 29.8k docs/s · elapsed 18m 40s · RSS 187.2 GiB · ~4m 14s remaining
-INFO pubmed2db.export: exported 40901984 documents to 16 shard(s) in data/json (peak RSS 201.1 GiB)
+INFO pubmed2db.export: starting JSON export: 40923261 document(s) to at most 16 shard(s) in data/json
+INFO pubmed2db.export: writing: 22.4 GiB across 16 shard(s) · 187 MiB/s · elapsed 2m 03s · RSS 143.1 GiB
+INFO pubmed2db.export: exported 40923261 documents to 16 shard(s) in data/json in 5m 12s (peak RSS 88.0 GiB)
 ```
+
+(The `writing:` and completion figures above are shapes, not measurements — the
+new export has not been run on the cluster yet.)
 
 Notes on the knobs:
 
-- **`--shards N` does not reduce memory, and does not want a CPU each.** All
-  shards are written by a single Python loop over one query, round-robining
-  lines across open file handles; there is no thread or process per shard, so
-  `--cpus-per-task=16` for `--shards 16` would leave 15 cores idle on that step.
-  Sharding is for the convenience of whatever ingests the NDJSON. Same for
-  `--gzip`, which compresses each shard as it is written (no separate re-read
-  pass) and costs CPU rather than memory.
-- **CPUs help the query, not the writer.** DuckDB parallelizes the snapshot,
-  the `string_agg` and the sort across cores, while the per-row JSON
-  serialization stays single-threaded. `--cpus-per-task 8` is what the measured
-  run used and is a sensible default. It did *not* pass `--threads` and did not
-  need to: DuckDB reads the cgroup, so the pool was already the 8 CPUs asked
-  for. Treat `--threads` as a way to run below your allocation on a busy node,
-  not as something the export needs.
+- **`--shards N` is a maximum, and it *is* the write parallelism.** DuckDB
+  writes one file per writer thread, so `--shards` caps the thread count for
+  that statement; a run can produce fewer files than asked for, never more.
+  Match it to `--cpus-per-task` rather than to the ingest's ideal file count —
+  the two are the same number now, and `config.sh` derives `SHARDS` from
+  `SLURM_CPUS_PER_TASK` so they stay matched without anyone remembering to.
+  Setting it by hand still wins, but note what it costs: `export_json` runs
+  `SET threads = $SHARDS` for the statement, so a `SHARDS` above the allocation
+  oversubscribes the step that gets OOM-killed, and one set deliberately below
+  it is also the only way `--shards` interacts with a group-level `--threads` —
+  the `SET` overrides it for the duration of the COPY.
+- **`--sample-size` is per shard, so the field check scales with the shard
+  count.** `validate` samples that many records from *each* shard, and since
+  the export writes one shard per writer thread, the shard count follows
+  `--cpus-per-task` rather than being fixed. Halving the export's allocation
+  therefore halves how many records the next `validate` compares against
+  Entrez, without either flag changing. The report says what a run actually
+  checked — `(240 records sampled: 15/shard x 16 shards, seed 0)` — so read
+  that line rather than assuming the default means one number.
+- **Shards are gzipped by default.** `--gzip` is on unless you pass
+  `--no-gzip`; compression happens as each shard is written (no separate
+  re-read pass) and costs CPU rather than memory. A full corpus lands at
+  roughly 12 GiB rather than 52, which is the same reduction in what the next
+  `validate` has to read back — and `validate` needs no flag to read it.
+- **CPUs now help the writing too.** DuckDB parallelizes the snapshot, the
+  `string_agg` and — since the `COPY` rewrite — the JSON serialization across
+  cores, which is where the 3x came from. `--cpus-per-task 8` is what the
+  measured runs used; more cores should now buy more throughput rather than
+  idling behind a single Python thread. Those runs did *not* pass `--threads`
+  and did not need to: DuckDB reads the cgroup, so the pool was already the 8
+  CPUs asked for. Treat `--threads` as a way to run below your allocation on a
+  busy node, not as something the export needs.
 - **Parquet should be the lighter of the two — but is unmeasured.**
   `export_parquet` builds the same `_latest_snapshot`, then writes each table
   with a DuckDB `COPY ... TO`, so no full result set is pulled through Python.

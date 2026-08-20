@@ -22,7 +22,7 @@ explains its part; this table is only a map.
 | `src/pubmed2db/download.py` | Fetches baseline/update files; adds `.md5` sidecar tracking. |
 | `src/pubmed2db/parse.py` | Self-driven XML iteration over each file. |
 | `src/pubmed2db/load.py` | Loads parsed files (full history, provenance-tagged), delete logic, journal dimension. |
-| `src/pubmed2db/export.py` | JSON + Parquet export. |
+| `src/pubmed2db/export.py` | JSON (one DuckDB `COPY`, gzipped by default) + Parquet export. |
 | `src/pubmed2db/validate.py` | Post-export checks over a directory of NDJSON shards; emits a gated JSON report. |
 | `src/pubmed2db/status.py` | Pipeline-readiness checks derived from DB state. |
 | `src/pubmed2db/util.py` | Shared helpers for the long steps: progress/ETA, durations, peak RSS. |
@@ -46,9 +46,52 @@ explains its part; this table is only a map.
   land in the normalized `article_id` table on every load, so the JSON export
   aggregates them there (`export._LATEST_METADATA_SQL`'s `ids` CTE says how, and
   `export.ID_PREFIXES` is the single place the Babel-compatible CURIE casing is
-  written down). A denormalized `article.identifiers` column would have
-  duplicated the data *and* forced a full corpus reload to backfill it, which is
-  the reason not to, and the reason is not visible from the query.
+  written down, including the unsettled `PMCID` casing that issue #33 tracks).
+  A denormalized `article.identifiers` column would have duplicated the data
+  *and* forced a full corpus reload to backfill it, which is the reason not to,
+  and the reason is not visible from the query. `validate`'s `EXPECTED_FIELDS`
+  is `frozenset(export.JSON_FIELDS)` for the same reason — the exporter's own
+  list, which its `COPY` projection is built from, so the record shape checked
+  cannot drift from the record shape shipped.
+- **DuckDB writes the JSON, Python does not.** `export_json` is one
+  `COPY (...) TO <dir> (FORMAT JSON, PER_THREAD_OUTPUT true)`, not a `fetchmany`
+  loop calling `json.dumps` per row: the old loop spent ~80% of the export's
+  wall time serializing on a single core while the other seven idled (17.7k
+  docs/s measured, against 56.2k for the same corpus through `COPY`). Three
+  consequences before you edit it:
+  - **`_JSON_FIELDS` is the record definition** — output name → SQL expression,
+    in emitted order — so the DocumentMetadataAPI names, the
+    empty-string-not-null rule and the field order live in one place, and
+    `validate` imports `JSON_FIELDS` from it rather than restating the shape.
+    `month_to_abbrev` and `_year_from_medline_date` survive as Python because
+    `validate` needs them for the efetch side; `_PUB_MONTH_SQL`/`_PUB_YEAR_SQL`
+    are their SQL twins, pinned together by
+    `test_month_sql_matches_month_to_abbrev` and
+    `test_pub_year_sql_matches_year_from_medline_date`. A divergence there makes
+    every normalized record read as a PubMed mismatch.
+  - **`--shards N` is a *maximum*, not a count.** `PER_THREAD_OUTPUT` gives one
+    file per writer thread, so `shards` caps the COPY's thread count (restored
+    afterwards) and a small dataset can use fewer. DuckDB *appends* to that
+    directory rather than clearing it, so `export_json` deletes its own
+    `pubmed_metadata_*` files first — otherwise a shorter run leaves a previous
+    run's shards to be read as current. `PARTITION_BY (pmid % shards)` would
+    restore an exact count, but **DuckDB ≤ 1.5.4 rejects `PARTITION_BY` for
+    `FORMAT JSON`** (`Binder Error: Unknown option`), so don't reach for it
+    without checking again first.
+  - **There is no `ORDER BY`, and that is deliberate (issue #8).** Sorting all
+    40.9M rows by PMID materialized them before the first could be written —
+    ~3 minutes of an 18-minute run, and the export's peak-memory event. Shard
+    membership no longer depends on scan order (each thread owns a file), and
+    nothing downstream consumes the order: the ingest is an ElasticSearch bulk
+    load, and `validate` sorts its own PMID manifest.
+- **Gzip is the export's default, and `validate` must not need telling.** NDJSON
+  compresses ~4-5x (~52 GiB of full-corpus shards down to ~12), DuckDB
+  compresses each shard as it writes it, and `validate.find_shards` matches
+  `.ndjson`/`.ndjson.gz` alike while `check_structure` reads through a raw handle
+  so its byte-progress denominator stays the *compressed* size either way.
+  `test_cli_export_then_validate_needs_no_flags` runs both commands with no
+  flags, because a compressed default is only safe while the checker downstream
+  stays flag-free.
 - **DuckDB reads the Slurm cgroup. Both of its sized defaults do — we guessed
   otherwise twice and were wrong twice.** Measured on duckdb 1.5.4:
   `memory_limit` is ~76% of `--mem` (6.1 GiB under `--mem=8G`, 47.3 GiB under

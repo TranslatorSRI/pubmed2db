@@ -19,7 +19,14 @@
 # describing the previous corpus. See slurm/README.md.
 : "${MANIFEST_DIR:=data/manifests}"
 
-: "${SHARDS:=16}"
+# JSON shard count. Since the COPY rewrite this is also the export's *thread*
+# count -- PER_THREAD_OUTPUT gives one file per writer thread, so export_json
+# runs `SET threads = $SHARDS` for the statement. Derived from the allocation
+# rather than fixed, because a fixed 16 against 04-export.sbatch's
+# --cpus-per-task=8 oversubscribes 2:1 on the one step that gets OOM-killed,
+# and would silently raise a group-level --threads set to run *below* an
+# allocation on a busy node. Change the sbatch header and this follows.
+: "${SHARDS:=${SLURM_CPUS_PER_TASK:-8}}"
 
 # DuckDB's buffer-pool cap per step. These are NOT exported: the CLI reads
 # PUBMED2DB_DUCKDB_MEMORY_LIMIT, and a shell-wide value would silently cap the

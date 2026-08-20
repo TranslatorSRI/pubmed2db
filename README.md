@@ -89,6 +89,28 @@ uv run pubmed2db --data-dir data validate data/json --email you@example.com
 `--data-dir data` is the default, so omitting it gives the same result.
 The DuckDB database is stored as `<data-dir>/pubmed.duckdb`; override with `--db`.
 
+### How the JSON export is written
+
+DuckDB writes the NDJSON itself — a single `COPY ... (FORMAT JSON)` whose
+projection is built from `export._JSON_FIELDS`, rather than Python serializing
+row by row. The serialization therefore runs in C++ across every thread (3x
+faster on a 2M-document benchmark), and two things follow:
+
+- **`--shards N` is a maximum, not a count.** Output is one file per writer
+  thread, so `--shards` caps that statement's threads; a small dataset can be
+  written by fewer. Omit it to use DuckDB's own thread count.
+- **Records are not in PMID order.** The export no longer sorts — that sort cost
+  ~3 minutes and most of the peak memory of a full run. Nothing downstream needs
+  the order; `validate` builds its own sorted PMID manifest.
+- **Shards are gzipped** (`pubmed_metadata_0.ndjson.gz`) unless you pass
+  `--no-gzip`. NDJSON compresses ~4-5x — a full corpus goes from ~52 GiB to
+  ~12 — and each shard is compressed as it is written, so there is no second
+  pass. `validate <dir>` reads either form with no flag, and `zcat` still works
+  line by line.
+
+Re-running an export first deletes the `pubmed_metadata_*` files already in the
+output directory, so a shorter run cannot leave a previous run's shards behind.
+
 ### Identifiers in the JSON export
 
 Alongside the DocumentMetadataAPI fields, each JSON record carries an
@@ -367,8 +389,9 @@ behind it, and [`FUTURE.md`](./FUTURE.md) for known limitations and planned work
   Unlike `load`, its memory scales with the whole database rather than the largest input file — see
   [`slurm/README.md`](./slurm/README.md#running-export) for why, and for what to request on a cluster.
 - **`export` publishes in place, not atomically.** Both formats write straight into `--out`:
-  the JSON export truncates each shard as it opens it (and removes shards left by a previous,
-  wider export), and the Parquet export replaces one table file at a time. A run that dies
+  the JSON export deletes the shards of the previous run before DuckDB writes the new ones,
+  and the Parquet export replaces one table file at a time (sweeping any left by a table that
+  has since left the schema). A run that dies
   partway — OOM, full disk — therefore leaves a half-written dataset that looks complete to
   anything globbing the directory. Export into a fresh directory and swap it into place
   yourself if consumers read the output while exports run.
