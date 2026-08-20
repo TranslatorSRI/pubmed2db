@@ -124,7 +124,10 @@ explains its part; this table is only a map.
   cross-year `MedlineDate` — `"1998 Dec-1999 Jan"` (PMID:10188493) splits into a
   `pub_month` holding a year. So the export ships a twelfth field carrying
   PubMed's own string verbatim on **every** record, exactly as NCBI `esummary`'s
-  `pubdate` does. Consumers rendering a citation read `pub_date`; consumers
+  `pubdate` does — including its unpadded day: the archival XML writes
+  `<Day>01</Day>` where `esummary` renders `1` (PMID:35504184), so
+  `normalize_day` strips the zero rather than letting most days below the tenth
+  read as a mismatch. Consumers rendering a citation read `pub_date`; consumers
   sorting or filtering read `pub_year`; neither parses the other. `_PUB_DATE_SQL`
   takes `medline_date` whole when present, else assembles
   `year + normalize_month(month) + day`. It calls `_normalize_month_sql('la.pub_month')`

@@ -251,6 +251,29 @@ def _strip_sql(expr: str) -> str:
     )
 
 
+def normalize_day(raw: str | None) -> str:
+    """Strip a leading zero from a numeric day, as NCBI ``esummary`` does.
+
+    PubMed's archival XML zero-pads: PMID:35504184 is
+    ``<Year>2022</Year><Month>Aug</Month><Day>01</Day>``, and ``esummary``
+    renders that record's ``pubdate`` as ``"2022 Aug 1"``. Emitting
+    ``"2022 Aug 01"`` would break the parity :func:`pub_date` exists for, and
+    would show up as a ``pub_date`` mismatch on every zero-padded record —
+    which is most days below the tenth, not an edge case.
+
+    Only an ASCII digit string is touched, and the ASCII test is the same one
+    :func:`normalize_month` uses: ``<Day>`` is nominally numeric but nothing
+    enforces it, and a value we cannot read is passed through rather than
+    mangled.
+    """
+    if not raw:
+        return ""
+    raw = raw.strip()
+    if raw.isascii() and raw.isdigit():
+        return str(int(raw))
+    return raw
+
+
 def pub_date(
     year: str | None,
     month: str | None,
@@ -295,7 +318,7 @@ def pub_date(
     normalized_month = normalize_month(month)
     parts = [(year or "").strip(), normalized_month]
     if normalized_month:
-        parts.append((day or "").strip())
+        parts.append(normalize_day(day))
     return " ".join(part for part in parts if part)
 
 
@@ -351,10 +374,19 @@ _MONTH_FOR_DATE_SQL = _normalize_month_sql("la.pub_month")
 
 #: NULL, not ``''``, when the month blanked — ``concat_ws`` skips NULLs, so the
 #: day disappears rather than sitting beside the year and reading as a date.
+#: ``normalize_day`` as SQL: a leading zero comes off an ASCII numeric day, so
+#: ``<Day>01</Day>`` renders ``1`` the way ``esummary`` does. ``TRY_CAST`` is the
+#: ASCII-digit test and the strip in one — it returns NULL for anything that is
+#: not a plain integer, which is exactly the "pass it through" case.
 _STRIPPED_DAY_SQL = _strip_sql("COALESCE(la.pub_day, '')")
+_NORMALIZED_DAY_SQL = (
+    f"CASE WHEN regexp_full_match({_STRIPPED_DAY_SQL}, '[0-9]+') "
+    f"THEN CAST(CAST({_STRIPPED_DAY_SQL} AS BIGINT) AS VARCHAR) "
+    f"ELSE {_STRIPPED_DAY_SQL} END"
+)
 _DAY_FOR_DATE_SQL = (
     f"CASE WHEN {_MONTH_FOR_DATE_SQL} = '' THEN NULL "
-    f"ELSE NULLIF({_STRIPPED_DAY_SQL}, '') END"
+    f"ELSE NULLIF({_NORMALIZED_DAY_SQL}, '') END"
 )
 
 #: ``pub_date``'s logic as SQL. ``concat_ws`` skips NULLs, which is what the

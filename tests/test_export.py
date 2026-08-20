@@ -66,6 +66,10 @@ def test_month_from_medline_date(raw, expected):
          "1998 Dec-1999 Jan"),
         ("year only", ("2019", None, None, None), "2019"),
         ("numeric month normalizes", ("2019", "03", "15", None), "2019 Mar 15"),
+        # The archival XML zero-pads the day and esummary does not. Verified
+        # against live esummary: PMID:35504184 is <Day>01</Day> in efetch and
+        # "2022 Aug 1" in pubdate. Most days below the tenth look like this.
+        ("PMID:35504184 zero-padded day", ("2022", "Aug", "01", None), "2022 Aug 1"),
         ("no date at all", (None, None, None, None), ""),
     ],
 )
@@ -430,7 +434,7 @@ def test_pub_month_sql_matches_python(con):
 #: which is why the twins could disagree on a trailing `\u2003` with the cross
 #: product still green.
 _YEAR_INPUTS = ["2019", "", "  ", None, "\xa02019", "2019\u2003"]
-_DAY_INPUTS = ["15", "", None, "\n15", "15\xa0"]
+_DAY_INPUTS = ["15", "", None, "\n15", "15\xa0", "01", "005", "0", "1a"]
 
 
 def _twin_rows(con, sql: str, columns: list[str], rows: list[tuple]) -> list:

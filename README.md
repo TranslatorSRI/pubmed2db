@@ -6,8 +6,10 @@ JSON (for ingest into Node Annotator / ElasticSearch) and to Parquet (for downlo
 queries).
 
 The JSON export follows the field names of the NCATS Translator
-[DocumentMetadataAPI](https://github.com/NCATSTranslator/DocumentMetadataAPI). The
-database itself uses PubMed's own field names.
+[DocumentMetadataAPI](https://github.com/NCATSTranslator/DocumentMetadataAPI),
+plus three fields of our own: `id`, [`identifiers`](#identifiers-in-the-json-export)
+and [`pub_date`](#pub_date-in-the-json-export). The database itself uses PubMed's
+own field names.
 
 ## How it works
 
