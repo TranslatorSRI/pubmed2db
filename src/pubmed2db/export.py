@@ -222,14 +222,33 @@ def pub_month(month: str | None, medline_date: str | None = None) -> str:
     return normalize_month(month) or normalize_month(_month_from_medline_date(medline_date))
 
 
-#: **Not bare ``trim()``.** SQL ``trim(x)`` strips spaces and nothing else,
-#: where Python's ``.strip()`` strips all whitespace — so a month carrying a tab
-#: or a newline gave ``Mar`` from the Python twin and ``''`` from the SQL.
-#: ``parse._raw_pubdate`` stores ``findtext("Month")`` verbatim, so such a
-#: record exported blank *and* was reported as a ``pub_month`` mismatch against
-#: efetch, which is a CORE_FIELDS error. ``_WS`` is the character set Python
-#: strips, and every ``trim`` below names it.
-_WS = " \t\n\r\f\v"
+#: **Never bare ``trim()``, and never a fixed character list either.** SQL
+#: ``trim(x)`` strips spaces and nothing else, where Python's ``.strip()`` strips
+#: all whitespace — so a month carrying a tab gave ``Mar`` from the Python twin
+#: and ``''`` from the SQL. ``parse._raw_pubdate`` stores ``findtext("Month")``
+#: verbatim, so such a record exported blank *and* was reported as a
+#: ``pub_month`` mismatch against efetch, which is a CORE_FIELDS error.
+#:
+#: The first fix for that named an explicit ASCII set, which closed half the
+#: gap and left the other half open: ``.strip()`` is Unicode-aware, so a
+#: leading ``\xa0`` or a trailing ``\u2003`` still split the twins. In
+#: :data:`_PUB_DATE_SQL` that could flip a *branch* rather than pad a string — a
+#: ``medline_date`` of one non-breaking space is truthy to an ASCII trim and
+#: falsy to ``.strip()``, so one side emitted the whitespace verbatim while the
+#: other assembled the date from its parts.
+#:
+#: So this is a regex strip over the same class :data:`_MEDLINE_SEP_SQL` uses,
+#: and it is the *only* way whitespace is removed below. Verified equal to
+#: ``str.strip()`` over the shapes in ``tests/test_export.py``.
+_STRIP_CLASS_SQL = r"[\s\p{Z}\x0B]"
+
+
+def _strip_sql(expr: str) -> str:
+    """``str.strip()`` as SQL, over an arbitrary expression."""
+    return (
+        f"regexp_replace({expr}, "
+        f"'^{_STRIP_CLASS_SQL}+|{_STRIP_CLASS_SQL}+$', '', 'g')"
+    )
 
 
 def pub_date(
@@ -287,14 +306,15 @@ def _normalize_month_sql(expr: str) -> str:
     ``\\p{L}+`` rather than ``[A-Za-z]+``: Python's ``str.isalpha()`` is
     Unicode-aware, and a non-ASCII spelling must not make the twins disagree.
     """
-    key = f"upper(substr(trim({expr}, E'{_WS}'), 1, 1)) || lower(substr(trim({expr}, E'{_WS}'), 2, 2))"
+    stripped = _strip_sql(f"COALESCE({expr}, '')")
+    key = f"upper(substr({stripped}, 1, 1)) || lower(substr({stripped}, 2, 2))"
     return f"""CASE
-        WHEN trim(COALESCE({expr}, ''), E'{_WS}') = '' THEN ''
-        WHEN regexp_full_match(trim({expr}, E'{_WS}'), '[0-9]+')
-            THEN COALESCE(list_extract({_MONTHS_SQL}, TRY_CAST(trim({expr}, E'{_WS}') AS BIGINT)), '')
-        WHEN list_contains({_MONTHS_SQL}, {key}) AND regexp_full_match(trim({expr}, E'{_WS}'), '\\p{{L}}+')
+        WHEN {stripped} = '' THEN ''
+        WHEN regexp_full_match({stripped}, '[0-9]+')
+            THEN COALESCE(list_extract({_MONTHS_SQL}, TRY_CAST({stripped} AS BIGINT)), '')
+        WHEN list_contains({_MONTHS_SQL}, {key}) AND regexp_full_match({stripped}, '\\p{{L}}+')
             THEN {key}
-        ELSE trim({expr}, E'{_WS}')
+        ELSE {stripped}
     END"""
 
 
@@ -310,33 +330,46 @@ _PUB_MONTH_SQL = (
     f"{_normalize_month_sql(_MEDLINE_MONTH_SQL)})"
 )
 
-#: ``pub_date``'s logic as SQL. Note ``_normalize_month_sql`` is applied to
-#: ``la.pub_month`` *alone*, not to ``_PUB_MONTH_SQL``: the latter already folds
-#: the ``MedlineDate`` back in, which would double-count it on the branch that
-#: only runs when there is no ``MedlineDate``. ``concat_ws`` skips NULLs, which
-#: is what the ``NULLIF(..., '')`` wrappers are for — an absent month must not
-#: leave a double space behind.
+#: The month for the assembled branch. ``_normalize_month_sql('la.pub_month')``
+#: rather than :data:`_PUB_MONTH_SQL`, which would fold the ``MedlineDate`` back
+#: in — *not* because that would double-count anything (the two are provably
+#: equal on this branch, since it only runs when the ``MedlineDate`` is blank
+#: and a blank one contributes ``''``), but because naming the column directly
+#: says what this branch means and skips a ``regexp_extract`` that can only ever
+#: return ``''`` here. An earlier comment claimed a double-count hazard; there
+#: is none, and chasing it would waste a reader's time.
+_MONTH_FOR_DATE_SQL = _normalize_month_sql("la.pub_month")
+
+#: ``pub_date``'s logic as SQL. ``concat_ws`` skips NULLs, which is what the
+#: ``NULLIF(..., '')`` wrappers are for — an absent month must not leave a
+#: double space behind.
 #:
-#: Every ``trim`` names :data:`_WS`, for the reason given above it: bare SQL
-#: ``trim`` strips spaces alone where the Python twin's ``.strip()`` strips all
-#: whitespace. Verified to matter here, not inherited on faith — a
-#: ``MedlineDate`` of ``"\t1998 Spring"`` and a ``pub_day`` of ``"\n15"`` each
-#: made the twins disagree while this used bare ``trim``.
+#: Whitespace goes through :func:`_strip_sql`, never ``trim``. It matters more
+#: here than anywhere else: this expression *branches* on whether the
+#: ``medline_date`` is blank, so a value of one non-breaking space that an
+#: ASCII trim calls non-empty and ``.strip()`` calls empty does not pad a
+#: string — it makes the two implementations emit entirely different dates.
 _PUB_DATE_SQL = f"""CASE
-        WHEN trim(COALESCE(la.medline_date, ''), E'{_WS}') <> ''
-            THEN trim(la.medline_date, E'{_WS}')
-        ELSE trim(concat_ws(' ',
-            NULLIF(trim(COALESCE(la.pub_year, ''), E'{_WS}'), ''),
-            NULLIF({_normalize_month_sql('la.pub_month')}, ''),
-            NULLIF(trim(COALESCE(la.pub_day, ''), E'{_WS}'), '')), E'{_WS}')
+        WHEN {_strip_sql("COALESCE(la.medline_date, '')")} <> ''
+            THEN {_strip_sql("la.medline_date")}
+        ELSE {_strip_sql("concat_ws(' ', " + ", ".join([
+            "NULLIF(" + _strip_sql("COALESCE(la.pub_year, '')") + ", '')",
+            "NULLIF(" + _MONTH_FOR_DATE_SQL + ", '')",
+            "NULLIF(" + _strip_sql("COALESCE(la.pub_day, '')") + ", '')",
+        ]) + ")")}
     END"""
 
 #: ``_year_from_medline_date``'s fallback, same pattern, same pinning test
 #: (``test_pub_year_sql_matches_year_from_medline_date``). ``regexp_extract``
 #: returns ``''`` when nothing matches, which is already the spec's value.
+#: The leading-whitespace class has to be the RE2 one here too, for the same
+#: reason :data:`_MEDLINE_SEP_SQL` does: Python's ``^\s*`` skips a leading
+#: ``\xa0`` and RE2's does not, so such a record recovered its year in
+#: ``validate`` and exported blank.
+_MEDLINE_YEAR_PATTERN_SQL = rf"^{_STRIP_CLASS_SQL}*(\d{{4}})"
 _PUB_YEAR_SQL = (
     "COALESCE(NULLIF(la.pub_year, ''), "
-    f"regexp_extract(COALESCE(la.medline_date, ''), '{_MEDLINE_YEAR_RE.pattern}', 1))"
+    f"regexp_extract(COALESCE(la.medline_date, ''), '{_MEDLINE_YEAR_PATTERN_SQL}', 1))"
 )
 
 #: The JSON record: output field name -> SQL expression, in emitted order.

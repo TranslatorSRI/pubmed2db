@@ -387,7 +387,11 @@ _MONTH_INPUTS = ["3", "03", " 3 ", "Mar", "March", "Sept", "SEPTEMBER", "sep",
                  "Spring", "Sep-Dec", "Winter", "Frühling",
                  "13", "0", "99999999999999999999", "", "  ", None,
                  "\tMar", "3\n", "\n3", "\r\nMarch\t", "\t\n", "\tSep-Dec",
-                 "²", "١٢", "3²"]
+                 "²", "١٢", "3²",
+                 # Unicode whitespace at the *edges*: `.strip()` removes it and
+                 # an ASCII-only SQL trim does not, which is the half of the
+                 # whitespace bug the first fix left open.
+                 "\xa0Mar", "Mar\u2003", "\xa03", "\u2003"]
 #: The non-ASCII and vertical-tab separators are the cases the pinning test
 #: could not previously reach: every entry used a plain space, so it could not
 #: see that RE2's `\s` is `[\t\n\f\r ]` while Python's includes `\v` and
@@ -396,6 +400,9 @@ _MONTH_INPUTS = ["3", "03", " 3 ", "Mar", "March", "Sept", "SEPTEMBER", "sep",
 _MEDLINE_INPUTS = ["1998 Spring", "1994 Sep-Dec", "1978 Jul-Aug", "1998 September",
                    "1998 Dec-1999 Jan", "1999-2000",
                    "1998\xa0Spring", "1998\x0bSpring", "1998\u2003Sep-Dec",
+                   # ...and at the edges, where a blank-vs-not answer decides
+                   # which branch of _PUB_DATE_SQL runs at all.
+                   "\xa01998 Spring", "1998 Spring\u2003", "\xa0", "\u2003\xa0",
                    "  2001 Winter", "n.d.", "Spring 1998", "12345", "", None]
 
 
@@ -407,22 +414,44 @@ def test_pub_month_sql_matches_python(con):
     The full cross product, not each input alone: the SQL falls through from the
     column to the MedlineDate, so the two sources interact.
     """
+    import itertools
+
     from pubmed2db.export import _PUB_MONTH_SQL, pub_month
 
-    for month in _MONTH_INPUTS:
-        for medline in _MEDLINE_INPUTS:
-            got = con.execute(
-                f"SELECT {_PUB_MONTH_SQL} "
-                "FROM (SELECT ? AS pub_month, ? AS medline_date) la",
-                [month, medline],
-            ).fetchone()[0]
-            assert got == pub_month(month, medline), f"{month=!r} {medline=!r}"
+    rows = list(itertools.product(_MONTH_INPUTS, _MEDLINE_INPUTS))
+    got = _twin_rows(con, _PUB_MONTH_SQL, ["pub_month", "medline_date"], rows)
+    for (month, medline), value in zip(rows, got):
+        assert value == pub_month(month, medline), f"{month=!r} {medline=!r}"
 
 
 #: Years and days to pair with the month/MedlineDate lists above. Kept small --
 #: the pub_date parity test is a 4-way cross product.
-_YEAR_INPUTS = ["2019", "", "  ", None]
-_DAY_INPUTS = ["15", "", None]
+#: Both carry Unicode whitespace at an edge: every entry here used to be ASCII,
+#: which is why the twins could disagree on a trailing `\u2003` with the cross
+#: product still green.
+_YEAR_INPUTS = ["2019", "", "  ", None, "\xa02019", "2019\u2003"]
+_DAY_INPUTS = ["15", "", None, "\n15", "15\xa0"]
+
+
+def _twin_rows(con, sql: str, columns: list[str], rows: list[tuple]) -> list:
+    """Evaluate a twin SQL expression once per row, in a single query.
+
+    One `con.execute` per combination turns the 4-way `pub_date` product into
+    ~17k round trips and 50s of suite time; registering the inputs as one table
+    and projecting the expression over it is the same assertions in under a
+    second. The column names are the ones the expressions reference (`la.*`).
+    """
+    import pyarrow as pa
+
+    table = pa.table({
+        name: pa.array([row[i] for row in rows], type=pa.string())
+        for i, name in enumerate(columns)
+    })
+    con.register("_twin_inputs", table)
+    try:
+        return [r[0] for r in con.execute(f"SELECT {sql} FROM _twin_inputs la").fetchall()]
+    finally:
+        con.unregister("_twin_inputs")
 
 
 def test_pub_date_sql_matches_python(con):
@@ -433,31 +462,27 @@ def test_pub_date_sql_matches_python(con):
     notably an absent month leaving a double space in one implementation but not
     the other.
     """
+    import itertools
+
     from pubmed2db.export import _PUB_DATE_SQL, pub_date
 
-    for year in _YEAR_INPUTS:
-        for month in _MONTH_INPUTS:
-            for day in _DAY_INPUTS:
-                for medline in _MEDLINE_INPUTS:
-                    got = con.execute(
-                        f"SELECT {_PUB_DATE_SQL} FROM (SELECT ? AS pub_year, ? AS pub_month,"
-                        " ? AS pub_day, ? AS medline_date) la",
-                        [year, month, day, medline],
-                    ).fetchone()[0]
-                    assert got == pub_date(year, month, day, medline), (
-                        f"{year=!r} {month=!r} {day=!r} {medline=!r}"
-                    )
+    rows = list(itertools.product(_YEAR_INPUTS, _MONTH_INPUTS, _DAY_INPUTS, _MEDLINE_INPUTS))
+    got = _twin_rows(
+        con, _PUB_DATE_SQL, ["pub_year", "pub_month", "pub_day", "medline_date"], rows
+    )
+    for (year, month, day, medline), value in zip(rows, got):
+        assert value == pub_date(year, month, day, medline), (
+            f"{year=!r} {month=!r} {day=!r} {medline=!r}"
+        )
 
 
 def test_pub_year_sql_matches_year_from_medline_date(con):
     """Same contract for the MedlineDate year fallback."""
     from pubmed2db.export import _PUB_YEAR_SQL, _year_from_medline_date
 
-    for raw in _MEDLINE_INPUTS:
-        got = con.execute(
-            f"SELECT {_PUB_YEAR_SQL} FROM (SELECT NULL AS pub_year, ? AS medline_date) la",
-            [raw],
-        ).fetchone()[0]
+    rows = [(None, raw) for raw in _MEDLINE_INPUTS]
+    got_all = _twin_rows(con, _PUB_YEAR_SQL, ["pub_year", "medline_date"], rows)
+    for raw, got in zip(_MEDLINE_INPUTS, got_all):
         assert got == _year_from_medline_date(raw), f"medline_date={raw!r}"
 
 
