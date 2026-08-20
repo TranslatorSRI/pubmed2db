@@ -102,6 +102,62 @@ def test_offline_structure_passes(export_dir):
     assert report["checks"]["structure"]["records_total"] == 2
 
 
+def test_structure_reports_identifier_coverage(export_dir):
+    """The share of records carrying each identifier type is reported.
+
+    No check gates on it — one export in isolation cannot say whether 96% or 6%
+    is right — but a collapse between two runs is invisible without the number.
+    """
+    report = validate.run_validation(export_dir, online=False)
+    coverage = report["checks"]["structure"]["identifier_coverage"]
+    assert coverage["doi"] == {"records": 1, "pct": 50.0}
+    assert coverage["PMCID"] == {"records": 1, "pct": 50.0}
+    assert "50.0% doi" in validate.format_summary(report)
+
+
+def test_a_shard_that_vanishes_is_reported_not_raised(export_dir, monkeypatch):
+    """`export` publishes in place, so a shard can go between find_shards and the
+    read. That is the half-written export this check exists to catch -- it must
+    land in `unreadable_shards`, not take the whole run down."""
+    shards = [*validate.find_shards(export_dir), export_dir / "pubmed_metadata_09999.ndjson"]
+    monkeypatch.setattr(validate, "find_shards", lambda _: shards)
+
+    report = validate.run_validation(export_dir, online=False)
+
+    unreadable = report["checks"]["structure"]["unreadable_shards"]
+    assert [entry["shard"] for entry in unreadable] == ["pubmed_metadata_09999.ndjson"]
+    # The surviving shard was still read.
+    assert report["checks"]["structure"]["records_total"] == 2
+
+
+def test_offline_run_does_not_announce_entrez_work(export_dir, caplog):
+    """An --offline run announcing "comparing N records against Entrez" would
+    contradict its own start line: check_fields returns immediately offline."""
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="pubmed2db.validate"):
+        validate.run_validation(export_dir, online=False)
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("offline (no Entrez checks)" in m for m in messages), messages
+    assert not any("against Entrez" in m for m in messages), messages
+
+
+def test_duplicate_examples_are_distinct_pmids(export_dir):
+    """One PMID exported many times must not consume every example slot.
+
+    The example list is capped, so listing the same offender 25 times would
+    hide 19 other duplicated PMIDs behind a single bug.
+    """
+    _append_to_shard(
+        export_dir,
+        *(json.dumps({**_valid_doc(), "id": "PMID:1001"}) for _ in range(25)),
+    )
+
+    structure = validate.run_validation(export_dir, online=False)["checks"]["structure"]
+    assert structure["duplicate_pmids"] == [1001]
+
+
 def test_malformed_and_structural_errors(export_dir):
     _append_to_shard(
         export_dir,
@@ -153,7 +209,7 @@ def test_coverage_warns_outside_default_band(export_dir, loaded_con, monkeypatch
 
 def test_field_validation_matches(export_dir, loaded_con, monkeypatch):
     """Also guards that identifiers compare as a *set*: the export sorts them
-    (`PMC:` before `doi:`) while `_EFETCH` lists them in document order
+    (`PMCID:` before `doi:`) while `_EFETCH` lists them in document order
     (doi first), so an order-sensitive comparison fails here."""
     monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
     report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
@@ -176,15 +232,38 @@ def test_field_validation_flags_mismatch(export_dir, loaded_con, monkeypatch):
 
 
 def test_field_validation_flags_identifier_mismatch(export_dir, loaded_con, monkeypatch):
-    """A DOI that disagrees with Entrez is caught like any other core field."""
+    """A DOI that disagrees with Entrez is reported, but only as advisory.
+
+    Identifiers are deliberately outside the gated core-field rate: a PMCID
+    assigned upstream since our last update file is not an export defect, and
+    it lands on the same ahead-of-print records that already mismatch on
+    volume/issue. See the comment at the comparison.
+    """
     tampered = dict(_EFETCH)
     tampered[1001] = _EFETCH[1001].replace("10.1038/example1001", "10.1038/somethingelse")
     monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(tampered))
     report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
-    mismatched = report["checks"]["field_validation"]["mismatches"]
-    entry = next(m for m in mismatched if m["field"] == "identifiers" and m["pmid"] == 1001)
+    checks = report["checks"]["field_validation"]
+    entry = next(m for m in checks["identifier_mismatches"] if m["pmid"] == 1001)
     assert "doi:10.1038/somethingelse" in entry["entrez"]
     assert "doi:10.1038/example1001" in entry["exported"]
+    assert not any(m["field"] == "identifiers" for m in checks["mismatches"])
+    statuses = {c["name"]: c["status"] for c in report["checks_run"]}
+    assert statuses["identifiers-soft"] == "warn"
+    assert statuses["core-fields"] != "fail"
+
+
+def test_identifier_comparison_ignores_doi_case(export_dir, loaded_con, monkeypatch):
+    """A case-only DOI change is not a difference in the data.
+
+    DOIs are case-insensitive by specification and PubMed is not consistent
+    about its own, so folding case here keeps a re-cased DOI out of the report.
+    """
+    recased = dict(_EFETCH)
+    recased[1001] = _EFETCH[1001].replace("10.1038/example1001", "10.1038/EXAMPLE1001")
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(recased))
+    report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
+    assert report["checks"]["field_validation"]["identifier_mismatches"] == []
 
 
 def test_efetch_identifiers_exclude_cited_references(monkeypatch):
@@ -204,7 +283,7 @@ def test_efetch_identifiers_exclude_cited_references(monkeypatch):
     monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory({1001: with_refs}))
     docs = validate.efetch_documents([1001], api_key=None, email="me@example.com")
     assert docs[1001]["identifiers"] == [
-        "PMID:1001", "doi:10.1038/example1001", "PMC:PMC7654321",
+        "PMID:1001", "doi:10.1038/example1001", "PMCID:PMC7654321",
     ]
 
 
@@ -500,6 +579,144 @@ def test_medline_date_year_is_not_a_false_mismatch(export_dir, loaded_con, monke
     assert fetched[1003]["pub_year"] == "1998"
     assert [m for m in report["checks"]["field_validation"]["mismatches"]
             if m["field"] == "pub_year"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Failure modes the checks must survive rather than crash on
+# --------------------------------------------------------------------------- #
+
+
+def test_truncated_shard_is_reported_not_raised(export_dir):
+    """A shard cut off mid-write (a killed export) is a finding, not a traceback."""
+    import gzip as _gzip
+
+    shard = export_dir / "truncated.ndjson.gz"
+    with _gzip.open(shard, "wt", encoding="utf-8") as handle:
+        handle.write(json.dumps(_valid_doc()) + "\n")
+    shard.write_bytes(shard.read_bytes()[:-8])  # lose the end-of-stream marker
+
+    report = validate.run_validation(export_dir, online=False)
+    assert report["status"] == "fail"
+    assert any(e["code"] == "unreadable_shard" for e in report["errors"])
+    assert report["checks"]["structure"]["unreadable_shards"][0]["shard"] == shard.name
+
+
+def test_examples_are_capped_but_counted():
+    """Findings keep their full count while retaining only a few examples."""
+    found = validate._Examples()
+    for i in range(validate._MAX_EXAMPLES + 500):
+        found.append({"line": i})
+    assert len(found) == validate._MAX_EXAMPLES + 500
+    assert len(found.examples) == validate._MAX_EXAMPLES
+
+
+def test_offline_results_survive_an_entrez_outage(export_dir, loaded_con, monkeypatch):
+    """A mid-run network failure must not discard the offline checks or the manifest."""
+    def dead(endpoint, params, **_):
+        if endpoint == "efetch.fcgi":
+            raise RuntimeError("eutils efetch.fcgi failed after 3 attempts")
+        return _fake_eutils_factory(_EFETCH)(endpoint, params)
+
+    monkeypatch.setattr(validate, "_eutils", dead)
+    report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
+
+    assert report["checks"]["structure"]["records_total"] == 2
+    assert any(w["code"] == "field_check_unreachable" for w in report["warnings"])
+    assert report["checks"]["field_validation"] == {"sampled": 2, "checked": 0}
+
+
+def test_a_failed_run_writes_no_manifest(export_dir, monkeypatch, tmp_path, caplog):
+    """A manifest is the next run's baseline, so a failed run must not leave one.
+
+    05-validate.sbatch passes --manifest on every cluster run, which makes this
+    the default path rather than a deliberate choice. A truncated or half-written
+    export yields a short PMID set; adopting it as the baseline makes the *next*
+    run report the recovered corpus as "N added" while the real drops go
+    unnoticed -- the one comparison the manifest exists for.
+    """
+    import logging
+
+    # An unreadable shard is a FAIL, and is exactly the half-written export the
+    # structure check exists to catch.
+    shards = [*validate.find_shards(export_dir), export_dir / "pubmed_metadata_09999.ndjson"]
+    monkeypatch.setattr(validate, "find_shards", lambda _: shards)
+
+    manifest = tmp_path / "pmids.txt.gz"
+    with caplog.at_level(logging.WARNING, logger="pubmed2db.validate"):
+        report = validate.run_validation(export_dir, online=False, manifest_out=manifest)
+
+    assert report["status"] == "fail"
+    assert not manifest.exists()
+    # The report must not claim a manifest it did not write, or the next run's
+    # operator goes looking for a file that is not there.
+    assert report["inputs"]["manifest_written"] is None
+    assert any("not writing the PMID manifest" in r.getMessage() for r in caplog.records)
+
+
+def test_a_warning_still_writes_a_manifest(export_dir, loaded_con, monkeypatch, tmp_path):
+    """WARN is not FAIL: the usual warning says nothing about the PMID set.
+
+    "Entrez was unreachable" is a statement about the network, not about the
+    shard read that built the set -- and refusing to write on it would mean a
+    cluster with flaky egress never accumulates a baseline at all.
+    """
+    def dead(endpoint, params, **_):
+        if endpoint == "efetch.fcgi":
+            raise RuntimeError("eutils efetch.fcgi failed after 3 attempts")
+        return _fake_eutils_factory(_EFETCH)(endpoint, params)
+
+    monkeypatch.setattr(validate, "_eutils", dead)
+    manifest = tmp_path / "pmids.txt.gz"
+    report = validate.run_validation(
+        export_dir, con=loaded_con, email="me@example.com", manifest_out=manifest
+    )
+
+    assert report["status"] == "warn"
+    assert validate.read_manifest(manifest) == {1001, 1003}
+    assert report["inputs"]["manifest_written"] == str(manifest)
+
+
+def test_permanent_http_errors_are_not_retried(monkeypatch):
+    """A 4xx (a bad api_key, say) fails on the first call: retrying cannot fix it."""
+    import requests
+
+    calls = []
+
+    class _Resp:
+        status_code = 400
+
+        def raise_for_status(self):
+            raise requests.HTTPError("400 Client Error", response=self)
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append(url)
+        return _Resp()
+
+    monkeypatch.setattr(validate.requests, "get", fake_get)
+    monkeypatch.setattr(validate.time, "sleep", lambda _: pytest.fail("slept on a 4xx"))
+
+    with pytest.raises(RuntimeError, match="after 1 attempt"):
+        validate._eutils("einfo.fcgi", {"db": "pubmed"}, api_key="bad", email=None)
+    assert len(calls) == 1
+
+
+def test_reinstated_pmid_is_not_an_explained_drop(export_dir, loaded_con, tmp_path):
+    """A PMID deleted then re-added is live, so losing it from the export is an error."""
+    # 1002 is deleted in the fixtures; re-add it as a later version, which is
+    # what latest_article resolves to. The export predates that, so it is absent.
+    loaded_con.execute(
+        "INSERT INTO article (pmid, source_file, file_order_key, article_title, loaded_at)"
+        " VALUES (1002, 'pubmed25n0009.xml.gz', 25000009, 'Reinstated.', now())"
+    )
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1002, 1003}, manifest)
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, online=False
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["explained_by_deletion"] == []
+    assert drops["unexplained"] == [1002]
 
 
 def test_start_line_reports_api_key_state_without_the_key(export_dir, monkeypatch, caplog):

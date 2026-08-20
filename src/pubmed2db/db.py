@@ -40,16 +40,20 @@ def connect(
 ) -> duckdb.DuckDBPyConnection:
     """Open (creating if needed) the DuckDB database and ensure the schema.
 
-    ``threads`` caps DuckDB's thread pool, which otherwise sizes itself from the
-    machine's core count and so oversubscribes a Slurm allocation smaller than
-    the node. ``temp_directory`` is where DuckDB spills when a query exceeds its
-    memory budget — worth pointing at local scratch for `export`.
+    ``threads`` caps DuckDB's thread pool. It is rarely needed: DuckDB reads the
+    Slurm cgroup's CPU quota and already sizes the pool from ``--cpus-per-task``
+    (measured on duckdb 1.5.4 — 2 threads under ``--cpus-per-task=2`` on a
+    64-core node), falling back to the core count off a cluster. Pass it to
+    leave headroom on a busy node, not to rescue an oversubscribed allocation.
+    ``temp_directory`` is where DuckDB spills when a query exceeds its memory
+    budget — worth pointing at local scratch for `export`.
 
-    ``memory_limit`` (e.g. ``"48GB"``) caps DuckDB's buffer pool. It has the same
-    problem ``threads`` does, and it matters more: left alone DuckDB sets the
-    limit to ~80% of the *machine's* physical RAM, so on a large node it will
-    happily cache its way past a much smaller ``--mem`` cgroup and be OOM-killed.
-    Set it below your allocation on any long load.
+    ``memory_limit`` (e.g. ``"48GB"``) caps DuckDB's buffer pool. Its default is
+    allocation-scaled the same way — ~76% of ``--mem`` — so this is not about a
+    node-sized cache either. What that limit does *not* cover is the problem:
+    the lxml tree, the parsed records and the Arrow batch share the same cgroup
+    and get only the remaining quarter. Set it a margin below your allocation on
+    any long load to widen that headroom.
     """
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,13 +75,24 @@ def init_schema(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(schema_sql)
 
 
+#: Shared "downloaded but not (re)loaded" predicate: a file is pending if it was
+#: downloaded but never processed, or downloaded again since its last load (a
+#: changed published MD5). Used by :func:`pubmed2db.status.pending_file_count`
+#: and :func:`pubmed2db.status.summarize`, and by
+#: :func:`pubmed2db.load.needs_load`'s single-file check, so the rule can't
+#: drift apart between its callers.
+NEEDS_LOAD_SQL = (
+    "downloaded_at IS NOT NULL AND (processed_at IS NULL OR downloaded_at > processed_at)"
+)
+
+
 def register_source_file(
     con: duckdb.DuckDBPyConnection,
     file_name: str,
     *,
     kind: str,
     published_md5: str | None = None,
-    downloaded_at: bool = True,
+    mark_downloaded: bool = True,
 ) -> None:
     """Insert or update a row in the ``source_file`` registry.
 
@@ -85,7 +100,7 @@ def register_source_file(
     ``processed_at``/``n_articles`` from any prior load.
     """
     year_yy, file_number, order_key = parse_file_name(file_name)
-    ts = datetime.now(timezone.utc) if downloaded_at else None
+    ts = datetime.now(timezone.utc) if mark_downloaded else None
     con.execute(
         """
         INSERT INTO source_file

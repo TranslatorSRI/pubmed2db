@@ -11,7 +11,6 @@ import pytest
 from click.testing import CliRunner
 
 from pubmed2db.cli import main
-from tests.conftest import SAMPLE_JOURNALS
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess:
@@ -29,21 +28,8 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess:
     )
 
 
-def _build_db(con, gz_fixture):
-    from pubmed2db.load import load_file
-
-    load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
-    load_file(con, gz_fixture("pubmed25n0002"), kind="update")
-    con.executemany("INSERT INTO journal VALUES (?,?,?,?,?,?,?)", SAMPLE_JOURNALS)
-
-
-def test_cli_export_json(tmp_path, gz_fixture):
-    from pubmed2db.db import connect
-
-    db_path = tmp_path / "cli.duckdb"
-    con = connect(db_path)
-    _build_db(con, gz_fixture)
-    con.close()  # release the DuckDB file lock before the CLI opens it
+def test_cli_export_json(tmp_path, loaded_db):
+    db_path = loaded_db
 
     out_dir = tmp_path / "out"
     result = CliRunner().invoke(
@@ -63,13 +49,8 @@ def test_cli_export_json(tmp_path, gz_fixture):
     assert docs["PMID:1001"]["pub_month"] == "Mar"
 
 
-def test_cli_export_warns_on_wrong_format_flag(tmp_path, gz_fixture):
-    from pubmed2db.db import connect
-
-    db_path = tmp_path / "cli.duckdb"
-    con = connect(db_path)
-    _build_db(con, gz_fixture)
-    con.close()
+def test_cli_export_warns_on_wrong_format_flag(tmp_path, loaded_db):
+    db_path = loaded_db
 
     result = CliRunner().invoke(
         main,
@@ -82,13 +63,8 @@ def test_cli_export_warns_on_wrong_format_flag(tmp_path, gz_fixture):
     assert "--latest" not in result.output
 
 
-def test_cli_export_parquet(tmp_path, gz_fixture):
-    from pubmed2db.db import connect
-
-    db_path = tmp_path / "cli.duckdb"
-    con = connect(db_path)
-    _build_db(con, gz_fixture)
-    con.close()
+def test_cli_export_parquet(tmp_path, loaded_db):
+    db_path = loaded_db
 
     out_dir = tmp_path / "pq"
     result = CliRunner().invoke(
@@ -124,14 +100,9 @@ def test_cli_export_without_load_errors(tmp_path):
     assert "load" in result.output.lower()
 
 
-def test_cli_status_reports_pipeline_state(tmp_path, gz_fixture):
+def test_cli_status_reports_pipeline_state(loaded_db):
     """`status` runs read-only and reports each step's state."""
-    from pubmed2db.db import connect
-
-    db_path = tmp_path / "cli.duckdb"
-    con = connect(db_path)
-    _build_db(con, gz_fixture)
-    con.close()
+    db_path = loaded_db
 
     result = CliRunner().invoke(main, ["--db", str(db_path), "status"])
     assert result.exit_code == 0, result.output
@@ -139,6 +110,27 @@ def test_cli_status_reports_pipeline_state(tmp_path, gz_fixture):
     assert "Load:" in result.output
     assert "latest document(s)" in result.output
     assert "Export:    ready" in result.output
+
+
+def test_cli_status_flags_a_second_baseline_year(loaded_db):
+    """A new baseline year stores every PMID twice; `status` should say so."""
+    from pubmed2db.db import connect, register_source_file
+
+    db_path = loaded_db
+    con = connect(db_path)
+    register_source_file(con, "pubmed25n0001.xml.gz", kind="baseline")
+    con.close()
+
+    result = CliRunner().invoke(main, ["--db", str(db_path), "status"])
+    assert "baseline years" not in result.output
+
+    con = connect(db_path)
+    register_source_file(con, "pubmed26n0001.xml.gz", kind="baseline")
+    con.close()
+
+    result = CliRunner().invoke(main, ["--db", str(db_path), "status"])
+    assert "2 baseline years present (2025, 2026)" in result.output
+    assert "only 2026 is exported" in result.output
 
 
 def test_record_run_roundtrip(tmp_path):
@@ -173,45 +165,9 @@ def test_connect_applies_duckdb_tuning(tmp_path):
         con.close()
 
 
-def _setting(con, name: str) -> str:
-    return con.execute(f"SELECT current_setting('{name}')").fetchone()[0]
-
-
-def _as_bytes(value: str) -> float:
-    """Parse DuckDB's '953.6 MiB' / '12.7 GiB' back into a number."""
-    number, unit = value.split()
-    return float(number) * {"KiB": 1024, "MiB": 1024**2, "GiB": 1024**3}[unit]
-
-
-def test_connect_memory_limit_is_below_machine_default(tmp_path):
-    """An explicit limit must actually shrink the default, not sit alongside it.
-
-    Left alone DuckDB sets this from the *machine's* physical RAM, which on a
-    cluster node is far above the Slurm --mem the process really has -- the
-    reason a long load's memory climbs until it is OOM-killed.
-    """
-    from pubmed2db.db import connect
-
-    default_con = connect(tmp_path / "default.duckdb")
-    capped_con = connect(tmp_path / "capped.duckdb", memory_limit="1GB")
-    try:
-        default = _as_bytes(_setting(default_con, "memory_limit"))
-        capped = _as_bytes(_setting(capped_con, "memory_limit"))
-        assert capped < default
-        assert capped == pytest.approx(10**9, rel=0.01)
-    finally:
-        default_con.close()
-        capped_con.close()
-
-
-def test_cli_threads_and_temp_dir_options(tmp_path, gz_fixture):
+def test_cli_threads_and_temp_dir_options(tmp_path, loaded_db):
     """The group-level DuckDB tuning options reach the connection."""
-    from pubmed2db.db import connect
-
-    db_path = tmp_path / "cli.duckdb"
-    con = connect(db_path)
-    _build_db(con, gz_fixture)
-    con.close()
+    db_path = loaded_db
 
     result = CliRunner().invoke(
         main,
@@ -222,12 +178,72 @@ def test_cli_threads_and_temp_dir_options(tmp_path, gz_fixture):
     assert "Export:    ready" in result.output
 
 
+def _setting(con, name: str) -> str:
+    return con.execute(f"SELECT current_setting('{name}')").fetchone()[0]
+
+
+#: DuckDB reports a size in whichever unit fits, and the *default* limit is
+#: sized from the machine — on a large-memory cluster node that is TiB, so a
+#: GiB-only ladder turns this test into a KeyError on exactly the hardware it
+#: is written for.
+_UNITS = {"bytes": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3,
+          "TiB": 1024**4, "PiB": 1024**5}
+
+
+def _as_bytes(value: str) -> float:
+    """Parse DuckDB's '953.6 MiB' / '12.7 GiB' back into a number."""
+    number, unit = value.split()
+    return float(number) * _UNITS[unit]
+
+
+def test_connect_memory_limit_is_below_the_default(tmp_path):
+    """An explicit limit must actually shrink the default, not sit alongside it.
+
+    The cap is derived from the observed default rather than hard-coded. DuckDB
+    sizes that default from the cgroup (#36), so a fixed 1GB is only below it on
+    a machine with enough memory -- in a small container the default itself can
+    be under a gigabyte and the comparison inverts, failing a run in which
+    memory_limit was applied perfectly correctly.
+    """
+    from pubmed2db.db import connect
+
+    default_con = connect(tmp_path / "default.duckdb")
+    try:
+        default = _as_bytes(_setting(default_con, "memory_limit"))
+    finally:
+        default_con.close()
+
+    wanted = default / 2
+    capped_con = connect(tmp_path / "capped.duckdb", memory_limit=f"{int(wanted)}B")
+    try:
+        capped = _as_bytes(_setting(capped_con, "memory_limit"))
+    finally:
+        capped_con.close()
+
+    # The property under test: the explicit limit *replaces* the default.
+    assert capped < default
+    # And lands near what was asked for -- a sanity band, not a round-trip.
+    # DuckDB does not echo this setting back verbatim: it reports a 6.2 GiB
+    # request as "6.1 GiB" and a 1GB one as "953.6 MiB", so an exact comparison
+    # fails on the value the machine happens to hand it.
+    assert capped == pytest.approx(wanted, rel=0.05)
+
+
+def test_cli_rejects_a_non_positive_limit(tmp_path):
+    """`--limit 0` must not fall through to a full-corpus download."""
+    result = CliRunner().invoke(
+        main, ["--db", str(tmp_path / "cli.duckdb"), "download", "--limit", "0"]
+    )
+    assert result.exit_code != 0
+    assert "--limit" in result.output
+
+
 def test_cli_load_scans_download_directory(staged_download):
     """`load` with no explicit files finds them via its pystow directory scan."""
     db_path = staged_download / "cli.duckdb"
     result = _run_cli("--data-dir", str(staged_download), "--db", str(db_path), "load")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "Loaded 2 of 2 file(s)." in result.stdout
+    assert "Loaded 2 file(s); 2 local file(s) checked." in result.stdout
 
     from pubmed2db.db import connect
 
@@ -296,3 +312,86 @@ def test_cli_export_then_validate_needs_no_flags(staged_download):
     assert validate.returncode == 0, validate.stdout + validate.stderr
     assert "Validation PASS" in validate.stdout
     assert "2 record(s)" in validate.stdout
+
+
+def test_cli_rejects_a_non_positive_shard_count(tmp_path):
+    """`--shards 0` is a usage error, not a traceback out of export_json."""
+    result = CliRunner().invoke(
+        main,
+        [
+            "--db", str(tmp_path / "cli.duckdb"),
+            "export", "--format", "json", "--out", str(tmp_path / "out"),
+            "--shards", "0",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "--shards" in result.output
+
+
+def test_cli_update_survives_a_failed_journal_refresh(staged_download, monkeypatch):
+    """A journal-overview outage must not throw away a completed download and
+    skip the load -- `update` is documented for scheduled runs."""
+    from pathlib import Path
+
+    from pubmed2db import cli, download, load
+
+    files = [
+        (path, "baseline" if path.parent.name == "baseline" else "update")
+        for path in Path(staged_download).glob("pubmed/*/*.xml.gz")
+    ]
+    monkeypatch.setattr(download, "local_files", lambda: files)
+    monkeypatch.setattr(download, "sync", lambda con, **kwargs: [])
+
+    def boom(con):
+        raise RuntimeError("NLM Catalog unreachable")
+
+    monkeypatch.setattr(load, "load_journals", boom)
+
+    db_path = staged_download / "cli.duckdb"
+    result = CliRunner().invoke(main, ["--db", str(db_path), "update"])
+    assert result.exit_code == 0, result.output
+    assert "Journal refresh failed" in result.output
+
+    from pubmed2db.db import connect
+
+    con = connect(db_path)
+    assert con.execute("SELECT count(*) FROM article").fetchone()[0] > 0
+    con.close()
+
+
+#: The three group-level DuckDB knobs, and the environment variable each reads.
+#: `show_envvar=True` is what puts these names in `--help`; --memory-limit
+#: originally spelled its own out in prose instead, which is a second copy that
+#: can drift from the `envvar=` argument beside it.
+DUCKDB_KNOBS = [
+    ("--threads", "PUBMED2DB_THREADS"),
+    ("--temp-dir", "PUBMED2DB_DUCKDB_TEMP_DIR"),
+    ("--memory-limit", "PUBMED2DB_DUCKDB_MEMORY_LIMIT"),
+]
+
+
+@pytest.mark.parametrize("option,envvar", DUCKDB_KNOBS)
+def test_duckdb_knobs_advertise_their_env_var(option, envvar):
+    """`--help` names each knob's environment variable, via click not prose."""
+    result = CliRunner().invoke(main, ["--help"])
+    assert result.exit_code == 0, result.output
+    assert option in result.output
+    # click wraps help to the terminal width, so "[env var:" and the name can
+    # land on different lines. Collapse whitespace before matching.
+    flattened = " ".join(result.output.split())
+    # click renders these as "[env var: NAME; ...]" only when show_envvar is set.
+    assert f"env var: {envvar}" in flattened
+
+
+def test_env_var_names_are_written_down_once():
+    """No knob repeats its env var in the help *text* as well as the marker.
+
+    Two copies in one help string is what this replaced; the `[env var: ...]`
+    marker click generates is the single source.
+    """
+    result = CliRunner().invoke(main, ["--help"])
+    for _option, envvar in DUCKDB_KNOBS:
+        assert result.output.count(envvar) == 1, (
+            f"{envvar} appears more than once in --help; the click marker "
+            "should be its only mention"
+        )

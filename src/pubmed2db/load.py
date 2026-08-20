@@ -16,9 +16,8 @@ import duckdb
 import pyarrow as pa
 from pubmed_downloader.utils import Collective
 
-from .db import parse_file_name, record_run
+from .db import NEEDS_LOAD_SQL, parse_file_name, record_run
 from .parse import ParsedArticle, ParsedFile, parse_file
-from .status import NEEDS_LOAD_SQL
 from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
@@ -118,28 +117,21 @@ def _article_rows(parsed: ParsedArticle, source_file: str, order_key: int) -> di
 #: Name under which a per-table batch is registered for the bulk insert below.
 _BATCH = "_load_batch"
 
-#: Bulk-insert SQL per table. Each row batch is registered as an Arrow table and
-#: inserted columnar via ``INSERT ... SELECT``, which is ~25x faster than
-#: row-by-row ``executemany`` on the large per-version tables (parse stays ~2s
-#: while insert drops from ~75s to ~4s per file — see scripts/benchmark_load.py).
-#: ``article`` appends ``now()`` for its server-side ``loaded_at`` column.
-_INSERT_SELECT: dict[str, str] = {
-    table: (
-        f"INSERT INTO {table} BY POSITION SELECT *, now() FROM {_BATCH}"
-        if table == "article"
-        else f"INSERT INTO {table} BY POSITION SELECT * FROM {_BATCH}"
-    )
-    for table in _VERSIONED_TABLES
-}
-
-
 def _insert_batch(con: duckdb.DuckDBPyConnection, table: str, rows: list[tuple]) -> None:
-    """Columnar bulk-insert of ``rows`` (positional tuples) into ``table``."""
+    """Columnar bulk-insert of ``rows`` (positional tuples) into ``table``.
+
+    Registering the batch as an Arrow table and inserting it via
+    ``INSERT ... SELECT`` is ~25x faster than row-by-row ``executemany`` on the
+    large per-version tables (parse stays ~2s while insert drops from ~75s to
+    ~4s per file — see scripts/benchmark_load.py).
+    """
     columns = zip(*rows)  # transpose row tuples -> per-column sequences
     batch = pa.table({str(i): pa.array(col) for i, col in enumerate(columns)})
     con.register(_BATCH, batch)
     try:
-        con.execute(_INSERT_SELECT[table])
+        # `article` appends now() for its server-side `loaded_at` column.
+        loaded_at = ", now()" if table == "article" else ""
+        con.execute(f"INSERT INTO {table} BY POSITION SELECT *{loaded_at} FROM {_BATCH}")
     finally:
         con.unregister(_BATCH)
 
@@ -156,8 +148,12 @@ def load_parsed(
     source_file: str,
     *,
     kind: str,
-) -> None:
-    """Insert a :class:`ParsedFile` (replacing any prior rows for the file)."""
+) -> int:
+    """Insert a :class:`ParsedFile` (replacing any prior rows for the file).
+
+    Returns the number of articles stored, which is the post-dedup count
+    recorded in ``source_file.n_articles``.
+    """
     year_yy, file_number, order_key = parse_file_name(source_file)
 
     con.execute("BEGIN TRANSACTION")
@@ -172,7 +168,7 @@ def load_parsed(
         for article in parsed.articles:
             deduped[article.pubmed] = article
 
-        batches: dict[str, list[tuple]] = {t: [] for t in _INSERT_SELECT}
+        batches: dict[str, list[tuple]] = {t: [] for t in _VERSIONED_TABLES}
         for article in deduped.values():
             for table, table_rows in _article_rows(article, source_file, order_key).items():
                 batches[table].extend(table_rows)
@@ -187,16 +183,24 @@ def load_parsed(
             """
             INSERT INTO source_file
                 (file_name, kind, year_yy, file_number, file_order_key,
-                 processed_at, n_articles, n_deletions)
-            VALUES (?, ?, ?, ?, ?, now(), ?, ?)
+                 downloaded_at, processed_at, n_articles, n_deletions,
+                 n_failed, n_book_records)
+            VALUES (?, ?, ?, ?, ?, now(), now(), ?, ?, ?, ?)
             ON CONFLICT (file_name) DO UPDATE SET
                 kind = excluded.kind,
+                -- Files obtained outside `download` (rsync/FTP) have no
+                -- downloaded_at; stamp one so the status arithmetic and
+                -- needs_load's `downloaded_at IS NOT NULL` still work. A real
+                -- download's timestamp is never overwritten.
+                downloaded_at = COALESCE(source_file.downloaded_at, excluded.downloaded_at),
                 year_yy = excluded.year_yy,
                 file_number = excluded.file_number,
                 file_order_key = excluded.file_order_key,
                 processed_at = excluded.processed_at,
                 n_articles = excluded.n_articles,
-                n_deletions = excluded.n_deletions
+                n_deletions = excluded.n_deletions,
+                n_failed = excluded.n_failed,
+                n_book_records = excluded.n_book_records
             """,
             [
                 source_file,
@@ -206,12 +210,15 @@ def load_parsed(
                 order_key,
                 len(deduped),
                 len(parsed.deleted_pmids),
+                parsed.n_failed,
+                parsed.n_book_records,
             ],
         )
         con.execute("COMMIT")
     except Exception:
         con.execute("ROLLBACK")
         raise
+    return len(deduped)
 
 
 def load_file(
@@ -225,17 +232,19 @@ def load_file(
     path = Path(path)
     source_file = source_file or path.name
     parsed = parse_file(path)
-    load_parsed(con, parsed, source_file, kind=kind)
+    n_articles = load_parsed(con, parsed, source_file, kind=kind)
     # Report RSS *now* as well as the high-water mark: ru_maxrss only ever rises,
     # so on its own a growing number says nothing about whether this process is
     # actually holding more memory than it was ten files ago.
     current = current_rss_gib()
     logger.info(
-        "loaded %s: %d articles, %d deletions, %d failed to parse (RSS %s, peak %.1f GiB)",
+        "loaded %s: %d articles, %d deletions, %d failed to parse, "
+        "%d book record(s) skipped (RSS %s, peak %.1f GiB)",
         source_file,
-        len(parsed.articles),
+        n_articles,
         len(parsed.deleted_pmids),
         parsed.n_failed,
+        parsed.n_book_records,
         "n/a" if current is None else f"{current:.1f} GiB",
         peak_rss_gib(),
     )
@@ -245,7 +254,7 @@ def load_file(
 def needs_load(con: duckdb.DuckDBPyConnection, source_file: str, *, force: bool = False) -> bool:
     """Whether a file should be (re)loaded.
 
-    Single-file form of :data:`pubmed2db.status.NEEDS_LOAD_SQL` (the same rule
+    Single-file form of :data:`pubmed2db.db.NEEDS_LOAD_SQL` (the same rule
     :func:`pubmed2db.status.pending_file_count` applies registry-wide), plus a
     never-registered file and ``force`` both counting as needing a load.
     """
@@ -273,8 +282,17 @@ def load_files(
     file loads in its own transaction, so a failure leaves no partial rows and
     no ``processed_at`` watermark — a later run retries it.
     """
-    ordered = sorted(files, key=lambda pk: parse_file_name(pk[0].name)[2])
-    to_load = [(p, k) for p, k in ordered if needs_load(con, p.name, force=force)]
+    # Filter before sorting: parse_file_name raises on anything that isn't a
+    # PubMed XML filename, and one stray file in the download directory must not
+    # abort the run before a single file is loaded.
+    keyed: list[tuple[int, Path, str]] = []
+    for path, kind in files:
+        try:
+            keyed.append((parse_file_name(path.name)[2], path, kind))
+        except ValueError:
+            logger.warning("ignoring %s: not a PubMed XML filename", path.name)
+    keyed.sort(key=lambda t: t[0])
+    to_load = [(p, k) for _, p, k in keyed if needs_load(con, p.name, force=force)]
     total = len(to_load)
     if total == 0:
         return 0, []
@@ -351,7 +369,7 @@ def _parse_journal_overview(path: Path):
         yield record, issns
 
 
-def load_journals(con: duckdb.DuckDBPyConnection, *, force: bool = False) -> int:
+def load_journals(con: duckdb.DuckDBPyConnection) -> int:
     """Load the NLM Catalog journal dimension.
 
     Downloads NLM's journal overview (J_Entrez) via ``pubmed_downloader`` and
@@ -360,7 +378,11 @@ def load_journals(con: duckdb.DuckDBPyConnection, *, force: bool = False) -> int
     """
     from pubmed_downloader.catalog import ensure_journal_overview
 
-    path = Path(ensure_journal_overview(force=force))
+    # force=True on every call: pystow's ensure() skips the download whenever
+    # the file is already there, so without it the journal dimension would stay
+    # frozen at whatever the first run fetched while `status` kept reporting a
+    # fresh refresh. It is one small text file.
+    path = Path(ensure_journal_overview(force=True))
 
     journals: dict[str, dict] = {}
     issn_rows: list[tuple[str, str, str]] = []
@@ -371,6 +393,16 @@ def load_journals(con: duckdb.DuckDBPyConnection, *, force: bool = False) -> int
         journals[nlm_id] = record
         for value, issn_type in issns:
             issn_rows.append((nlm_id, value, issn_type))
+
+    if not journals:
+        # A truncated download or an error page parses to nothing. Bail out
+        # before the DELETEs rather than replacing a good journal dimension with
+        # an empty one (and before executemany, which rejects an empty list).
+        logger.warning(
+            "journal overview %s yielded no journals; leaving the journal tables as they are",
+            path,
+        )
+        return 0
 
     con.execute("BEGIN TRANSACTION")
     try:
@@ -391,7 +423,8 @@ def load_journals(con: duckdb.DuckDBPyConnection, *, force: bool = False) -> int
                 for nlm_id, rec in journals.items()
             ],
         )
-        con.executemany("INSERT INTO journal_issn VALUES (?,?,?)", issn_rows)
+        if issn_rows:
+            con.executemany("INSERT INTO journal_issn VALUES (?,?,?)", issn_rows)
         record_run(con, "journals")
         con.execute("COMMIT")
     except Exception:

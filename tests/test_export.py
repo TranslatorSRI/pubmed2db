@@ -76,8 +76,8 @@ def test_json_export_uses_spec_fields(loaded_con, tmp_path):
     assert one == {
         "id": "PMID:1001",
         # v2's PMCID (PMC7654321), not v1's PMC1234567, and no `pii`. Sorted,
-        # so uppercase "PMC:" precedes lowercase "doi:", with the PMID first.
-        "identifiers": ["PMID:1001", "PMC:PMC7654321", "doi:10.1038/example1001"],
+        # so uppercase "PMCID:" precedes lowercase "doi:", with the PMID first.
+        "identifiers": ["PMID:1001", "PMCID:PMC7654321", "doi:10.1038/example1001"],
         "journal_name": "Nature",
         "journal_abbrev": "Nature",
         "article_title": "Revised title for article one.",
@@ -88,6 +88,21 @@ def test_json_export_uses_spec_fields(loaded_con, tmp_path):
         "pub_day": "16",
         "abstract": "The revised abstract for article one.",
     }
+
+
+def test_curie_sql_is_derived_from_id_prefixes():
+    """The exporter's CURIEs come from ID_PREFIXES, not a second hand-written list.
+
+    `validate` rebuilds the CURIEs it expects from the same mapping, so a
+    re-hardcoded `CASE`/`IN` in the SQL would let a new id type or a casing fix
+    reach the validator alone — reporting every sampled record as a mismatch
+    against a correct export.
+    """
+    from pubmed2db.export import ID_PREFIXES, _LATEST_METADATA_SQL
+
+    for id_type, prefix in ID_PREFIXES.items():
+        assert f"'{id_type}'" in _LATEST_METADATA_SQL
+        assert f"'{prefix}:'" in _LATEST_METADATA_SQL
 
 
 def test_json_export_empty_string_not_null(loaded_con, tmp_path):
@@ -146,6 +161,23 @@ def test_json_export_replaces_a_previous_run(loaded_con, tmp_path):
     assert _read_ndjson(paths).keys() == {"PMID:1001", "PMID:1003"}
 
 
+def test_reexport_removes_stale_shards(loaded_con, tmp_path):
+    """Shards from an earlier, wider (or gzipped) export must not survive: a
+    consumer globbing the directory would read two exports at once."""
+    from pubmed2db.export import export_json
+
+    out = tmp_path / "json"
+    export_json(loaded_con, out, shards=2)
+    export_json(loaded_con, out, shards=1, gzip_output=True)
+
+    # The COPY writer names shards from FILENAME_PATTERN '{i}', so the exact
+    # stem is DuckDB's business -- what matters is that exactly one shard is
+    # left and it is the gzipped one this run wrote.
+    survivors = sorted(path.name for path in out.iterdir())
+    assert len(survivors) == 1, survivors
+    assert survivors[0].endswith(".ndjson.gz")
+
+
 def test_parquet_latest_filters_versions(loaded_con, tmp_path):
     from pubmed2db.export import export_parquet
 
@@ -179,6 +211,66 @@ def test_writing_progress_line_renders(tmp_path, caplog):
     """The heartbeat only fires a minute into a real export, so it never runs in
     the suite -- and a mismatched %-format arg there would first surface partway
     through a production run. Render one line directly."""
+def test_parquet_exports_every_table(loaded_con, tmp_path):
+    """One file per table, `pipeline_run` included -- it carries the journal
+    refresh provenance, which nothing else in the export records."""
+    from pubmed2db.export import export_parquet
+
+    out = tmp_path / "parquet"
+    written = export_parquet(loaded_con, out)
+
+    tables = {
+        row[0]
+        for row in loaded_con.execute(
+            "SELECT table_name FROM duckdb_tables() "
+            "WHERE schema_name = 'main' AND NOT temporary"
+        ).fetchall()
+    }
+    assert {path.stem for path in written} == tables
+
+
+def test_placeholder_looking_fields_survive_to_the_export(con, gz_fixture, tmp_path):
+    """A validation run flagged two records as exporting blank where Entrez has a
+    value: a non-numeric `<Issue>Suppl</Issue>` and an `<ArticleTitle>` of the
+    literal "[Not Available].". Neither is dropped anywhere in the pipeline."""
+    import json
+
+    from pubmed2db.export import export_json
+    from pubmed2db.load import load_file
+
+    load_file(con, gz_fixture("pubmed25n0004"), kind="baseline")
+    out = tmp_path / "json"
+    export_json(con, out, shards=1)
+
+    docs = _read_ndjson(sorted(out.glob("pubmed_metadata_*")))
+    assert docs["PMID:10137601"]["issue"] == "Suppl"
+    assert docs["PMID:10137601"]["volume"] == "3 Suppl"
+    assert docs["PMID:28972331"]["article_title"] == "[Not Available]."
+
+
+def test_parquet_export_removes_a_dropped_table_s_file(loaded_con, tmp_path):
+    """A re-export overwrites its own file names, so a table removed from the
+    schema would otherwise leave its Parquet behind for consumers to glob."""
+    from pubmed2db.export import export_parquet
+
+    out = tmp_path / "parquet"
+    out.mkdir()
+    orphan = out / "reference_citation.parquet"  # dropped from schema.sql
+    orphan.write_bytes(b"stale")
+
+    written = export_parquet(loaded_con, out)
+
+    assert not orphan.exists()
+    assert set(out.glob("*.parquet")) == set(written)
+
+
+def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog):
+    """The JSON export's progress branch only fires after 10 s of real work.
+
+    That means it never executes in the suite, so a mismatched %-format arg there
+    would first surface partway through a 20-minute production run. Force the
+    interval to zero and assert the line actually renders.
+    """
     import logging
     import time
 
@@ -189,6 +281,7 @@ def test_writing_progress_line_renders(tmp_path, caplog):
     (out / "pubmed_metadata_0.ndjson").write_bytes(b"x" * 4096)
     with caplog.at_level(logging.INFO, logger="pubmed2db.export"):
         ex._log_writing_progress(out, time.monotonic() - 5)
+        ex.export_json(loaded_con, tmp_path / "json")
 
     line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("writing:"))
     for fragment in ("GiB across 1 shard(s)", "MiB/s", "elapsed", "RSS"):

@@ -1,10 +1,11 @@
 """Download PubMed baseline and update files, with MD5 sidecar tracking.
 
-We reuse ``pubmed_downloader`` for the actual file transfers (pystow-backed,
-HTTP, skip-by-name). On top of that we fetch each ``<file>.md5`` sidecar, store
-the published checksum in the ``source_file`` registry, and bump
-``downloaded_at`` whenever a file is new or its checksum changed — which is what
-later triggers a reload in :func:`pubmed2db.load.needs_load`.
+We reuse the `pubmed_downloader library
+<https://github.com/cthoyt/pubmed-downloader>`_ for the actual file transfers
+(pystow-backed, HTTP, skip-by-name). On top of that we fetch each
+``<file>.md5`` sidecar, store the published checksum in the ``source_file``
+registry, and bump ``downloaded_at`` whenever a file is new or its checksum
+changed — which is what later triggers a reload in :func:`pubmed2db.load.needs_load`.
 
 PubMed files are normally immutable, so a checksum change is rare; verifying it
 is cheap insurance and the mechanism that lets a corrected file be picked up.
@@ -28,15 +29,11 @@ from pubmed_downloader.api import (
     UPDATES_URL,
     _ensure_urls,
 )
-from pubmed_downloader.utils import MODULE
 from tqdm import tqdm
 
 from .db import register_source_file
 
 logger = logging.getLogger(__name__)
-
-#: Where we persist the fetched ``.md5`` sidecar files (separate from the data).
-MD5_DIR = Path(MODULE.base) / "md5"
 
 _MD5_RE = re.compile(r"\b([0-9a-fA-F]{32})\b")
 
@@ -57,10 +54,6 @@ def file_md5(path: Path) -> str:
         return hashlib.file_digest(fh, "md5").hexdigest()
 
 
-def _save_md5_sidecar(file_name: str, text: str) -> None:
-    (MD5_DIR / f"{file_name}.md5").write_text(text)
-
-
 def _sync_kind(
     con: duckdb.DuckDBPyConnection,
     *,
@@ -68,36 +61,60 @@ def _sync_kind(
     base_url: str,
     list_cache: Path,
     ensure_module,
-    registry: dict[str, dict],
+    registry: dict[str, str | None],
     limit: int | None,
     verify: bool,
+    session: requests.Session,
 ) -> list[tuple[Path, str]]:
     # Always refresh the remote listing so newly published updatefiles appear.
-    urls = _ensure_urls(base_url, list_cache, force=True)
-    if limit is not None:
-        # The listing is chronological, so the *newest* N is the tail — that's
-        # what's useful for testing (recent updatefiles), and what the docs say.
-        urls = urls[-limit:]
+    # _ensure_urls sorts it newest-first, so the newest N — what's useful for
+    # testing — is the head. Slicing with None is the no-limit case.
+    urls = _ensure_urls(base_url, list_cache, force=True)[:limit]
 
-    MD5_DIR.mkdir(parents=True, exist_ok=True)
     results: list[tuple[Path, str]] = []
     for url in tqdm(urls, desc=f"Syncing PubMed {kind}", unit="file"):
         file_name = url.rsplit("/", 1)[-1]
         prior = registry.get(file_name)
         try:
-            response = requests.get(url + ".md5", timeout=60)
+            response = session.get(url + ".md5", timeout=60)
             response.raise_for_status()
             published_md5 = parse_md5_text(response.text)
-            _save_md5_sidecar(file_name, response.text)
+            if published_md5 is None:
+                logger.warning("no checksum in the md5 sidecar for %s", file_name)
         except requests.RequestException as exc:
-            # Keep the last-known checksum on a transient fetch failure, so it
-            # isn't wiped and the file isn't spuriously flagged as changed.
-            logger.warning(
-                "could not fetch md5 for %s: %s; keeping prior checksum", file_name, exc
-            )
+            logger.warning("could not fetch md5 for %s: %s", file_name, exc)
+            published_md5 = None
+
+        if published_md5 is None:
+            # Keep the last-known checksum whenever the sidecar is unusable — a
+            # transient failure, or an error page served with HTTP 200. Wiping it
+            # would flag every already-known file as changed, re-parsing the whole
+            # corpus on the next load, and keep doing so on every later sync.
             published_md5 = prior
 
-        changed = prior is None or prior != published_md5
+        # Newness is registry membership, not `prior is None`: a known file can
+        # have a NULL checksum (registered by `load` from an rsynced copy, or a
+        # sidecar that has never been fetchable). Treating that as new would bump
+        # downloaded_at on every sync and re-parse the file every run.
+        changed = file_name not in registry or prior != published_md5
+
+        # ensure() skips by file name, so a file republished under its old name
+        # would keep its stale bytes on disk: we would record the new checksum
+        # against the old content and never look again. Drop the local copy
+        # before fetching, whether or not we go on to hash it. Only when we had
+        # a prior checksum to compare — a first sync over an existing cache must
+        # not re-download the whole corpus.
+        local_path = Path(ensure_module.join(name=file_name))
+        if prior is not None and published_md5 is not None and prior != published_md5:
+            logger.info("published md5 changed for %s; re-downloading", file_name)
+            local_path.unlink(missing_ok=True)
+
+        # Whether ensure() will actually transfer bytes: it skips by file name,
+        # so a file already on disk is left alone. One that vanished locally —
+        # pruned to reclaim disk, or an interrupted earlier transfer — is
+        # fetched again even when its published checksum never moved, and those
+        # bytes have never been hashed.
+        fetched = not local_path.exists()
 
         path = Path(ensure_module.ensure(url=url))
 
@@ -105,7 +122,7 @@ def _sync_kind(
         # re-hashing an unchanged, already-verified corpus costs tens of GiB of
         # I/O per sync and, since PubMed files are immutable, never catches
         # anything. Corruption happens at download time, which is still covered.
-        if verify and published_md5 is not None and changed:
+        if verify and published_md5 is not None and (changed or fetched):
             actual = file_md5(path)
             if actual != published_md5:
                 logger.warning(
@@ -116,6 +133,22 @@ def _sync_kind(
                 )
                 path.unlink(missing_ok=True)
                 path = Path(ensure_module.ensure(url=url))
+                # A retry that is also corrupt must not be registered as good.
+                # Delete it too: `load` globs the download directories rather
+                # than reading sync()'s return value, so a corrupt file left on
+                # disk would be loaded anyway — and, being unregistered, would
+                # be re-parsed on every later run.
+                actual = file_md5(path)
+                if actual != published_md5:
+                    logger.error(
+                        "md5 still mismatched for %s after re-downloading "
+                        "(got %s, expected %s); discarding it",
+                        file_name,
+                        actual,
+                        published_md5,
+                    )
+                    path.unlink(missing_ok=True)
+                    continue
                 changed = True
 
         # Bump downloaded_at only when new/changed, so unchanged files are not
@@ -125,11 +158,25 @@ def _sync_kind(
             file_name,
             kind=kind,
             published_md5=published_md5,
-            downloaded_at=changed,
+            mark_downloaded=changed,
         )
         results.append((path, kind))
 
     return results
+
+
+def local_files() -> list[tuple[Path, str]]:
+    """Enumerate already-downloaded PubMed files as ``(path, kind)``.
+
+    The same shape :func:`sync` returns, for the files already on disk: `load`
+    works from this rather than from one sync's results, so files downloaded by
+    an earlier run (or by rsync) aren't skipped.
+    """
+    return [
+        (path, kind)
+        for module, kind in ((BASELINE_MODULE, "baseline"), (UPDATES_MODULE, "update"))
+        for path in Path(module.base).glob("*.xml.gz")
+    ]
 
 
 def sync(
@@ -150,27 +197,24 @@ def sync(
         for r in con.execute("SELECT file_name, published_md5 FROM source_file").fetchall()
     }
 
+    # One session for the ~2,600 sidecar fetches: without keep-alive each one
+    # pays a fresh TCP+TLS handshake, which is most of a no-op sync's runtime.
+    session = requests.Session()
     results: list[tuple[Path, str]] = []
-    if baseline:
-        results += _sync_kind(
-            con,
-            kind="baseline",
-            base_url=BASELINE_URL,
-            list_cache=BASELINE_PATH,
-            ensure_module=BASELINE_MODULE,
-            registry=registry,
-            limit=limit,
-            verify=verify,
-        )
-    if updates:
-        results += _sync_kind(
-            con,
-            kind="update",
-            base_url=UPDATES_URL,
-            list_cache=UPDATES_PATH,
-            ensure_module=UPDATES_MODULE,
-            registry=registry,
-            limit=limit,
-            verify=verify,
-        )
+    for kind, wanted, base_url, list_cache, ensure_module in (
+        ("baseline", baseline, BASELINE_URL, BASELINE_PATH, BASELINE_MODULE),
+        ("update", updates, UPDATES_URL, UPDATES_PATH, UPDATES_MODULE),
+    ):
+        if wanted:
+            results += _sync_kind(
+                con,
+                kind=kind,
+                base_url=base_url,
+                list_cache=list_cache,
+                ensure_module=ensure_module,
+                registry=registry,
+                limit=limit,
+                verify=verify,
+                session=session,
+            )
     return results

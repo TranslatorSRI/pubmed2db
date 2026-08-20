@@ -41,7 +41,7 @@ _VERSIONED_CHILDREN = (
 )
 
 #: Dimension/bookkeeping tables exported as-is.
-_OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid")
+_OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid", "pipeline_run")
 
 #: PubMed ``ArticleId/@IdType`` -> CURIE prefix for the JSON ``identifiers``
 #: field. The casing matches Babel's ``src/prefixes.py`` (``DOI = "doi"``,
@@ -50,7 +50,23 @@ _OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid")
 #: start with ``PMC``, hence the doubled ``PMC:PMC1234567``. Values are emitted
 #: verbatim, so consumers must match case-insensitively (DOIs are
 #: case-insensitive per spec and PubMed is not consistent).
-ID_PREFIXES = {"doi": "doi", "pmc": "PMC"}
+#: **The PMCID prefix is not settled.** Babel's ``prefixes.py`` says ``PMC``,
+#: this export says ``PMCID``, and neither the Core Components spec nor the
+#: DocumentMetadataAPI README carries a PMC example to arbitrate — the
+#: production endpoint does not resolve PMCIDs in either form. ``PMCID`` is our
+#: bet on where that lands. Tracked in issue #33, to be settled alongside
+#: NCATSTranslator/Babel#1044.
+ID_PREFIXES = {"doi": "doi", "pmc": "PMCID"}
+
+#: The same mapping as SQL, derived rather than restated: `validate` imports
+#: `ID_PREFIXES` to rebuild the CURIEs it expects, so a hand-written `CASE` here
+#: would let a new id type or a casing fix reach the validator without reaching
+#: the export, and every sampled record would be reported as a mismatch against
+#: a correct export. No `ELSE` branch: an unlisted type cannot pass the `WHERE`.
+_ID_CURIE_SQL = "CASE id_type " + " ".join(
+    f"WHEN '{t}' THEN '{prefix}:'" for t, prefix in ID_PREFIXES.items()
+) + " END"
+_ID_TYPES_SQL = ", ".join(f"'{t}'" for t in ID_PREFIXES)
 
 
 #: Month abbreviations, frozen rather than taken from ``calendar.month_abbr``:
@@ -165,7 +181,7 @@ JSON_FIELDS = tuple(name for name, _ in _JSON_FIELDS)
 #: membership no longer depends on scan order, since each writer thread owns a
 #: file. Nothing downstream consumes the order — the ingest is an ElasticSearch
 #: bulk load, and `validate` sorts its own PMID manifest.
-_LATEST_METADATA_SQL = """
+_LATEST_METADATA_SQL = f"""
 WITH abs AS (
     SELECT pmid, source_file, string_agg(text, ' ' ORDER BY seq) AS abstract
     FROM abstract_text a
@@ -180,10 +196,10 @@ WITH abs AS (
 ),
 ids AS (
     SELECT pmid, source_file, list_sort(list_distinct(list(
-        CASE id_type WHEN 'doi' THEN 'doi:' ELSE 'PMC:' END || id_value
+        {_ID_CURIE_SQL} || id_value
     ))) AS identifiers
     FROM article_id ai
-    WHERE id_type IN ('doi', 'pmc')
+    WHERE id_type IN ({_ID_TYPES_SQL})
       -- Same reason as `abs` above: restrict before aggregating, so the
       -- group-by does not span the whole version history.
       AND EXISTS (
@@ -287,9 +303,14 @@ def export_json(
 
     # DuckDB appends to a per-thread output directory rather than clearing it,
     # so a previous run's shards would survive this one and be read back as if
-    # they were part of it. Only files matching our own naming are removed.
-    for stale in _shard_paths(out_dir):
-        stale.unlink()
+    # they were part of it. Only files matching our own naming are removed --
+    # and the count is logged, because silently deleting someone's export
+    # directory is not something to do without a line in the log.
+    stale = _shard_paths(out_dir)
+    for path in stale:
+        path.unlink()
+    if stale:
+        logger.info("removed %d shard file(s) from a previous export", len(stale))
 
     suffix = "ndjson.gz" if gzip_output else "ndjson"
     options = [
@@ -358,6 +379,20 @@ def export_parquet(
         tables, "latest version" if latest else "full history", out_dir,
     )
     run_start = time.monotonic()
+
+    # A re-export overwrites its own fixed set of file names, so the only file
+    # that can survive is one whose table left the schema — `reference_citation`
+    # is exactly that case. Left in place it reads as part of this export to
+    # anything globbing the directory. Same sweep the JSON export does.
+    keep = {f"{t}.parquet" for t in ("article", *_VERSIONED_CHILDREN, *_OTHER_TABLES)}
+    stale = [path for path in out_dir.glob("*.parquet") if path.name not in keep]
+    for path in stale:
+        path.unlink()
+    if stale:
+        logger.info(
+            "removed %d Parquet file(s) for table(s) no longer in the schema: %s",
+            len(stale), ", ".join(sorted(path.stem for path in stale)),
+        )
 
     def _progress(done: int) -> None:
         remaining = tables - done

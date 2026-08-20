@@ -38,9 +38,7 @@ def main() -> None:
     os.environ.setdefault("PYSTOW_HOME", str(Path(args.data_dir).resolve()))
 
     # Imported after PYSTOW_HOME is set, mirroring the CLI.
-    import duckdb
-
-    from pubmed2db.db import init_schema, parse_file_name
+    from pubmed2db.db import connect, parse_file_name
     from pubmed2db.load import _article_rows, load_parsed
     from pubmed2db.parse import parse_file
     from pubmed2db.util import peak_rss_gib
@@ -63,8 +61,7 @@ def main() -> None:
             for rows in _article_rows(article, source_file, order_key).values()
         )
 
-        con = duckdb.connect(args.db)
-        init_schema(con)
+        con = connect(args.db)
         t0 = time.perf_counter()
         load_parsed(con, parsed, source_file, kind="baseline")
         t_load = time.perf_counter() - t0
