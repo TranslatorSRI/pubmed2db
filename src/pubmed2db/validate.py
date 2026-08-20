@@ -52,7 +52,7 @@ from .export import (
     JSON_FIELDS,
     _MONTH_ABBR,
     _year_from_medline_date,
-    month_to_abbrev,
+    pub_month,
 )
 from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
 
@@ -77,11 +77,24 @@ SOFT_FIELDS = ("journal_name", "journal_abbrev")
 
 _ID_RE = re.compile(r"^PMID:(\d+)$")
 
-#: Valid ``pub_month`` values: the 3-letter abbreviations, or empty. Taken from
-#: the exporter's frozen tuple rather than ``calendar.month_abbr``, which is
-#: ``strftime('%b')`` under ``LC_TIME`` — a process that localizes it would make
-#: every correctly exported month read as invalid here.
-_VALID_MONTHS = frozenset(_MONTH_ABBR) | {""}
+#: Seasons PubMed uses in ``<Season>`` / ``<MedlineDate>``.
+_SEASONS = ("Spring", "Summer", "Autumn", "Fall", "Winter")
+
+#: Valid ``pub_month`` values: empty, a month abbreviation, a season, or a range
+#: of two of those ("Sep-Dec", "Jul-Aug"). The export passes approximate months
+#: through verbatim (see ``export.normalize_month``), so this can no longer be
+#: just the 12 abbreviations — but it stays a closed set, so the odder shapes a
+#: ``MedlineDate`` can produce ("Dec-1999 Jan") remain visible as warnings
+#: instead of being blessed.
+#:
+#: Built from ``export._MONTH_ABBR``, not ``calendar.month_abbr``: the latter is
+#: ``strftime('%b')`` under ``LC_TIME``, which is exactly what the exporter froze
+#: its own tuple to avoid — under a non-English locale every record here would
+#: otherwise trip the ``month-format`` warning.
+_MONTH_TOKENS = _MONTH_ABBR + _SEASONS
+_VALID_MONTHS = frozenset(
+    {""} | set(_MONTH_TOKENS) | {f"{a}-{b}" for a in _MONTH_TOKENS for b in _MONTH_TOKENS}
+)
 
 #: How many records to include verbatim in an example list before truncating.
 _MAX_EXAMPLES = 20
@@ -522,9 +535,9 @@ def check_structure(
         ("no-extra-fields", "no record carries an unexpected field",
          "record(s) with extra fields", extra_fields, "extra_fields", "extra_fields",
          "Records carrying unexpected extra fields.", WARN),
-        ("month-format", 'pub_month is a 3-letter abbreviation or ""',
+        ("month-format", 'pub_month is a month, season, range of those, or ""',
          "invalid pub_month value(s)", invalid_months, "invalid_months", "invalid_months",
-         "Records whose pub_month is not a 3-letter abbrev or empty.", WARN),
+         "Records whose pub_month is not a month/season, a range of two, or empty.", WARN),
     )
     for name, expectation, noun, findings, key, code, message, severity in rows:
         # dict findings (field -> n) count occurrences; _Examples counts its own.
@@ -705,8 +718,15 @@ def efetch_documents(
                 "volume": _text(journal, "Volume") if journal is not None else "",
                 "issue": _text(journal, "Issue") if journal is not None else "",
                 "pub_year": pub_year,
-                "pub_month": month_to_abbrev(
-                    pub.findtext("Month") if pub is not None else None
+                # Same reasoning as pub_year above, for the month: efetch may
+                # return <Month>, <Season> or a bare <MedlineDate>, and the
+                # export recovers a month from all three. Route efetch's side
+                # through the exporter's own function or every approximate-date
+                # record reads as a mismatch.
+                "pub_month": pub_month(
+                    (pub.findtext("Month") or pub.findtext("Season"))
+                    if pub is not None else None,
+                    _text(pub, "MedlineDate") if pub is not None else None,
                 ),
                 "pub_day": _text(pub, "Day") if pub is not None else "",
                 "abstract": _normalize(abstract),

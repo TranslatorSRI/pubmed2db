@@ -36,8 +36,10 @@ class ParsedArticle:
 
     article: Article
     pmid_version: int | None = None
-    #: Raw ``PubDate`` children, preserved verbatim (e.g. month ``"Mar"`` or
-    #: ``"03"``); ``medline_date`` holds free-text dates like ``"1998 Spring"``.
+    #: Raw ``PubDate`` children, preserved verbatim. ``pub_month`` holds
+    #: ``<Month>`` *or* ``<Season>`` (``"Mar"``, ``"03"``, ``"Sep-Dec"``), which
+    #: the DTD makes mutually exclusive; ``medline_date`` holds free-text dates
+    #: like ``"1998 Spring"``.
     pub_year: str | None = None
     pub_month: str | None = None
     pub_day: str | None = None
@@ -71,7 +73,12 @@ def _raw_pubdate(element: etree._Element) -> tuple[str | None, ...]:
         return (None, None, None, None)
     return (
         pub_date.findtext("Year"),
-        pub_date.findtext("Month"),
+        # The DTD makes these mutually exclusive -- PubDate is
+        # ``((Year, ((Month, Day?) | Season)?) | MedlineDate)`` -- so a season
+        # ("Sep-Dec", "Winter") can share the month's column instead of needing
+        # one of its own, and a schema migration with it. The export passes it
+        # through verbatim; see ``export.normalize_month``.
+        pub_date.findtext("Month") or pub_date.findtext("Season"),
         pub_date.findtext("Day"),
         pub_date.findtext("MedlineDate"),
     )

@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS article (
     volume         TEXT,
     issue          TEXT,
     pub_year       TEXT,                        -- raw PubDate/Year
-    pub_month      TEXT,                        -- raw PubDate/Month ('Mar', '03', ...)
+    pub_month      TEXT,                        -- raw PubDate/Month or /Season ('Mar', '03', 'Sep-Dec')
     pub_day        TEXT,                        -- raw PubDate/Day
     medline_date   TEXT,                        -- raw PubDate/MedlineDate (e.g. '1998 Spring')
     date_completed DATE,

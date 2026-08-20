@@ -77,20 +77,35 @@ _MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
-def month_to_abbrev(raw: str | None) -> str:
-    """Normalize a raw PubMed month to a capitalized 3-letter abbreviation.
+def normalize_month(raw: str | None) -> str:
+    """Normalize a raw PubMed month, passing through what isn't a month name.
 
-    Accepts ``"3"``/``"03"`` (numeric), ``"Mar"``/``"March"``/``"Sept"``
-    (textual), or ``None``; returns ``""`` when it cannot be interpreted.
+    A month *name* is folded to a capitalized 3-letter abbreviation, per the
+    spec's prose: ``"3"``/``"03"`` (numeric), ``"Mar"``/``"March"``/``"Sept"``/
+    ``"sep"`` (textual). Anything else — a season (``"Spring"``) or a range
+    (``"Sep-Dec"``) — is returned **verbatim**, because the spec's own worked
+    example for PMID:8000234 emits ``"pub_month": "Sep-Dec"`` (issue #14). Only
+    an uninterpretable *number* (``"13"``) becomes ``""``.
+
+    The ``isalpha()`` guard is what makes the two cases distinguishable: without
+    it the 3-character prefix match silently truncates ``"Sep-Dec"`` to
+    ``"Sep"``, which is what this function used to do.
     """
     if not raw:
         return ""
     raw = raw.strip()
-    if raw.isdigit():
+    # `raw.isascii() and raw.isdigit()`, not `isdigit()` alone, for two reasons.
+    # `"²".isdigit()` is True while `int("²")` raises, and this function now sees
+    # unconstrained MedlineDate CDATA rather than only a `<Month>` element, so
+    # that ValueError would escape `efetch_documents` and abort a whole
+    # validation run. And the SQL twin tests `[0-9]+`, which is ASCII-only:
+    # `"١٢"` is `isdigit()` *and* `isdecimal()`, so Python alone would answer
+    # `Dec` where the export passes `١٢` through verbatim.
+    if raw.isascii() and raw.isdigit():
         month = int(raw)
         return _MONTH_ABBR[month - 1] if 1 <= month <= 12 else ""
     key = raw[:3].capitalize()
-    return key if key in _MONTH_ABBR else ""
+    return key if key in _MONTH_ABBR and raw.isalpha() else raw
 
 
 _MEDLINE_YEAR_RE = re.compile(r"^\s*(\d{4})")
@@ -104,8 +119,8 @@ def _year_from_medline_date(raw: str | None) -> str:
     Spring", "1998 Dec-1999 Jan", "1999-2000"). We store that verbatim for
     fidelity, which left ``pub_year`` blank in the export for every such record.
     The leading year is unambiguous in all of those shapes, so it is safe to
-    recover; the month is not (a range has no single month), so ``pub_month``
-    and ``pub_day`` stay empty rather than gaining a value we invented.
+    recover; ``pub_day`` stays empty, since a range has no single day. The month
+    half is recovered separately by :func:`_month_from_medline_date`.
     """
     if not raw:
         return ""
@@ -113,34 +128,119 @@ def _year_from_medline_date(raw: str | None) -> str:
     return match.group(1) if match else ""
 
 
-#: ``month_to_abbrev``'s logic as a SQL expression over ``la.pub_month``, built
-#: from the same ``_MONTH_ABBR`` tuple so the abbreviations cannot drift. The
-#: shape mirrors the Python: numeric months index the list (out-of-range gives
-#: NULL, hence the COALESCE), textual ones are matched on their capitalized
-#: 3-letter prefix so "March" and "Sept" both land. ``validate`` still calls the
-#: *Python* function to normalize the efetch side, so
-#: ``test_month_sql_matches_month_to_abbrev`` pins the two together.
+#: Whatever follows the leading year of a ``MedlineDate``. The **whitespace** is
+#: load-bearing twice over.
 #:
+#: It is what stops ``"1999-2000"`` (a year range, no month at all) from
+#: yielding ``"-2000"``. And it has to mean the *same thing* in both engines:
+#: DuckDB's RE2 reads ``\s`` as ``[\t\n\f\r ]``, excluding ``\v`` and every
+#: non-ASCII space, where Python's ``re`` includes both. Left as ``\s`` on both
+#: sides, ``"1998\xa0Spring"`` gave ``Spring`` from the Python twin and ``''``
+#: from the SQL — and since ``validate._text`` collapses whitespace before the
+#: efetch side reaches :func:`pub_month`, efetch always renders ``Spring``, so
+#: the disagreement surfaced as a ``pub_month`` mismatch. That is a CORE_FIELDS
+#: error: the same gating failure the ``_WS`` note below describes for
+#: ``<Month>``. :data:`_MEDLINE_SEP_SQL` is the RE2 class that tracks Python's
+#: ``\s``.
+_MEDLINE_MONTH_RE = re.compile(r"^\s*\d{4}\s+(.+?)\s*$")
+_MEDLINE_SEP_SQL = r"[\s\p{Z}\x0B]"
+_MEDLINE_MONTH_PATTERN_SQL = (
+    rf"^{_MEDLINE_SEP_SQL}*\d{{4}}{_MEDLINE_SEP_SQL}+(.+?){_MEDLINE_SEP_SQL}*$"
+)
+
+
+def _month_from_medline_date(raw: str | None) -> str:
+    """The month/season part of a free-text ``MedlineDate``, or ``""``.
+
+    The month-side sibling of :func:`_year_from_medline_date`: ``"1994 Sep-Dec"``
+    -> ``"Sep-Dec"``, ``"1998 Spring"`` -> ``"Spring"``. Shapes with no month to
+    recover ("1999-2000", "n.d.", "Spring 1998") give ``""`` rather than a guess.
+
+    **Verbatim includes the shapes that look wrong.** ``"1998 Dec-1999 Jan"``
+    exports ``pub_month`` as ``"Dec-1999 Jan"`` — a month field carrying a year —
+    and that is deliberate: it is what PubMed wrote and what its API renders
+    back, so the export mirrors it rather than inventing a tidier ``"Dec-Jan"``
+    that no source says. ``validate._VALID_MONTHS`` is a closed set that
+    excludes it *on purpose*, so such records stay visible as ``month-format``
+    warnings instead of being blessed. Export and checker disagreeing here is
+    the design, not a bug — this has been raised as one once already.
+
+    The wart is real, and it is answered by a *different* field rather than by
+    tidying this one: PR #17 adds a verbatim ``pub_date`` carrying PubMed's own
+    string on every record (``"1998 Dec-1999 Jan"``), the way ``esummary``'s
+    ``pubdate`` does. Consumers rendering a citation read that; the three parsed
+    fields stay parsed conveniences, and no arrangement of them can represent a
+    cross-year range anyway. Whether DocumentMetadataAPI consumers are content
+    to receive ``"pub_month": "Dec-1999 Jan"`` alongside it is the one part
+    still open, and is tracked in issue #43. If the answer comes back "blank it
+    instead", the change is here: gate this fallback on the closed set
+    ``validate._VALID_MONTHS`` already accepts, so cross-year shapes return
+    ``""`` while ``pub_date`` keeps the whole string.
+    """
+    if not raw:
+        return ""
+    match = _MEDLINE_MONTH_RE.match(raw)
+    return match.group(1) if match else ""
+
+
+def pub_month(month: str | None, medline_date: str | None = None) -> str:
+    """The exported ``pub_month``, from a raw ``Month``/``Season`` + ``MedlineDate``.
+
+    The Python twin of :data:`_PUB_MONTH_SQL`, pinned to it by
+    ``test_pub_month_sql_matches_python``. ``validate`` calls this to normalize
+    the efetch side, so a record the export normalizes doesn't read as a
+    mismatch against PubMed.
+    """
+    return normalize_month(month) or normalize_month(_month_from_medline_date(medline_date))
+
+
 #: **Not bare ``trim()``.** SQL ``trim(x)`` strips spaces and nothing else,
-#: where Python's ``.strip()`` strips all whitespace — so a ``<Month>`` carrying
-#: a tab or a newline gave ``Mar`` from the Python function and ``''`` from the
-#: SQL. ``parse._raw_pubdate`` stores ``findtext("Month")`` verbatim, so such a
+#: where Python's ``.strip()`` strips all whitespace — so a month carrying a tab
+#: or a newline gave ``Mar`` from the Python twin and ``''`` from the SQL.
+#: ``parse._raw_pubdate`` stores ``findtext("Month")`` verbatim, so such a
 #: record exported blank *and* was reported as a ``pub_month`` mismatch against
 #: efetch, which is a CORE_FIELDS error. ``_WS`` is the character set Python
-#: strips.
-_MONTHS_SQL = "[" + ", ".join(f"'{m}'" for m in _MONTH_ABBR) + "]"
+#: strips, and every ``trim`` below names it.
 _WS = " \t\n\r\f\v"
-_TRIM_MONTH = f"trim(la.pub_month, E'{_WS}')"
-_MONTH_KEY_SQL = (
-    f"upper(substr({_TRIM_MONTH}, 1, 1)) || lower(substr({_TRIM_MONTH}, 2, 2))"
-)
-_PUB_MONTH_SQL = f"""CASE
-        WHEN trim(COALESCE(la.pub_month, ''), E'{_WS}') = '' THEN ''
-        WHEN regexp_full_match({_TRIM_MONTH}, '[0-9]+')
-            THEN COALESCE(list_extract({_MONTHS_SQL}, TRY_CAST({_TRIM_MONTH} AS BIGINT)), '')
-        WHEN list_contains({_MONTHS_SQL}, {_MONTH_KEY_SQL}) THEN {_MONTH_KEY_SQL}
-        ELSE ''
+
+_MONTHS_SQL = "[" + ", ".join(f"'{m}'" for m in _MONTH_ABBR) + "]"
+
+
+def _normalize_month_sql(expr: str) -> str:
+    """``normalize_month``'s logic as SQL over an arbitrary month expression.
+
+    Built from the same ``_MONTH_ABBR`` tuple so the abbreviations cannot drift,
+    and generated rather than written out because it is applied to *two* sources
+    (the column and the ``MedlineDate`` remainder). The shape mirrors the Python:
+    numeric months index the list (out-of-range gives NULL, hence the COALESCE),
+    textual ones match on their capitalized 3-letter prefix so "March" and "Sept"
+    both land, and everything else falls through verbatim.
+
+    ``\\p{L}+`` rather than ``[A-Za-z]+``: Python's ``str.isalpha()`` is
+    Unicode-aware, and a non-ASCII spelling must not make the twins disagree.
+    """
+    key = f"upper(substr(trim({expr}, E'{_WS}'), 1, 1)) || lower(substr(trim({expr}, E'{_WS}'), 2, 2))"
+    return f"""CASE
+        WHEN trim(COALESCE({expr}, ''), E'{_WS}') = '' THEN ''
+        WHEN regexp_full_match(trim({expr}, E'{_WS}'), '[0-9]+')
+            THEN COALESCE(list_extract({_MONTHS_SQL}, TRY_CAST(trim({expr}, E'{_WS}') AS BIGINT)), '')
+        WHEN list_contains({_MONTHS_SQL}, {key}) AND regexp_full_match(trim({expr}, E'{_WS}'), '\\p{{L}}+')
+            THEN {key}
+        ELSE trim({expr}, E'{_WS}')
     END"""
+
+
+#: ``pub_month``'s logic as SQL: the raw ``Month``/``Season`` column, falling back
+#: to the month half of a free-text ``MedlineDate``. ``validate`` calls the
+#: *Python* twin to normalize the efetch side, so
+#: ``test_pub_month_sql_matches_python`` pins the two together.
+_MEDLINE_MONTH_SQL = (
+    f"regexp_extract(COALESCE(la.medline_date, ''), '{_MEDLINE_MONTH_PATTERN_SQL}', 1)"
+)
+_PUB_MONTH_SQL = (
+    f"COALESCE(NULLIF({_normalize_month_sql('la.pub_month')}, ''), "
+    f"{_normalize_month_sql(_MEDLINE_MONTH_SQL)})"
+)
 
 #: ``_year_from_medline_date``'s fallback, same pattern, same pinning test
 #: (``test_pub_year_sql_matches_year_from_medline_date``). ``regexp_extract``
@@ -170,6 +270,8 @@ _JSON_FIELDS: tuple[tuple[str, str], ...] = (
     # Falls back to the year inside a free-text MedlineDate, which is the only
     # place these records carry one. See _year_from_medline_date.
     ("pub_year", _PUB_YEAR_SQL),
+    # Approximate months are passed through, not blanked: the spec's own example
+    # for PMID:8000234 emits "Sep-Dec" (issue #14). See normalize_month.
     ("pub_month", _PUB_MONTH_SQL),
     ("pub_day", "COALESCE(la.pub_day, '')"),
     ("abstract", "COALESCE(abs.abstract, '')"),

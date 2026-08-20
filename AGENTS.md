@@ -52,7 +52,12 @@ explains its part; this table is only a map.
   and the reason is not visible from the query. `validate`'s `EXPECTED_FIELDS`
   is `frozenset(export.JSON_FIELDS)` for the same reason — the exporter's own
   list, which its `COPY` projection is built from, so the record shape checked
-  cannot drift from the record shape shipped.
+  cannot drift from the record shape shipped. The field comparison imports
+  `pub_month`, `_year_from_medline_date` *and* `_MONTH_ABBR` from `export` on
+  the same principle: any normalization the export applies is applied to the
+  efetch side too. `_MONTH_ABBR` rather than `calendar.month_abbr`, which is
+  `LC_TIME`-dependent — under a non-English locale the `month-format` check
+  would have warned on every record.
 - **DuckDB writes the JSON, Python does not.** `export_json` is one
   `COPY (...) TO <dir> (FORMAT JSON, PER_THREAD_OUTPUT true)`, not a `fetchmany`
   loop calling `json.dumps` per row: the old loop spent ~80% of the export's
@@ -63,12 +68,14 @@ explains its part; this table is only a map.
     in emitted order — so the DocumentMetadataAPI names, the
     empty-string-not-null rule and the field order live in one place, and
     `validate` imports `JSON_FIELDS` from it rather than restating the shape.
-    `month_to_abbrev` and `_year_from_medline_date` survive as Python because
+    `pub_month` and `_year_from_medline_date` survive as Python because
     `validate` needs them for the efetch side; `_PUB_MONTH_SQL`/`_PUB_YEAR_SQL`
-    are their SQL twins, pinned together by
-    `test_month_sql_matches_month_to_abbrev` and
-    `test_pub_year_sql_matches_year_from_medline_date`. A divergence there makes
-    every normalized record read as a PubMed mismatch.
+    are their SQL twins, pinned together by `test_pub_month_sql_matches_python`
+    and `test_pub_year_sql_matches_year_from_medline_date` over the edge cases
+    (`"0"`, `"Sept"`, out of range, whitespace, non-ASCII). A divergence there
+    makes every normalized record read as a PubMed mismatch. The month test
+    iterates the **cross product** of month × MedlineDate inputs, because
+    `_PUB_MONTH_SQL` falls through from one source to the other.
   - **`--shards N` is a *maximum*, not a count.** `PER_THREAD_OUTPUT` gives one
     file per writer thread, so `shards` caps the COPY's thread count (restored
     afterwards) and a small dataset can use fewer. DuckDB *appends* to that
@@ -84,6 +91,34 @@ explains its part; this table is only a map.
     membership no longer depends on scan order (each thread owns a file), and
     nothing downstream consumes the order: the ingest is an ElasticSearch bulk
     load, and `validate` sorts its own PMID manifest.
+- **`pub_month` passes approximate months through; only month *names* are
+  normalized (issue #14).** The DocumentMetadataAPI spec contradicts itself: its
+  prose says "capitalized three-letter abbreviations", but its own worked example
+  for PMID:8000234 emits `"pub_month": "Sep-Dec"`. We follow the example.
+  `export.normalize_month` folds a month name (`"03"`, `"March"`, `"Sept"`,
+  `"sep"` → `"Mar"`/`"Sep"`) and returns everything else verbatim (`"Spring"`,
+  `"Sep-Dec"`); only an out-of-range *number* becomes `""`. The `raw.isalpha()`
+  guard is load-bearing — without it the 3-character prefix match silently
+  truncated `"Sep-Dec"` to `"Sep"`. Two sources feed it, and PubMed uses all
+  three renderings for the same record: `<Season>` shares the `pub_month` column
+  with `<Month>` (the DTD makes them exclusive, so no schema column and no
+  migration), and `_month_from_medline_date` recovers the text after a
+  `MedlineDate`'s leading year — whose mandatory *whitespace* is what stops
+  `"1999-2000"` (a year range, no month) yielding `"-2000"`. `pub_day` stays
+  blank for these records, as the spec example has it. A cross-year
+  `MedlineDate` therefore exports `pub_month` as `"Dec-1999 Jan"` — a month
+  field carrying a year, deliberately, because it is what PubMed wrote and what
+  its API renders back. `validate._VALID_MONTHS` excludes that shape on purpose,
+  so those records stay visible as `month-format` warnings; the checker
+  disagreeing with the export is the design here, not a bug. The wart is
+  answered by a verbatim `pub_date` field (#17), not by inventing a tidier
+  month — though whether consumers accept the odd `pub_month` beside it is
+  still open (#43). Note the split: the
+  `MedlineDate` half is export-only and needs no reload, the `<Season>` half only
+  takes effect for files loaded after the change. Every `trim` in the generated
+  SQL names `_WS`, the character set Python's `.strip()` removes — bare SQL
+  `trim()` strips spaces alone, which made the twins disagree on a `<Month>`
+  carrying a tab.
 - **Gzip is the export's default, and `validate` must not need telling.** NDJSON
   compresses ~4-5x (~52 GiB of full-corpus shards down to ~12), DuckDB
   compresses each shard as it writes it, and `validate.find_shards` matches

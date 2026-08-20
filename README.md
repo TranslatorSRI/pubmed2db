@@ -22,8 +22,11 @@ data model). On top of it, pubmed2db adds:
   provenance, so an abstract revised across several update files is kept as multiple rows.
   The `latest_article` view selects the newest non-deleted version of each PMID (honoring
   `<DeleteCitation>` removals).
-- **Faithful publication dates** — raw `PubDate` components (`Year`/`Month`/`Day`/
-  `MedlineDate`) are preserved rather than collapsed to a single date.
+- **Faithful publication dates** — raw `PubDate` components (`Year`/`Month`/`Season`/
+  `Day`/`MedlineDate`) are preserved rather than collapsed to a single date.
+  `<Season>` shares the `pub_month` column with `<Month>` — the DTD makes the two
+  mutually exclusive — so a Parquet consumer reading `article.pub_month` sees
+  `Winter` or `Sep-Dec` as readily as `Mar`.
 - **Journal names** — the journal title and abbreviations come from the NLM Catalog
   (`uv run pubmed2db journals`) and are joined on `nlm_catalog_id`.
 

@@ -25,6 +25,13 @@ on, and a copy left here rots into a contradiction of the code.
     ingest globs `*.ndjson` or does not decompress, it reads **nothing** — an
     empty ingest, not an error, which is the worst shape for a failure to take.
     `--no-gzip` restores the old artifact if the answer is no.
+  - **`pub_month` can carry a year** ([#43](https://github.com/TranslatorSRI/pubmed2db/issues/43)).
+    A cross-year `MedlineDate` exports `"pub_month": "Dec-1999 Jan"`
+    (PMID:10188493, ~1 in 5,773 records), verbatim as PubMed wrote it. The
+    verbatim `pub_date` field (#17) gives consumers a clean string to render
+    from, but does not by itself answer whether the odd `pub_month` is
+    acceptable alongside it. Answering "blank it instead" is a one-line gate in
+    the export — and one that has to be made *before* a whole-corpus run.
   - **Shard names lost their zero padding.** `pubmed_metadata_00000.ndjson`
     became `pubmed_metadata_0.ndjson.gz`: DuckDB's `PER_THREAD_OUTPUT` names
     files from `FILENAME_PATTERN '{i}'`, which emits a bare index. Anything
@@ -154,20 +161,26 @@ still has a populated `reference_citation` table, which nothing will clear.
 
 ## Data fidelity
 
-- **`MedlineDate` ranges — `pub_year` done, month/day still blank.** Records whose
-  `PubDate` is a season or a range carry no `<Year>`; PubMed puts the whole thing
-  in `<MedlineDate>` ("1998 Spring", "1978 Jul-Aug", "1998 Dec-1999 Jan"). The
-  export now recovers the leading 4-digit year via `export._year_from_medline_date`,
-  which a full-corpus `validate` run showed was the single largest source of
-  export/Entrez disagreement (18 of 20 sampled mismatches). Confirmed against the
-  archival XML rather than inferred: `pubmed26n0005.xml.gz` holds PMID 152567 as
+- **`MedlineDate` ranges — `pub_year` and `pub_month` done, `pub_day` blank by
+  design.** Records whose `PubDate` is a season or a range carry no `<Year>`;
+  PubMed puts the whole thing in `<MedlineDate>` ("1998 Spring", "1978 Jul-Aug",
+  "1998 Dec-1999 Jan"). The export recovers the leading 4-digit year via
+  `export._year_from_medline_date`, which a full-corpus `validate` run showed was
+  the single largest source of export/Entrez disagreement (18 of 20 sampled
+  mismatches). Confirmed against the archival XML rather than inferred:
+  `pubmed26n0005.xml.gz` holds PMID 152567 as
   `<MedlineDate>1978 Jul-Aug</MedlineDate>` with no `<Year>` element, and **3,625
   of that file's 30,000 records (12%)** are the same shape — 127 distinct date
   strings, every one of which yields a year, none disagreeing with any other
-  4-digit run in the string. `pub_month`/`pub_day`
-  are deliberately still empty: a range has no single month, and inventing one
-  would put a wrong value where there is currently an honest blank. Revisit only
-  if a consumer needs an approximate month more than it needs correctness.
+  4-digit run in the string. `pub_month` now takes the rest of that string
+  verbatim (issue #14, `export._month_from_medline_date`), since the spec's own
+  PMID:8000234 example expects `"Sep-Dec"`. `pub_day` stays empty — a range has
+  no single day, and the spec example leaves it blank too.
+  **Still open:** how common `<Season>` actually is in the *archival* files. The
+  parser now reads it (into the `pub_month` column), but every observed case so
+  far has been the `<MedlineDate>` form in the baseline and the `<Season>`
+  rendering only from efetch. `zgrep -c "<Season>"` over a baseline file would
+  settle it; if the answer is zero, that half of the change is pure insurance.
 - **The PMCID CURIE prefix is not settled** ([#33](https://github.com/TranslatorSRI/pubmed2db/issues/33)).
   We emit `PMCID:PMC1234567`. Babel's `src/prefixes.py` says `PMC`, and neither
   the Core Components specification
