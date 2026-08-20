@@ -119,6 +119,60 @@ explains its part; this table is only a map.
   SQL names `_WS`, the character set Python's `.strip()` removes — bare SQL
   `trim()` strips spaces alone, which made the twins disagree on a `<Month>`
   carrying a tab.
+- **`pub_date` is the fidelity guarantee; the three parsed date fields are
+  conveniences.** No arrangement of `pub_year`/`pub_month`/`pub_day` represents a
+  cross-year `MedlineDate` — `"1998 Dec-1999 Jan"` (PMID:10188493) splits into a
+  `pub_month` holding a year. So the export ships a twelfth field carrying
+  PubMed's own string verbatim on **every** record, exactly as NCBI `esummary`'s
+  `pubdate` does — including its unpadded day: the archival XML writes
+  `<Day>01</Day>` where `esummary` renders `1` (PMID:35504184), so
+  `normalize_day` strips the zero rather than letting most days below the tenth
+  read as a mismatch. Consumers rendering a citation read `pub_date`; consumers
+  sorting or filtering read `pub_year`; neither parses the other. `_PUB_DATE_SQL`
+  takes `medline_date` whole when present, else assembles
+  `year + normalize_month(month) + day`. It calls `_normalize_month_sql('la.pub_month')`
+  rather than `_PUB_MONTH_SQL` for clarity and one fewer `regexp_extract`, **not**
+  to avoid double-counting the `MedlineDate` — an earlier comment claimed that
+  hazard and it does not exist, since the branch only runs when the
+  `MedlineDate` is blank and a blank one contributes `''`, making the two
+  expressions provably equal there.
+  The two renderings PubMed serves must converge on one string (efetch's
+  `<Year>1994</Year><Season>Sep-Dec</Season>` and the baseline's
+  `<MedlineDate>1994 Sep-Dec</MedlineDate>` both give `"1994 Sep-Dec"`); that is
+  what lets `validate` compare the field at all, and
+  `test_pub_date_matches_ncbi_pubdate` pins it to esummary's real output.
+  `pub_year` takes the **leading** year of a range, against the semantic argument
+  for the trailing one — see `_year_from_medline_date`'s docstring, which records
+  why and the evidence (NCBI's `sortpubdate` agrees; cross-year ranges are ~0.07%
+  of PubMed).
+
+  **Date comparison has two separate problems, fixed in two separate places.**
+  *Rendering:* efetch serves a re-serialization rather than the archival string,
+  so `efetch_documents` reconstructs one — normalizing the month, which is what
+  makes the `<Year>+<Season>` rendering converge. A baseline
+  `<MedlineDate>1998 September</MedlineDate>` therefore meets a reconstructed
+  `"1998 Sep"`, both correct. `validate._normalize_date` folds the two spellings
+  at comparison time, so it is not reported; nothing about the export changes.
+  *Correlation:* `pub_date` is derived from the same three columns as
+  `pub_year`/`pub_month`/`pub_day`, so gating on it would let one genuine date
+  disagreement count four times instead of three, tightening the FAIL threshold
+  on the records most likely to trip it. That is why it is a **SOFT** field, and
+  normalization does not address it.
+- **`esummary` is a third rendering, and the useful one for design questions.**
+  Where efetch re-serializes the XML, `esummary` shows NCBI's *own* normalization
+  decisions — `pubdate` ("1998 Dec-1999 Jan") and `sortpubdate` ("1998/01/01")
+  settled both the shape and the leading-year rule for `export.pub_date` faster
+  than any amount of arguing from the spec. Reach for it when the question is
+  "what should we emit?" rather than "what did we parse?".
+- **Measure PubMed by sampling PMIDs, not by downloading a baseline file.**
+  "How common is this shape?" is answerable in seconds: draw random integers from
+  `1..40_900_000`, hand 300 at a time to `esummary` (non-existent PMIDs simply
+  drop out of the response), and tally. ~6,000 sampled records took under a
+  minute and gave the numbers that decided two design calls — that cross-year
+  `MedlineDate` ranges are ~0.07% of the corpus (so a general `pub_date` beat a
+  special case), and that single-year ranges are ~7% (so passing them through
+  mattered). A 30 MB baseline download answers one file; this answers the
+  corpus, and needs no disk.
 - **Gzip is the export's default, and `validate` must not need telling.** NDJSON
   compresses ~4-5x (~52 GiB of full-corpus shards down to ~12), DuckDB
   compresses each shard as it writes it, and `validate.find_shards` matches

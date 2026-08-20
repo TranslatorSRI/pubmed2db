@@ -112,15 +112,43 @@ _MEDLINE_YEAR_RE = re.compile(r"^\s*(\d{4})")
 
 
 def _year_from_medline_date(raw: str | None) -> str:
-    """Leading 4-digit year of a free-text ``MedlineDate``, or ``""``.
+    """**Leading** 4-digit year of a free-text ``MedlineDate``, or ``""``.
 
     Records whose ``PubDate`` is a range or a season carry no ``<Year>`` element
     — PubMed puts the whole thing in ``<MedlineDate>`` ("1978 Jul-Aug", "1998
     Spring", "1998 Dec-1999 Jan", "1999-2000"). We store that verbatim for
     fidelity, which left ``pub_year`` blank in the export for every such record.
-    The leading year is unambiguous in all of those shapes, so it is safe to
-    recover; ``pub_day`` stays empty, since a range has no single day. The month
-    half is recovered separately by :func:`_month_from_medline_date`.
+    ``pub_day`` stays empty, since a range has no single day. The month half is
+    recovered separately by :func:`_month_from_medline_date`.
+
+    **Why the leading year, when a range spans two?**
+
+    ==========================  ========  ===============================
+    ``MedlineDate``             we emit   NCBI ``esummary.sortpubdate``
+    ==========================  ========  ===============================
+    ``"1994 Sep-Dec"``          1994      ``1994/09/01``
+    ``"1998 Dec-1999 Jan"``     1998      ``1998/01/01``
+    ``"1997 Dec-1998 Jan"``     1997      ``1997/01/01``
+    ``"1987-1988"``             1987      ``1987/01/01``
+    ==========================  ========  ===============================
+
+    There is a real argument for the **trailing** year: "1998 Dec-1999 Jan"
+    describes an issue that mostly reached readers in January 1999, so 1999 is
+    arguably when it was published. We chose 1998 anyway, because agreeing with
+    PubMed matters more than being semantically nicer in isolation:
+
+    1. NCBI's own ``sortpubdate`` takes the leading year in every cross-year
+       shape (right-hand column above) — a consumer joining our ``pub_year``
+       against anything derived from Entrez would disagree with it otherwise.
+    2. Every *other* shape already uses the leading year, and it is the only
+       year present in most of them. A trailing-year rule would have to fire
+       only when two years appear, making one rare shape behave unlike the rest.
+    3. Cross-year ranges are ~0.07% of PubMed (4 of 5,773 sampled records, and
+       three of those were bare "1987-1988" year ranges), so the inconsistency
+       would buy very little and cost a special case forever.
+
+    The fidelity escape hatch is :func:`pub_date`, which carries the whole
+    string verbatim — a consumer that needs "1999" can see it there.
     """
     if not raw:
         return ""
@@ -194,14 +222,105 @@ def pub_month(month: str | None, medline_date: str | None = None) -> str:
     return normalize_month(month) or normalize_month(_month_from_medline_date(medline_date))
 
 
-#: **Not bare ``trim()``.** SQL ``trim(x)`` strips spaces and nothing else,
-#: where Python's ``.strip()`` strips all whitespace — so a month carrying a tab
-#: or a newline gave ``Mar`` from the Python twin and ``''`` from the SQL.
-#: ``parse._raw_pubdate`` stores ``findtext("Month")`` verbatim, so such a
-#: record exported blank *and* was reported as a ``pub_month`` mismatch against
-#: efetch, which is a CORE_FIELDS error. ``_WS`` is the character set Python
-#: strips, and every ``trim`` below names it.
-_WS = " \t\n\r\f\v"
+#: **Never bare ``trim()``, and never a fixed character list either.** SQL
+#: ``trim(x)`` strips spaces and nothing else, where Python's ``.strip()`` strips
+#: all whitespace — so a month carrying a tab gave ``Mar`` from the Python twin
+#: and ``''`` from the SQL. ``parse._raw_pubdate`` stores ``findtext("Month")``
+#: verbatim, so such a record exported blank *and* was reported as a
+#: ``pub_month`` mismatch against efetch, which is a CORE_FIELDS error.
+#:
+#: The first fix for that named an explicit ASCII set, which closed half the
+#: gap and left the other half open: ``.strip()`` is Unicode-aware, so a
+#: leading ``\xa0`` or a trailing ``\u2003`` still split the twins. In
+#: :data:`_PUB_DATE_SQL` that could flip a *branch* rather than pad a string — a
+#: ``medline_date`` of one non-breaking space is truthy to an ASCII trim and
+#: falsy to ``.strip()``, so one side emitted the whitespace verbatim while the
+#: other assembled the date from its parts.
+#:
+#: So this is a regex strip over the same class :data:`_MEDLINE_SEP_SQL` uses,
+#: and it is the *only* way whitespace is removed below. Verified equal to
+#: ``str.strip()`` over the shapes in ``tests/test_export.py``.
+_STRIP_CLASS_SQL = r"[\s\p{Z}\x0B]"
+
+
+def _strip_sql(expr: str) -> str:
+    """``str.strip()`` as SQL, over an arbitrary expression."""
+    return (
+        f"regexp_replace({expr}, "
+        f"'^{_STRIP_CLASS_SQL}+|{_STRIP_CLASS_SQL}+$', '', 'g')"
+    )
+
+
+def normalize_day(raw: str | None) -> str:
+    """Strip a leading zero from a numeric day, as NCBI ``esummary`` does.
+
+    PubMed's archival XML zero-pads: PMID:35504184 is
+    ``<Year>2022</Year><Month>Aug</Month><Day>01</Day>``, and ``esummary``
+    renders that record's ``pubdate`` as ``"2022 Aug 1"``. Emitting
+    ``"2022 Aug 01"`` would break the parity :func:`pub_date` exists for, and
+    would show up as a ``pub_date`` mismatch on every zero-padded record —
+    which is most days below the tenth, not an edge case.
+
+    Only an ASCII digit string is touched, and the ASCII test is the same one
+    :func:`normalize_month` uses: ``<Day>`` is nominally numeric but nothing
+    enforces it, and a value we cannot read is passed through rather than
+    mangled.
+    """
+    if not raw:
+        return ""
+    raw = raw.strip()
+    if raw.isascii() and raw.isdigit():
+        return str(int(raw))
+    return raw
+
+
+def pub_date(
+    year: str | None,
+    month: str | None,
+    day: str | None,
+    medline_date: str | None,
+) -> str:
+    """PubMed's own publication-date string, verbatim where it exists.
+
+    ``pub_year``/``pub_month``/``pub_day`` are best-effort *parsed* fields and
+    cannot represent every ``PubDate``: a cross-year range ("1998 Dec-1999 Jan",
+    issue #14) has no single month, and splitting it puts a year inside
+    ``pub_month``. This field is the fidelity guarantee instead — one string that
+    always reproduces what PubMed says, on every record, so a consumer rendering
+    a citation never has to reassemble one. Sorting and filtering still use
+    ``pub_year``.
+
+    Deliberately identical to NCBI ``esummary``'s ``pubdate``, which solves the
+    same problem the same way::
+
+        "1998 Dec-1999 Jan"  (MedlineDate)   -> "1998 Dec-1999 Jan"
+        1994 + <Season>Sep-Dec               -> "1994 Sep-Dec"
+        2019 + Mar + 15                      -> "2019 Mar 15"
+        2019 (year only)                     -> "2019"
+
+    Note the second and first lines converge: PubMed serves the *same* record as
+    ``<Year>+<Season>`` from efetch and as a bare ``<MedlineDate>`` in the
+    baseline, and both must produce one string — otherwise ``validate`` reads
+    every such record as a mismatch. The month is normalized on the assembled
+    path for the same reason, and so the output matches NCBI's "2019 Mar 15".
+
+    The Python twin of :data:`_PUB_DATE_SQL`, pinned by
+    ``test_pub_date_sql_matches_python``.
+    """
+    if medline_date and medline_date.strip():
+        return medline_date.strip()
+    # A day without a month is dropped, not floated up next to the year:
+    # `("2019", "13", "15")` would otherwise render "2019 15", which reads as a
+    # date to the consumer this field exists for and is not one. `normalize_month`
+    # blanks an out-of-range number, and `_MONTH_INPUTS` shows those do reach
+    # here. NCBI does the same thing in `sortpubdate` — an unusable component
+    # costs precision rather than producing a plausible wrong answer.
+    normalized_month = normalize_month(month)
+    parts = [(year or "").strip(), normalized_month]
+    if normalized_month:
+        parts.append(normalize_day(day))
+    return " ".join(part for part in parts if part)
+
 
 _MONTHS_SQL = "[" + ", ".join(f"'{m}'" for m in _MONTH_ABBR) + "]"
 
@@ -219,14 +338,15 @@ def _normalize_month_sql(expr: str) -> str:
     ``\\p{L}+`` rather than ``[A-Za-z]+``: Python's ``str.isalpha()`` is
     Unicode-aware, and a non-ASCII spelling must not make the twins disagree.
     """
-    key = f"upper(substr(trim({expr}, E'{_WS}'), 1, 1)) || lower(substr(trim({expr}, E'{_WS}'), 2, 2))"
+    stripped = _strip_sql(f"COALESCE({expr}, '')")
+    key = f"upper(substr({stripped}, 1, 1)) || lower(substr({stripped}, 2, 2))"
     return f"""CASE
-        WHEN trim(COALESCE({expr}, ''), E'{_WS}') = '' THEN ''
-        WHEN regexp_full_match(trim({expr}, E'{_WS}'), '[0-9]+')
-            THEN COALESCE(list_extract({_MONTHS_SQL}, TRY_CAST(trim({expr}, E'{_WS}') AS BIGINT)), '')
-        WHEN list_contains({_MONTHS_SQL}, {key}) AND regexp_full_match(trim({expr}, E'{_WS}'), '\\p{{L}}+')
+        WHEN {stripped} = '' THEN ''
+        WHEN regexp_full_match({stripped}, '[0-9]+')
+            THEN COALESCE(list_extract({_MONTHS_SQL}, TRY_CAST({stripped} AS BIGINT)), '')
+        WHEN list_contains({_MONTHS_SQL}, {key}) AND regexp_full_match({stripped}, '\\p{{L}}+')
             THEN {key}
-        ELSE trim({expr}, E'{_WS}')
+        ELSE {stripped}
     END"""
 
 
@@ -242,12 +362,63 @@ _PUB_MONTH_SQL = (
     f"{_normalize_month_sql(_MEDLINE_MONTH_SQL)})"
 )
 
+#: The month for the assembled branch. ``_normalize_month_sql('la.pub_month')``
+#: rather than :data:`_PUB_MONTH_SQL`, which would fold the ``MedlineDate`` back
+#: in — *not* because that would double-count anything (the two are provably
+#: equal on this branch, since it only runs when the ``MedlineDate`` is blank
+#: and a blank one contributes ``''``), but because naming the column directly
+#: says what this branch means and skips a ``regexp_extract`` that can only ever
+#: return ``''`` here. An earlier comment claimed a double-count hazard; there
+#: is none, and chasing it would waste a reader's time.
+_MONTH_FOR_DATE_SQL = _normalize_month_sql("la.pub_month")
+
+#: NULL, not ``''``, when the month blanked — ``concat_ws`` skips NULLs, so the
+#: day disappears rather than sitting beside the year and reading as a date.
+#: ``normalize_day`` as SQL: a leading zero comes off an ASCII numeric day, so
+#: ``<Day>01</Day>`` renders ``1`` the way ``esummary`` does. ``TRY_CAST`` is the
+#: ASCII-digit test and the strip in one — it returns NULL for anything that is
+#: not a plain integer, which is exactly the "pass it through" case.
+_STRIPPED_DAY_SQL = _strip_sql("COALESCE(la.pub_day, '')")
+_NORMALIZED_DAY_SQL = (
+    f"CASE WHEN regexp_full_match({_STRIPPED_DAY_SQL}, '[0-9]+') "
+    f"THEN CAST(CAST({_STRIPPED_DAY_SQL} AS BIGINT) AS VARCHAR) "
+    f"ELSE {_STRIPPED_DAY_SQL} END"
+)
+_DAY_FOR_DATE_SQL = (
+    f"CASE WHEN {_MONTH_FOR_DATE_SQL} = '' THEN NULL "
+    f"ELSE NULLIF({_NORMALIZED_DAY_SQL}, '') END"
+)
+
+#: ``pub_date``'s logic as SQL. ``concat_ws`` skips NULLs, which is what the
+#: ``NULLIF(..., '')`` wrappers are for — an absent month must not leave a
+#: double space behind.
+#:
+#: Whitespace goes through :func:`_strip_sql`, never ``trim``. It matters more
+#: here than anywhere else: this expression *branches* on whether the
+#: ``medline_date`` is blank, so a value of one non-breaking space that an
+#: ASCII trim calls non-empty and ``.strip()`` calls empty does not pad a
+#: string — it makes the two implementations emit entirely different dates.
+_PUB_DATE_SQL = f"""CASE
+        WHEN {_strip_sql("COALESCE(la.medline_date, '')")} <> ''
+            THEN {_strip_sql("la.medline_date")}
+        ELSE {_strip_sql("concat_ws(' ', " + ", ".join([
+            "NULLIF(" + _strip_sql("COALESCE(la.pub_year, '')") + ", '')",
+            "NULLIF(" + _MONTH_FOR_DATE_SQL + ", '')",
+            _DAY_FOR_DATE_SQL,
+        ]) + ")")}
+    END"""
+
 #: ``_year_from_medline_date``'s fallback, same pattern, same pinning test
 #: (``test_pub_year_sql_matches_year_from_medline_date``). ``regexp_extract``
 #: returns ``''`` when nothing matches, which is already the spec's value.
+#: The leading-whitespace class has to be the RE2 one here too, for the same
+#: reason :data:`_MEDLINE_SEP_SQL` does: Python's ``^\s*`` skips a leading
+#: ``\xa0`` and RE2's does not, so such a record recovered its year in
+#: ``validate`` and exported blank.
+_MEDLINE_YEAR_PATTERN_SQL = rf"^{_STRIP_CLASS_SQL}*(\d{{4}})"
 _PUB_YEAR_SQL = (
     "COALESCE(NULLIF(la.pub_year, ''), "
-    f"regexp_extract(COALESCE(la.medline_date, ''), '{_MEDLINE_YEAR_RE.pattern}', 1))"
+    f"regexp_extract(COALESCE(la.medline_date, ''), '{_MEDLINE_YEAR_PATTERN_SQL}', 1))"
 )
 
 #: The JSON record: output field name -> SQL expression, in emitted order.
@@ -274,6 +445,9 @@ _JSON_FIELDS: tuple[tuple[str, str], ...] = (
     # for PMID:8000234 emits "Sep-Dec" (issue #14). See normalize_month.
     ("pub_month", _PUB_MONTH_SQL),
     ("pub_day", "COALESCE(la.pub_day, '')"),
+    # PubMed's own date string, verbatim -- the three fields above are parsed
+    # conveniences and cannot represent a cross-year range. See pub_date.
+    ("pub_date", _PUB_DATE_SQL),
     ("abstract", "COALESCE(abs.abstract, '')"),
 )
 

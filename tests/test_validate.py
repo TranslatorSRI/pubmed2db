@@ -173,13 +173,43 @@ def test_malformed_and_structural_errors(export_dir):
     assert {"malformed_json", "missing_fields", "invalid_ids", "null_values", "duplicate_pmids"} <= codes
 
 
+@pytest.mark.parametrize(
+    "pub_month,warns",
+    [
+        ("Mar", False),             # an ordinary abbreviation
+        ("", False),                # absent, the empty-string convention
+        ("Spring", False),          # a season -- the export now passes these through
+        ("Sep-Dec", False),         # the DocumentMetadataAPI example's range
+        ("Jul-Aug", False),
+        ("Winter-Spring", False),   # a range of seasons
+        ("Dec-1999 Jan", True),     # cross-year: legitimate input, still worth seeing
+        ("3", True),                # unnormalized -- the export should never emit this
+        ("Marzipan", True),
+    ],
+)
+def test_month_format_accepts_what_the_export_can_emit(export_dir, pub_month, warns):
+    """The `month-format` check must accept every shape `export.pub_month` emits.
+
+    The check used to allow only the 12 abbreviations, which was right when the
+    export blanked everything else. Now that seasons and ranges pass through
+    (issue #14), a too-narrow set here would warn on every one of the ~7% of
+    records carrying them -- while a wide-open set would stop flagging anything.
+    So the odd-but-real "Dec-1999 Jan" is deliberately still a warning.
+    """
+    _append_to_shard(export_dir, json.dumps({**_valid_doc(), "pub_month": pub_month}))
+
+    report = validate.run_validation(export_dir, online=False)
+    warned = any(w["code"] == "invalid_months" for w in report["warnings"])
+    assert warned is warns, report["warnings"]
+
+
 def _valid_doc():
     return {
         "id": "PMID:9",
         "identifiers": ["PMID:9"],
         "journal_name": "", "journal_abbrev": "", "article_title": "",
         "volume": "", "issue": "", "pub_year": "", "pub_month": "",
-        "pub_day": "", "abstract": "",
+        "pub_day": "", "pub_date": "", "abstract": "",
     }
 
 
@@ -339,10 +369,10 @@ def test_cli_validate_fails_on_error(export_dir):
 def test_expected_fields_matches_spec():
     """EXPECTED_FIELDS derives from the exporter; lock it to the shipped spec.
 
-    The 11 exported field names are an external contract (Node Annotator /
+    The 12 exported field names are an external contract (Node Annotator /
     ElasticSearch consume them), so changing the export shape should trip a test
     rather than silently re-define what validate accepts. Nine of them are the
-    DocumentMetadataAPI spec's; `id` and `identifiers` are our extensions.
+    DocumentMetadataAPI spec's; `id`, `identifiers` and `pub_date` are ours.
     """
     assert set(validate.EXPECTED_FIELDS) == {
         "id",
@@ -355,6 +385,7 @@ def test_expected_fields_matches_spec():
         "pub_year",
         "pub_month",
         "pub_day",
+        "pub_date",
         "abstract",
     }
 
@@ -583,6 +614,60 @@ def test_medline_date_year_is_not_a_false_mismatch(export_dir, loaded_con, monke
             if m["field"] in ("pub_year", "pub_month")] == []
 
 
+def test_date_renderings_are_compared_normalized(export_dir, loaded_con, monkeypatch):
+    """The two sides can be *written* differently while describing one date.
+
+    `pub_date` takes a MedlineDate whole, but efetch serves a re-serialization,
+    so `efetch_documents` reconstructs one -- normalizing the month, as it must
+    for the <Year>+<Season> rendering to converge with <MedlineDate>. A baseline
+    "1998 September" therefore meets a reconstructed "1998 Sep". Both correct;
+    not a difference in the data, and not something a report should show.
+    """
+    from pubmed2db.export import pub_date
+
+    # The strings really do differ -- this is not a vacuous comparison.
+    assert pub_date(None, None, None, "1998 September") == "1998 September"
+    assert pub_date("1998", "September", None, None) == "1998 Sep"
+    assert validate._normalize_date("1998 September") == validate._normalize_date("1998 Sep")
+    # Same for a zero-padded day, either side of export.normalize_day.
+    assert validate._normalize_date("2022 Aug 01") == validate._normalize_date("2022 Aug 1")
+    # ...but a real difference still survives normalization.
+    assert validate._normalize_date("1998 Spring") != validate._normalize_date("1998 Sep")
+
+    # And the wiring, not just the helper: an export holding the MedlineDate
+    # form against efetch serving the <Year>+<Month> one, end to end.
+    report = validate.Report()
+    sample = {1003: {**_valid_doc(), "id": "PMID:1003", "pub_date": "1998 September"}}
+    fetched = {1003: {**{f: "" for f in validate.EXPECTED_FIELDS}, "pub_date": "1998 Sep"}}
+    monkeypatch.setattr(validate, "efetch_documents", lambda *a, **k: fetched)
+    validate.check_fields(
+        report, sample, online=True, api_key=None, email="me@example.com",
+        abstract_threshold=0.9,
+    )
+
+    fields = report.checks["field_validation"]
+    assert fields["checked"] == 1
+    assert all(m.get("field") != "pub_date" for m in fields["mismatches"]), fields
+    assert all(m.get("field") != "pub_date" for m in fields["soft_mismatches"]), fields
+
+
+def test_pub_date_cannot_fail_a_run(export_dir, loaded_con):
+    """SOFT, not CORE -- and for a reason normalization does not address.
+
+    `pub_date` is derived from the same three columns as pub_year/pub_month/
+    pub_day, so gating on it would let one date disagreement contribute four
+    mismatches instead of three, tightening the FAIL threshold on exactly the
+    records most likely to trip it. validate.py makes the same argument for
+    keeping the `identifiers` comparison advisory.
+    """
+    assert "pub_date" in validate.SOFT_FIELDS
+    assert "pub_date" not in validate.CORE_FIELDS
+
+    report = validate.run_validation(export_dir, con=loaded_con, online=False)
+    expectations = report["checks"]["field_validation"]
+    assert expectations is None or "pub_date" not in str(report.get("errors", []))
+
+
 def test_season_rendering_is_not_a_false_mismatch(export_dir, loaded_con, monkeypatch):
     """The <Year>+<Season> rendering must compare equal to the MedlineDate form.
 
@@ -601,8 +686,11 @@ def test_season_rendering_is_not_a_false_mismatch(export_dir, loaded_con, monkey
 
     fetched = validate.efetch_documents([1003], api_key=None, email=None)
     assert (fetched[1003]["pub_year"], fetched[1003]["pub_month"]) == ("1998", "Spring")
+    # The convergence that makes pub_date checkable: assembled from <Year>+<Season>
+    # here, taken whole from <MedlineDate> in the export, one string either way.
+    assert fetched[1003]["pub_date"] == "1998 Spring"
     assert [m for m in report["checks"]["field_validation"]["mismatches"]
-            if m["field"] in ("pub_year", "pub_month")] == []
+            if m["field"] in ("pub_year", "pub_month", "pub_date")] == []
 
 
 # --------------------------------------------------------------------------- #

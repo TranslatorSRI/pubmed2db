@@ -54,6 +54,38 @@ def test_month_from_medline_date(raw, expected):
     assert _month_from_medline_date(raw) == expected
 
 
+@pytest.mark.parametrize(
+    "label,args,expected",
+    [
+        # (year, month_or_season, day, medline_date) -> NCBI esummary's `pubdate`.
+        ("PMID:30690000", ("2019", "Mar", "15", None), "2019 Mar 15"),
+        # The same record, both ways PubMed serves it -- these MUST converge.
+        ("PMID:8000234 via efetch <Season>", ("1994", "Sep-Dec", None, None), "1994 Sep-Dec"),
+        ("PMID:8000234 via <MedlineDate>", (None, None, None, "1994 Sep-Dec"), "1994 Sep-Dec"),
+        ("PMID:10188493 cross-year", (None, None, None, "1998 Dec-1999 Jan"),
+         "1998 Dec-1999 Jan"),
+        ("year only", ("2019", None, None, None), "2019"),
+        ("numeric month normalizes", ("2019", "03", "15", None), "2019 Mar 15"),
+        # The archival XML zero-pads the day and esummary does not. Verified
+        # against live esummary: PMID:35504184 is <Day>01</Day> in efetch and
+        # "2022 Aug 1" in pubdate. Most days below the tenth look like this.
+        ("PMID:35504184 zero-padded day", ("2022", "Aug", "01", None), "2022 Aug 1"),
+        ("no date at all", (None, None, None, None), ""),
+    ],
+)
+def test_pub_date_matches_ncbi_pubdate(label, args, expected):
+    """`pub_date` reproduces NCBI esummary's `pubdate` for every shape.
+
+    That equivalence is the whole point of the field: the three parsed date
+    fields cannot represent a cross-year range, and NCBI solved it by shipping
+    one verbatim string alongside them. Expectations here are the real values
+    esummary returns for those PMIDs.
+    """
+    from pubmed2db.export import pub_date
+
+    assert pub_date(*args) == expected, label
+
+
 def test_pub_month_prefers_the_column_over_the_medline_date():
     """The MedlineDate is a fallback, not an override."""
     from pubmed2db.export import pub_month
@@ -122,6 +154,7 @@ def test_json_export_uses_spec_fields(loaded_con, tmp_path):
         "pub_year": "2020",
         "pub_month": "Mar",
         "pub_day": "16",
+        "pub_date": "2020 Mar 16",
         "abstract": "The revised abstract for article one.",
     }
 
@@ -154,6 +187,9 @@ def test_json_export_empty_string_not_null(loaded_con, tmp_path):
     assert three["pub_year"] == "1998"
     assert three["pub_month"] == "Spring"
     assert three["pub_day"] == ""
+    # ...and pub_date carries the MedlineDate whole, which is the one field
+    # guaranteed to reproduce PubMed regardless of how the parts split up.
+    assert three["pub_date"] == "1998 Spring"
     assert three["issue"] == ""
     assert three["abstract"] == ""
     assert all(value is not None for value in three.values())
@@ -355,7 +391,11 @@ _MONTH_INPUTS = ["3", "03", " 3 ", "Mar", "March", "Sept", "SEPTEMBER", "sep",
                  "Spring", "Sep-Dec", "Winter", "Frühling",
                  "13", "0", "99999999999999999999", "", "  ", None,
                  "\tMar", "3\n", "\n3", "\r\nMarch\t", "\t\n", "\tSep-Dec",
-                 "²", "١٢", "3²"]
+                 "²", "١٢", "3²",
+                 # Unicode whitespace at the *edges*: `.strip()` removes it and
+                 # an ASCII-only SQL trim does not, which is the half of the
+                 # whitespace bug the first fix left open.
+                 "\xa0Mar", "Mar\u2003", "\xa03", "\u2003"]
 #: The non-ASCII and vertical-tab separators are the cases the pinning test
 #: could not previously reach: every entry used a plain space, so it could not
 #: see that RE2's `\s` is `[\t\n\f\r ]` while Python's includes `\v` and
@@ -364,6 +404,9 @@ _MONTH_INPUTS = ["3", "03", " 3 ", "Mar", "March", "Sept", "SEPTEMBER", "sep",
 _MEDLINE_INPUTS = ["1998 Spring", "1994 Sep-Dec", "1978 Jul-Aug", "1998 September",
                    "1998 Dec-1999 Jan", "1999-2000",
                    "1998\xa0Spring", "1998\x0bSpring", "1998\u2003Sep-Dec",
+                   # ...and at the edges, where a blank-vs-not answer decides
+                   # which branch of _PUB_DATE_SQL runs at all.
+                   "\xa01998 Spring", "1998 Spring\u2003", "\xa0", "\u2003\xa0",
                    "  2001 Winter", "n.d.", "Spring 1998", "12345", "", None]
 
 
@@ -375,27 +418,102 @@ def test_pub_month_sql_matches_python(con):
     The full cross product, not each input alone: the SQL falls through from the
     column to the MedlineDate, so the two sources interact.
     """
+    import itertools
+
     from pubmed2db.export import _PUB_MONTH_SQL, pub_month
 
-    for month in _MONTH_INPUTS:
-        for medline in _MEDLINE_INPUTS:
-            got = con.execute(
-                f"SELECT {_PUB_MONTH_SQL} "
-                "FROM (SELECT ? AS pub_month, ? AS medline_date) la",
-                [month, medline],
-            ).fetchone()[0]
-            assert got == pub_month(month, medline), f"{month=!r} {medline=!r}"
+    rows = list(itertools.product(_MONTH_INPUTS, _MEDLINE_INPUTS))
+    got = _twin_rows(con, _PUB_MONTH_SQL, ["pub_month", "medline_date"], rows)
+    for (month, medline), value in zip(rows, got):
+        assert value == pub_month(month, medline), f"{month=!r} {medline=!r}"
+
+
+#: Years and days to pair with the month/MedlineDate lists above. Kept small --
+#: the pub_date parity test is a 4-way cross product.
+#: Both carry Unicode whitespace at an edge: every entry here used to be ASCII,
+#: which is why the twins could disagree on a trailing `\u2003` with the cross
+#: product still green.
+_YEAR_INPUTS = ["2019", "", "  ", None, "\xa02019", "2019\u2003"]
+_DAY_INPUTS = ["15", "", None, "\n15", "15\xa0", "01", "005", "0", "1a"]
+
+
+def _twin_rows(con, sql: str, columns: list[str], rows: list[tuple]) -> list:
+    """Evaluate a twin SQL expression once per row, in a single query.
+
+    One `con.execute` per combination turns the 4-way `pub_date` product into
+    ~17k round trips and 50s of suite time; registering the inputs as one table
+    and projecting the expression over it is the same assertions in under a
+    second. The column names are the ones the expressions reference (`la.*`).
+    """
+    import pyarrow as pa
+
+    table = pa.table({
+        name: pa.array([row[i] for row in rows], type=pa.string())
+        for i, name in enumerate(columns)
+    })
+    con.register("_twin_inputs", table)
+    try:
+        return [r[0] for r in con.execute(f"SELECT {sql} FROM _twin_inputs la").fetchall()]
+    finally:
+        con.unregister("_twin_inputs")
+
+
+def test_pub_date_sql_matches_python(con):
+    """Same twin contract as pub_month, over all four date inputs.
+
+    A 4-way cross product because `pub_date` switches on the MedlineDate and
+    assembles from the other three, so a disagreement can hide in any pairing --
+    notably an absent month leaving a double space in one implementation but not
+    the other.
+    """
+    import itertools
+
+    from pubmed2db.export import _PUB_DATE_SQL, pub_date
+
+    rows = list(itertools.product(_YEAR_INPUTS, _MONTH_INPUTS, _DAY_INPUTS, _MEDLINE_INPUTS))
+    got = _twin_rows(
+        con, _PUB_DATE_SQL, ["pub_year", "pub_month", "pub_day", "medline_date"], rows
+    )
+    for (year, month, day, medline), value in zip(rows, got):
+        assert value == pub_date(year, month, day, medline), (
+            f"{year=!r} {month=!r} {day=!r} {medline=!r}"
+        )
+
+
+def test_a_day_without_a_usable_month_is_dropped(con):
+    """"2019 15" reads as a date and is not one.
+
+    `normalize_month` blanks an out-of-range number, and `_MONTH_INPUTS` shows
+    those reach the export. Floating the day up next to the year would hand the
+    consumer this field exists for a plausible wrong answer; NCBI's own
+    `sortpubdate` drops precision in the same situation.
+    """
+    from pubmed2db.export import _PUB_DATE_SQL, pub_date
+
+    rows = [("2019", bad, "15", None) for bad in ("13", "0", "", None)]
+    got = _twin_rows(
+        con, _PUB_DATE_SQL, ["pub_year", "pub_month", "pub_day", "medline_date"], rows
+    )
+    for row, value in zip(rows, got):
+        assert value == "2019", row
+        assert pub_date(*row) == "2019", row
+
+    # ...and a usable month keeps it, including an approximate one.
+    keeps = [("2019", "Mar", "15", None), ("2019", "Sep-Dec", "15", None)]
+    got = _twin_rows(
+        con, _PUB_DATE_SQL, ["pub_year", "pub_month", "pub_day", "medline_date"], keeps
+    )
+    assert got == ["2019 Mar 15", "2019 Sep-Dec 15"]
+    assert [pub_date(*row) for row in keeps] == got
 
 
 def test_pub_year_sql_matches_year_from_medline_date(con):
     """Same contract for the MedlineDate year fallback."""
     from pubmed2db.export import _PUB_YEAR_SQL, _year_from_medline_date
 
-    for raw in _MEDLINE_INPUTS:
-        got = con.execute(
-            f"SELECT {_PUB_YEAR_SQL} FROM (SELECT NULL AS pub_year, ? AS medline_date) la",
-            [raw],
-        ).fetchone()[0]
+    rows = [(None, raw) for raw in _MEDLINE_INPUTS]
+    got_all = _twin_rows(con, _PUB_YEAR_SQL, ["pub_year", "medline_date"], rows)
+    for raw, got in zip(_MEDLINE_INPUTS, got_all):
         assert got == _year_from_medline_date(raw), f"medline_date={raw!r}"
 
 

@@ -6,7 +6,7 @@ archived alongside the export. It runs four checks, split into an **offline
 phase** (fast, deterministic, no network) and an **online phase** (sampled
 Entrez eutils cross-checks):
 
-1. **structure** — every line parses as JSON and matches the exporter's 11-field
+1. **structure** — every line parses as JSON and matches the exporter's 12-field
    record shape (:data:`pubmed2db.export.JSON_FIELDS`); PMIDs are unique.
 2. **coverage** — how much of PubMed we exported, against *two* denominators:
    the live Entrez total (portable) and the local ``latest_article`` count
@@ -51,7 +51,10 @@ from .export import (
     ID_PREFIXES,
     JSON_FIELDS,
     _MONTH_ABBR,
+    normalize_day,
+    normalize_month,
     _year_from_medline_date,
+    pub_date,
     pub_month,
 )
 from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
@@ -69,11 +72,31 @@ EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 EXPECTED_FIELDS = frozenset(JSON_FIELDS)
 
 #: Fields compared strictly against Entrez; a high mismatch rate here is an error.
-CORE_FIELDS = ("article_title", "volume", "issue", "pub_year", "pub_month", "pub_day")
+CORE_FIELDS = ("article_title", "volume", "issue",
+               "pub_year", "pub_month", "pub_day")
 
-#: Fields sourced from the NLM Catalog dimension, not the article XML, so a
-#: mismatch vs. efetch is informational (the two sources can legitimately differ).
-SOFT_FIELDS = ("journal_name", "journal_abbrev")
+#: Fields compared and reported, but never able to fail the run — either because
+#: the two sides have different sources, or because a disagreement is evidence
+#: about efetch's *rendering* rather than about what we parsed.
+#:
+#: ``journal_name``/``journal_abbrev`` come from the NLM Catalog dimension rather
+#: than the article XML, so the two sources can legitimately differ.
+#:
+#: ``pub_date`` is here for the second reason, and it is worth spelling out
+#: because putting it in CORE_FIELDS looks obviously right.
+#:
+#: The *rendering* half of the problem is handled elsewhere and is not why it
+#: sits here: :func:`_normalize_date` folds the two spellings of one date before
+#: comparing, so a baseline ``"1998 September"`` meeting a reconstructed
+#: ``"1998 Sep"`` is not reported at all. What remains is that ``pub_date`` is
+#: **correlated** with three fields already in CORE_FIELDS, being derived from
+#: the same three columns. Gating on it would let a single date disagreement —
+#: a genuine one, in the data — contribute four mismatches instead of three,
+#: tightening the FAIL threshold on exactly the records most likely to trip it.
+#: That is the same reasoning that keeps the ``identifiers`` comparison
+#: advisory below, and it is unaffected by how well the two sides are
+#: normalized.
+SOFT_FIELDS = ("journal_name", "journal_abbrev", "pub_date")
 
 _ID_RE = re.compile(r"^PMID:(\d+)$")
 
@@ -293,6 +316,44 @@ def _open_text(path: Path):
 def _normalize(value: str) -> str:
     """Collapse whitespace for tolerant field comparison."""
     return " ".join(value.split())
+
+
+#: Fields whose two sides can be *written* differently while describing the same
+#: value, so they are compared through :func:`_normalize_date`.
+_DATE_RENDERED_FIELDS = frozenset({"pub_date"})
+
+
+def _compare_value(field: str, record: dict) -> str:
+    """One side of a field comparison, normalized for rendering differences."""
+    value = _normalize(str(record.get(field, "")))
+    return _normalize_date(value) if field in _DATE_RENDERED_FIELDS else value
+
+
+def _normalize_date(value: str) -> str:
+    """Collapse the *renderings* of a date string, for comparison only.
+
+    ``pub_date`` is the archival string where PubMed supplies one, but efetch
+    serves a re-serialization rather than that string, so the two sides can be
+    written differently while describing the same date:
+
+    - ``"1998 September"`` (a ``MedlineDate``, taken whole) against
+      ``"1998 Sep"`` (assembled from ``<Year>`` + ``<Month>``, which the
+      exporter's month normalization folds — as it must, or the
+      ``<Year>+<Season>`` rendering would not converge with ``<MedlineDate>``).
+    - A day either side of :func:`export.normalize_day`, if one side ever
+      escapes it.
+
+    Both are correct; neither is a data difference. Comparing the normalized
+    forms keeps the report about the *data*, so a real drop or a wrong year is
+    not buried under rendering noise. Nothing here reaches the export — this is
+    a comparison-time view of two strings that both still ship verbatim.
+    """
+    parts = _normalize(value).split(" ")
+    return " ".join(
+        [parts[0]] if len(parts) == 1
+        else [parts[0], normalize_month(parts[1])] if len(parts) == 2
+        else [parts[0], normalize_month(parts[1]), normalize_day(parts[2])] + parts[3:]
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -729,6 +790,16 @@ def efetch_documents(
                     _text(pub, "MedlineDate") if pub is not None else None,
                 ),
                 "pub_day": _text(pub, "Day") if pub is not None else "",
+                # Assembled from whichever rendering came back, by the exporter's
+                # own function. This is the strongest of the date comparisons:
+                # efetch's <Year>+<Season> and the baseline's bare <MedlineDate>
+                # describe the same record, so both sides must land on one string.
+                "pub_date": pub_date(
+                    _text(pub, "Year"),
+                    (pub.findtext("Month") or pub.findtext("Season")),
+                    _text(pub, "Day"),
+                    _text(pub, "MedlineDate"),
+                ) if pub is not None else "",
                 "abstract": _normalize(abstract),
             }
     return docs
@@ -987,7 +1058,7 @@ def check_fields(
 
         for f in CORE_FIELDS:
             core_comparisons += 1
-            if _normalize(str(exported.get(f, ""))) != entrez.get(f, ""):
+            if _compare_value(f, exported) != _compare_value(f, entrez):
                 core_mismatch += 1
                 mismatches.append(
                     {"pmid": pmid, "field": f, "exported": exported.get(f), "entrez": entrez.get(f)}
@@ -1030,7 +1101,7 @@ def check_fields(
                 )
 
         for f in SOFT_FIELDS:
-            if _normalize(str(exported.get(f, ""))) != entrez.get(f, ""):
+            if _compare_value(f, exported) != _compare_value(f, entrez):
                 soft_mismatches.append(
                     {"pmid": pmid, "field": f, "exported": exported.get(f), "entrez": entrez.get(f)}
                 )

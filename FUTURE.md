@@ -176,11 +176,26 @@ still has a populated `reference_citation` table, which nothing will clear.
   verbatim (issue #14, `export._month_from_medline_date`), since the spec's own
   PMID:8000234 example expects `"Sep-Dec"`. `pub_day` stays empty — a range has
   no single day, and the spec example leaves it blank too.
-  **Still open:** how common `<Season>` actually is in the *archival* files. The
-  parser now reads it (into the `pub_month` column), but every observed case so
-  far has been the `<MedlineDate>` form in the baseline and the `<Season>`
-  rendering only from efetch. `zgrep -c "<Season>"` over a baseline file would
-  settle it; if the answer is zero, that half of the change is pure insurance.
+  **Measured, and the answer is "rare but real".** `<Season>` *does* appear in
+  the archival XML, so reading it is load-bearing rather than insurance:
+  `pubmed26n1334.xml.gz` (a 2026 baseline file) carries 6 `<Season>` elements
+  against 41 `<MedlineDate>` and 4,989 `<PubDate>`, and `pubmed26n1595.xml.gz`
+  (an update) carries 1 against 232 and 18,079. Every one observed was the
+  `<Year>` + `<Season>` pairing (`Winter`, `Fall`) rather than a range, which is
+  the shape `export.pub_date` converges with the `<MedlineDate>` form. Roughly
+  0.1% of records in the baseline sampled and 0.006% in the update — small
+  enough that a corpus-wide figure is still worth taking from the first full
+  load, large enough that dropping the `<Season>` branch would silently blank
+  the month on thousands of records.
+- **No `sortpubdate` equivalent.** NCBI `esummary` ships *two* date
+  representations: `pubdate`, the verbatim string (which we now mirror as
+  `pub_date`), and `sortpubdate`, a normalized `YYYY/MM/DD` sort key. We took only
+  the first, because nothing downstream range-filters yet — the ElasticSearch
+  ingest indexes `pub_year`. Add the second if a consumer ever needs ordering or
+  a date range, rather than making them parse `pub_year` + `pub_month`; note
+  NCBI's own answer for an unparseable range is to fall back to January of the
+  leading year (`"1998 Dec-1999 Jan"` → `1998/01/01`), i.e. it drops precision
+  rather than guessing.
 - **The PMCID CURIE prefix is not settled** ([#33](https://github.com/TranslatorSRI/pubmed2db/issues/33)).
   We emit `PMCID:PMC1234567`. Babel's `src/prefixes.py` says `PMC`, and neither
   the Core Components specification
