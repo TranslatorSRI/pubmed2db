@@ -78,7 +78,13 @@ VALIDATE_OFFLINE=1 ./slurm/submit.sh validate
 ```
 
 Steps remain ordinary scripts: `sbatch slurm/03-load.sbatch` works, and so does
-running the `uv run` line inside one directly on an interactive node.
+running the `uv run` line inside one directly on an interactive node. One catch
+if you bypass `submit.sh`: `#SBATCH --output` is a static directive, so it
+cannot follow a `DATA_DIR` you overrode — a bare `sbatch` writes its log under
+`data/logs/` whatever `DATA_DIR` says, and fails outright if that directory does
+not exist. `submit.sh` passes `--output` on the command line (which overrides
+the directive) and creates the directory first, which is why it is the
+recommended entry point rather than a convenience.
 
 ## Running `load`: how much memory? (`--mem`)
 
@@ -267,6 +273,15 @@ export NCBI_EMAIL=you@example.org     # NCBI_API_KEY too, if you have one
 `--previous-manifest`. The first run after adopting this reports `skip` — it has
 nothing to compare against yet — and the run after it is the first that can
 actually catch a silent drop (#32).
+
+**The script also moves the report.** `validate` on its own writes
+`validation_report.json` into the export directory; `05-validate.sbatch` passes
+`--out data/manifests/validation_report-<today>.json` instead, so it lands beside
+the manifest it belongs with. Same reasoning as the manifest: the next `export`
+republishes the export directory, so a report left there would outlive the
+corpus it describes while still looking current — and one fixed name would be
+overwritten by the next run, leaving nothing to pass as `--previous-report`.
+Running `validate` by hand keeps the default location.
 
 Set `VALIDATE_OFFLINE=1` for a node without egress, and `VALIDATE_FAIL_ON_WARN=1`
 to make warnings non-zero too.
