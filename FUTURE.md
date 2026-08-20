@@ -3,6 +3,10 @@
 Tracked follow-ups for pubmed2db. This is the initial implementation; the items
 below are deliberately deferred.
 
+When an item here gets its own issue, link the issue number in the entry (`(#30)`).
+When that issue closes, **delete the entry** — the issue is the record from then
+on, and a copy left here rots into a contradiction of the code.
+
 ## Integrations / goals
 
 - **Replace Babel's PubMed downloader.** Wire this tool into
@@ -56,7 +60,7 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
   A database built before the removal keeps a stale, populated table; `DROP TABLE
   reference_citation` clears it.
 
-### TODO: investigate the two reference bugs before reporting them upstream
+### TODO: investigate the two reference bugs before reporting them upstream (#34)
 
 Nothing has been filed against `cthoyt/pubmed-downloader` for either, and nothing
 should be until the open items below are answered. (The journal-model fix is the
@@ -155,7 +159,7 @@ still has a populated `reference_citation` table, which nothing will clear.
   alongside [Babel#1044](https://github.com/NCATSTranslator/Babel/issues/1044) —
   a change is a one-line edit to `export.ID_PREFIXES` plus a re-export, since
   `identifiers` is derived at export and never stored.
-- **`ELocationID` DOIs are not read.** The exported `identifiers` come from
+- **`ELocationID` DOIs are not read** (#35). The exported `identifiers` come from
   `PubmedData/ArticleIdList` only — the same place Babel reads, and the
   authoritative one. A DOI can also appear as
   `Article/ELocationID[@EIdType="doi"]`, normally as a duplicate; parse it as a
