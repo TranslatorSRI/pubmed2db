@@ -33,18 +33,28 @@ validate_args=("$EXPORT_DIR")
 # This export's PMID set, dated so runs accumulate instead of overwriting each
 # other. Written last, after the shard read, so picking the previous manifest
 # below cannot pick this one up.
-manifest="$MANIFEST_DIR/pmids-$(date +%Y%m%d).txt.gz"
+today="$(date +%Y%m%d)"
+manifest="$MANIFEST_DIR/pmids-$today.txt.gz"
 validate_args+=(--manifest "$manifest")
 
 # The newest earlier manifest, if there is one. Names sort chronologically, so
 # the last line wins; today's is skipped so that re-running on the same day
 # still diffs against the previous *run*, not against itself.
+#
+# Today's is excluded by `find -name`, i.e. by base name, rather than by
+# comparing candidates against "$manifest" as strings. MANIFEST_DIR is
+# environment-overridable, and a trailing slash on it (data/manifests/) makes
+# "$manifest" read `data/manifests//pmids-...` while find prints a single
+# slash: the same file, never string-equal. The string form silently picked
+# today's manifest as the baseline and then overwrote it, so the drop check
+# compared the export against itself and reported zero drops however many
+# there were.
 previous=""
 if [[ -d "$MANIFEST_DIR" ]]; then
     while IFS= read -r candidate; do
-        [[ "$candidate" == "$manifest" ]] && continue
         previous="$candidate"
-    done < <(find "$MANIFEST_DIR" -maxdepth 1 -name 'pmids-*.txt.gz' | sort)
+    done < <(find "$MANIFEST_DIR" -maxdepth 1 -name 'pmids-*.txt.gz' \
+                  ! -name "pmids-$today.txt.gz" | sort)
 fi
 
 if [[ -n "$previous" ]]; then
@@ -58,7 +68,7 @@ fi
 # Keep the report beside the manifest as well as in the export directory: the
 # next export republishes EXPORT_DIR in place, so a report left only there
 # describes a corpus that no longer exists.
-report="$MANIFEST_DIR/validation_report-$(date +%Y%m%d).json"
+report="$MANIFEST_DIR/validation_report-$today.json"
 validate_args+=(--out "$report")
 
 if [[ "$VALIDATE_OFFLINE" == "1" ]]; then
