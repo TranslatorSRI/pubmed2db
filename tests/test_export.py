@@ -211,22 +211,20 @@ def test_writing_progress_line_renders(tmp_path, caplog):
     """The heartbeat only fires a minute into a real export, so it never runs in
     the suite -- and a mismatched %-format arg there would first surface partway
     through a production run. Render one line directly."""
-def test_parquet_exports_every_table(loaded_con, tmp_path):
-    """One file per table, `pipeline_run` included -- it carries the journal
-    refresh provenance, which nothing else in the export records."""
-    from pubmed2db.export import export_parquet
+    import logging
+    import time
 
-    out = tmp_path / "parquet"
-    written = export_parquet(loaded_con, out)
+    from pubmed2db import export as ex
 
-    tables = {
-        row[0]
-        for row in loaded_con.execute(
-            "SELECT table_name FROM duckdb_tables() "
-            "WHERE schema_name = 'main' AND NOT temporary"
-        ).fetchall()
-    }
-    assert {path.stem for path in written} == tables
+    out = tmp_path / "json"
+    out.mkdir()
+    (out / "pubmed_metadata_0.ndjson").write_bytes(b"x" * 4096)
+    with caplog.at_level(logging.INFO, logger="pubmed2db.export"):
+        ex._log_writing_progress(out, time.monotonic() - 5)
+
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("writing:"))
+    for fragment in ("GiB across 1 shard(s)", "MiB/s", "elapsed", "RSS"):
+        assert fragment in line, line
 
 
 def test_placeholder_looking_fields_survive_to_the_export(con, gz_fixture, tmp_path):
@@ -262,6 +260,24 @@ def test_parquet_export_removes_a_dropped_table_s_file(loaded_con, tmp_path):
 
     assert not orphan.exists()
     assert set(out.glob("*.parquet")) == set(written)
+
+
+def test_parquet_exports_every_table(loaded_con, tmp_path):
+    """One file per table, `pipeline_run` included -- it carries the journal
+    refresh provenance, which nothing else in the export records."""
+    from pubmed2db.export import export_parquet
+
+    out = tmp_path / "parquet"
+    written = export_parquet(loaded_con, out)
+
+    tables = {
+        row[0]
+        for row in loaded_con.execute(
+            "SELECT table_name FROM duckdb_tables() "
+            "WHERE schema_name = 'main' AND NOT temporary"
+        ).fetchall()
+    }
+    assert {path.stem for path in written} == tables
 
 
 def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog):
