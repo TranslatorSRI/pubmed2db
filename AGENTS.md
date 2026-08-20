@@ -146,15 +146,18 @@ explains its part; this table is only a map.
   why and the evidence (NCBI's `sortpubdate` agrees; cross-year ranges are ~0.07%
   of PubMed).
 
-  **`pub_date` is a SOFT field in `validate`, and that is not an oversight.**
-  It is defined as the archival string verbatim, but efetch serves a
-  re-serialization, so `efetch_documents` has to *reconstruct* one — normalizing
-  the month, which is what makes the `<Year>+<Season>` rendering converge. A
-  baseline `<MedlineDate>1998 September</MedlineDate>` therefore exports
-  `"1998 September"` against a reconstructed `"1998 Sep"`: correct on both
-  sides, unequal as strings. Gating on it would also let one date-rendering
-  disagreement count four times instead of three, since it is derived from the
-  same columns as `pub_year`/`pub_month`/`pub_day`.
+  **Date comparison has two separate problems, fixed in two separate places.**
+  *Rendering:* efetch serves a re-serialization rather than the archival string,
+  so `efetch_documents` reconstructs one — normalizing the month, which is what
+  makes the `<Year>+<Season>` rendering converge. A baseline
+  `<MedlineDate>1998 September</MedlineDate>` therefore meets a reconstructed
+  `"1998 Sep"`, both correct. `validate._normalize_date` folds the two spellings
+  at comparison time, so it is not reported; nothing about the export changes.
+  *Correlation:* `pub_date` is derived from the same three columns as
+  `pub_year`/`pub_month`/`pub_day`, so gating on it would let one genuine date
+  disagreement count four times instead of three, tightening the FAIL threshold
+  on the records most likely to trip it. That is why it is a **SOFT** field, and
+  normalization does not address it.
 - **`esummary` is a third rendering, and the useful one for design questions.**
   Where efetch re-serializes the XML, `esummary` shows NCBI's *own* normalization
   decisions — `pubdate` ("1998 Dec-1999 Jan") and `sortpubdate` ("1998/01/01")

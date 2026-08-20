@@ -51,6 +51,8 @@ from .export import (
     ID_PREFIXES,
     JSON_FIELDS,
     _MONTH_ABBR,
+    normalize_day,
+    normalize_month,
     _year_from_medline_date,
     pub_date,
     pub_month,
@@ -80,23 +82,20 @@ CORE_FIELDS = ("article_title", "volume", "issue",
 #: ``journal_name``/``journal_abbrev`` come from the NLM Catalog dimension rather
 #: than the article XML, so the two sources can legitimately differ.
 #:
-#: ``pub_date`` is here for the rendering reason, and it is worth spelling out
-#: because putting it in CORE_FIELDS looks obviously right:
+#: ``pub_date`` is here for the second reason, and it is worth spelling out
+#: because putting it in CORE_FIELDS looks obviously right.
 #:
-#: - It is **defined** as the archival string verbatim. efetch does not serve
-#:   that string; it serves a re-serialization, so ``efetch_documents`` has to
-#:   *reconstruct* one to compare against. Where the baseline holds
-#:   ``<MedlineDate>1998 September</MedlineDate>`` the export ships
-#:   ``"1998 September"`` while the reconstruction — which normalizes the month,
-#:   as it must for the ``<Year>+<Season>`` shape to converge — gives
-#:   ``"1998 Sep"``. Correct export, correct reconstruction, unequal strings.
-#:   AGENTS.md's rule applies directly: an efetch mismatch is not evidence about
-#:   what we parsed.
-#: - It is **correlated** with three fields already in CORE_FIELDS, being derived
-#:   from the same columns. Gating on it would let one date-rendering
-#:   disagreement contribute four mismatches instead of three, tightening the
-#:   FAIL threshold on exactly the records most likely to trip it — the same
-#:   reasoning that keeps the ``identifiers`` comparison advisory below.
+#: The *rendering* half of the problem is handled elsewhere and is not why it
+#: sits here: :func:`_normalize_date` folds the two spellings of one date before
+#: comparing, so a baseline ``"1998 September"`` meeting a reconstructed
+#: ``"1998 Sep"`` is not reported at all. What remains is that ``pub_date`` is
+#: **correlated** with three fields already in CORE_FIELDS, being derived from
+#: the same three columns. Gating on it would let a single date disagreement —
+#: a genuine one, in the data — contribute four mismatches instead of three,
+#: tightening the FAIL threshold on exactly the records most likely to trip it.
+#: That is the same reasoning that keeps the ``identifiers`` comparison
+#: advisory below, and it is unaffected by how well the two sides are
+#: normalized.
 SOFT_FIELDS = ("journal_name", "journal_abbrev", "pub_date")
 
 _ID_RE = re.compile(r"^PMID:(\d+)$")
@@ -317,6 +316,44 @@ def _open_text(path: Path):
 def _normalize(value: str) -> str:
     """Collapse whitespace for tolerant field comparison."""
     return " ".join(value.split())
+
+
+#: Fields whose two sides can be *written* differently while describing the same
+#: value, so they are compared through :func:`_normalize_date`.
+_DATE_RENDERED_FIELDS = frozenset({"pub_date"})
+
+
+def _compare_value(field: str, record: dict) -> str:
+    """One side of a field comparison, normalized for rendering differences."""
+    value = _normalize(str(record.get(field, "")))
+    return _normalize_date(value) if field in _DATE_RENDERED_FIELDS else value
+
+
+def _normalize_date(value: str) -> str:
+    """Collapse the *renderings* of a date string, for comparison only.
+
+    ``pub_date`` is the archival string where PubMed supplies one, but efetch
+    serves a re-serialization rather than that string, so the two sides can be
+    written differently while describing the same date:
+
+    - ``"1998 September"`` (a ``MedlineDate``, taken whole) against
+      ``"1998 Sep"`` (assembled from ``<Year>`` + ``<Month>``, which the
+      exporter's month normalization folds — as it must, or the
+      ``<Year>+<Season>`` rendering would not converge with ``<MedlineDate>``).
+    - A day either side of :func:`export.normalize_day`, if one side ever
+      escapes it.
+
+    Both are correct; neither is a data difference. Comparing the normalized
+    forms keeps the report about the *data*, so a real drop or a wrong year is
+    not buried under rendering noise. Nothing here reaches the export — this is
+    a comparison-time view of two strings that both still ship verbatim.
+    """
+    parts = _normalize(value).split(" ")
+    return " ".join(
+        [parts[0]] if len(parts) == 1
+        else [parts[0], normalize_month(parts[1])] if len(parts) == 2
+        else [parts[0], normalize_month(parts[1]), normalize_day(parts[2])] + parts[3:]
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1021,7 +1058,7 @@ def check_fields(
 
         for f in CORE_FIELDS:
             core_comparisons += 1
-            if _normalize(str(exported.get(f, ""))) != entrez.get(f, ""):
+            if _compare_value(f, exported) != _compare_value(f, entrez):
                 core_mismatch += 1
                 mismatches.append(
                     {"pmid": pmid, "field": f, "exported": exported.get(f), "entrez": entrez.get(f)}
@@ -1064,7 +1101,7 @@ def check_fields(
                 )
 
         for f in SOFT_FIELDS:
-            if _normalize(str(exported.get(f, ""))) != entrez.get(f, ""):
+            if _compare_value(f, exported) != _compare_value(f, entrez):
                 soft_mismatches.append(
                     {"pmid": pmid, "field": f, "exported": exported.get(f), "entrez": entrez.get(f)}
                 )

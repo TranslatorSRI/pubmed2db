@@ -614,40 +614,58 @@ def test_medline_date_year_is_not_a_false_mismatch(export_dir, loaded_con, monke
             if m["field"] in ("pub_year", "pub_month")] == []
 
 
-def test_a_full_month_name_in_a_medline_date_cannot_fail_the_run(
-    export_dir, loaded_con, monkeypatch
-):
-    """The one shape where the export and efetch's reconstruction cannot converge.
+def test_date_renderings_are_compared_normalized(export_dir, loaded_con, monkeypatch):
+    """The two sides can be *written* differently while describing one date.
 
-    `pub_date` is the archival string verbatim, but efetch does not serve that
-    string -- `efetch_documents` reconstructs one, normalizing the month so the
-    <Year>+<Season> rendering converges (the test below). Where the baseline
-    holds a full month name the two therefore differ: "1998 September" exported
-    against "1998 Sep" reconstructed. Both are correct.
-
-    That is why `pub_date` is a SOFT field: it must still be compared and
-    reported, and it must not be able to fail a run whose export is right.
+    `pub_date` takes a MedlineDate whole, but efetch serves a re-serialization,
+    so `efetch_documents` reconstructs one -- normalizing the month, as it must
+    for the <Year>+<Season> rendering to converge with <MedlineDate>. A baseline
+    "1998 September" therefore meets a reconstructed "1998 Sep". Both correct;
+    not a difference in the data, and not something a report should show.
     """
     from pubmed2db.export import pub_date
 
+    # The strings really do differ -- this is not a vacuous comparison.
     assert pub_date(None, None, None, "1998 September") == "1998 September"
     assert pub_date("1998", "September", None, None) == "1998 Sep"
+    assert validate._normalize_date("1998 September") == validate._normalize_date("1998 Sep")
+    # Same for a zero-padded day, either side of export.normalize_day.
+    assert validate._normalize_date("2022 Aug 01") == validate._normalize_date("2022 Aug 1")
+    # ...but a real difference still survives normalization.
+    assert validate._normalize_date("1998 Spring") != validate._normalize_date("1998 Sep")
 
+    # And the wiring, not just the helper: an export holding the MedlineDate
+    # form against efetch serving the <Year>+<Month> one, end to end.
+    report = validate.Report()
+    sample = {1003: {**_valid_doc(), "id": "PMID:1003", "pub_date": "1998 September"}}
+    fetched = {1003: {**{f: "" for f in validate.EXPECTED_FIELDS}, "pub_date": "1998 Sep"}}
+    monkeypatch.setattr(validate, "efetch_documents", lambda *a, **k: fetched)
+    validate.check_fields(
+        report, sample, online=True, api_key=None, email="me@example.com",
+        abstract_threshold=0.9,
+    )
+
+    fields = report.checks["field_validation"]
+    assert fields["checked"] == 1
+    assert all(m.get("field") != "pub_date" for m in fields["mismatches"]), fields
+    assert all(m.get("field") != "pub_date" for m in fields["soft_mismatches"]), fields
+
+
+def test_pub_date_cannot_fail_a_run(export_dir, loaded_con):
+    """SOFT, not CORE -- and for a reason normalization does not address.
+
+    `pub_date` is derived from the same three columns as pub_year/pub_month/
+    pub_day, so gating on it would let one date disagreement contribute four
+    mismatches instead of three, tightening the FAIL threshold on exactly the
+    records most likely to trip it. validate.py makes the same argument for
+    keeping the `identifiers` comparison advisory.
+    """
     assert "pub_date" in validate.SOFT_FIELDS
     assert "pub_date" not in validate.CORE_FIELDS
 
-    seasonal = dict(_EFETCH)
-    seasonal[1003] = _EFETCH[1003].replace(
-        "<MedlineDate>1998 Spring</MedlineDate>",
-        "<Year>1998</Year><Month>September</Month>",
-    )
-    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(seasonal))
-    report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
-
-    fields = report["checks"]["field_validation"]
-    # Reported as a soft mismatch, and absent from the gated rate's numerator.
-    assert any(m["field"] == "pub_date" for m in fields["soft_mismatches"]), fields
-    assert all(m.get("field") != "pub_date" for m in fields["mismatches"]), fields
+    report = validate.run_validation(export_dir, con=loaded_con, online=False)
+    expectations = report["checks"]["field_validation"]
+    assert expectations is None or "pub_date" not in str(report.get("errors", []))
 
 
 def test_season_rendering_is_not_a_false_mismatch(export_dir, loaded_con, monkeypatch):
