@@ -112,7 +112,8 @@ explains its part; this table is only a map.
   so those records stay visible as `month-format` warnings; the checker
   disagreeing with the export is the design here, not a bug. The wart is
   answered by a verbatim `pub_date` field (#17), not by inventing a tidier
-  month. Note the split: the
+  month — though whether consumers accept the odd `pub_month` beside it is
+  still open (#43). Note the split: the
   `MedlineDate` half is export-only and needs no reload, the `<Season>` half only
   takes effect for files loaded after the change. Every `trim` in the generated
   SQL names `_WS`, the character set Python's `.strip()` removes — bare SQL

@@ -172,8 +172,10 @@ def _month_from_medline_date(raw: str | None) -> str:
     fields stay parsed conveniences, and no arrangement of them can represent a
     cross-year range anyway. Whether DocumentMetadataAPI consumers are content
     to receive ``"pub_month": "Dec-1999 Jan"`` alongside it is the one part
-    still open — asked on issue #14 and unanswered, tracked in FUTURE.md with
-    the rest of the ingest contract.
+    still open, and is tracked in issue #43. If the answer comes back "blank it
+    instead", the change is here: gate this fallback on the closed set
+    ``validate._VALID_MONTHS`` already accepts, so cross-year shapes return
+    ``""`` while ``pub_date`` keeps the whole string.
     """
     if not raw:
         return ""
