@@ -77,20 +77,26 @@ def _raw_pubdate(element: etree._Element) -> tuple[str | None, ...]:
     )
 
 
+#: The article's *own* ``ArticleIdList`` — a direct child of ``PubmedData``, and
+#: the path Babel reads (``createcompendia/publications.py``).
+_ARTICLE_ID_PATH = "PubmedData/ArticleIdList/ArticleId"
+
+
 def _article_ids(element: etree._Element) -> list[tuple[str, str]]:
     """``(id_type, id_value)`` pairs for the article itself.
 
     We can't use ``Article.xrefs``: upstream collects
     ``PubmedData.findall(".//ArticleIdList/ArticleId")``, and that ``.//``
     descends into ``<ReferenceList>``, so every *cited* reference's DOI/PMID is
-    attributed to the citing article. The direct path below takes only the
-    article's own ``<ArticleIdList>``. See FUTURE.md.
+    attributed to the citing article — one observed record (PMID:41136637)
+    picked up 426 DOIs that were not its own. The direct path above takes only
+    the article's own ``<ArticleIdList>``. See FUTURE.md.
 
     The ``pubmed`` entry is dropped: it just restates the ``pmid`` column.
     """
     return [
         (article_id.get("IdType"), article_id.text.strip())
-        for article_id in element.findall("PubmedData/ArticleIdList/ArticleId")
+        for article_id in element.findall(_ARTICLE_ID_PATH)
         if article_id.get("IdType") not in (None, "pubmed")
         and article_id.text
         and article_id.text.strip()

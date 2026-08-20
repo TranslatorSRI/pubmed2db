@@ -51,7 +51,25 @@
       <ArticleIdList>
         <ArticleId IdType="pubmed">1001</ArticleId>
         <ArticleId IdType="doi">10.1038/example1001</ArticleId>
+        <!-- Deliberately a different PMCID than v1's PMC1234567: the export must
+             take this version's identifiers, not a union across the history. -->
+        <ArticleId IdType="pmc">PMC7654321</ArticleId>
+        <!-- Publisher-internal; must not reach the exported identifiers. -->
+        <ArticleId IdType="pii">S0140-6736(20)30183-5</ArticleId>
       </ArticleIdList>
+      <!-- A cited reference carries an ArticleIdList of its own. These DOIs
+           belong to the cited paper, not to this one, and must never surface as
+           this article's identifiers. -->
+      <ReferenceList>
+        <Reference>
+          <Citation>Some cited paper.</Citation>
+          <ArticleIdList>
+            <ArticleId IdType="pubmed">9999</ArticleId>
+            <ArticleId IdType="doi">10.9999/not-our-doi</ArticleId>
+            <ArticleId IdType="pmc">PMC9999999</ArticleId>
+          </ArticleIdList>
+        </Reference>
+      </ReferenceList>
     </PubmedData>
   </PubmedArticle>
 

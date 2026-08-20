@@ -88,6 +88,29 @@ def test_cited_pmids_is_parked_but_works(gz_fixture):
     assert article.article.cites_pubmed_ids == []
 
 
+def test_article_ids_exclude_cited_references(gz_fixture):
+    """A cited reference's ArticleIdList must not become the article's own.
+
+    Upstream's `_extract_article` searches `.//ArticleIdList/ArticleId` under
+    `PubmedData`, which also matches `ReferenceList/Reference/ArticleIdList`;
+    `parse._article_ids` anchors to the direct child instead. This covers the
+    update file, where v2 carries a *different* PMCID than v1.
+    """
+    from pubmed2db.parse import parse_file
+
+    parsed = parse_file(gz_fixture("pubmed25n0002"))
+    article = next(pa for pa in parsed.articles if pa.pubmed == 1001)
+
+    assert set(article.article_ids) == {
+        ("doi", "10.1038/example1001"),
+        ("pmc", "PMC7654321"),
+        ("pii", "S0140-6736(20)30183-5"),
+    }
+    # The cited paper's identifiers are absent, and so is our own PMID.
+    assert not any(value.startswith("10.9999/") for _, value in article.article_ids)
+    assert not any(id_type == "pubmed" for id_type, _ in article.article_ids)
+
+
 def test_collects_delete_citation(gz_fixture):
     from pubmed2db.parse import parse_file
 

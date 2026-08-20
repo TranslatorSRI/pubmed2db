@@ -89,6 +89,61 @@ uv run pubmed2db --data-dir data validate data/json --email you@example.com
 `--data-dir data` is the default, so omitting it gives the same result.
 The DuckDB database is stored as `<data-dir>/pubmed.duckdb`; override with `--db`.
 
+### Identifiers in the JSON export
+
+Alongside the DocumentMetadataAPI fields, each JSON record carries an
+`identifiers` array of CURIEs — the PMID, plus the DOI and PMCID when PubMed
+published them:
+
+```json
+{
+  "id": "PMID:30690000",
+  "identifiers": ["PMID:30690000", "PMCID:PMC6423490", "doi:10.1016/j.ejphar.2019.01.030"],
+  "journal_name": "European journal of pharmacology",
+  "...": "..."
+}
+```
+
+`PMID` and the lowercase `doi` deliberately match Babel's `src/prefixes.py`, so
+those CURIEs join directly against the Babel publication compendium. PubMed's
+PMCID values already begin with `PMC`, hence the doubled `PMCID:PMC6423490`. A
+record with neither a DOI nor a PMCID still gets its own `["PMID:<id>"]`; the
+array is never empty and never null.
+
+> **The PMCID prefix may still change.** Babel uses `PMC`, this export uses
+> `PMCID`, and neither the Core Components specification nor the
+> DocumentMetadataAPI README has a PMC example to settle it; the production
+> endpoint does not resolve PMCIDs under either prefix. See
+> [#33](https://github.com/TranslatorSRI/pubmed2db/issues/33).
+
+> **Consumers must match identifiers case-insensitively.** Values are stored and
+> exported exactly as PubMed published them, with no case normalization (Babel
+> does the same). DOIs are case-insensitive by specification and PubMed is not
+> internally consistent about them, so `doi:10.1234/ABC` and `doi:10.1234/abc`
+> can both occur and refer to the same article.
+
+Only DOIs and PMCIDs are promoted into this field. Any other `ArticleId` type
+PubMed supplies (`pii`, `mid`, …) is still loaded and is available in the
+`article_id` table and the Parquet export.
+
+> **Databases loaded before 2026-08-04 need rebuilding before this field is
+> trustworthy.** `identifiers` reads the `article_id` table, and until
+> "Extract cited PMIDs and article IDs ourselves" that table was populated by an
+> upstream parser that also swept up every *cited reference's* DOI and PMCID (see
+> `CLAUDE.md`). A database loaded after that is unaffected — this feature changed
+> nothing about how `article_id` is written. Nothing detects the stale rows
+> automatically, because the source files have not changed. `load --force`
+> re-parses the whole corpus and does replace those rows, but it cannot undo a
+> table that left the schema — a database that old still carries a populated
+> `reference_citation`, which no reload clears (see
+> [`load --force` or a fresh database?](#load---force-or-a-fresh-database)).
+> Load into a fresh one:
+>
+> ```bash
+> rm data/pubmed.duckdb
+> uv run pubmed2db --data-dir data load
+> ```
+
 Two more group-level options tune DuckDB itself, mainly for large exports on a
 cluster: `--threads N` (`PUBMED2DB_THREADS`) caps the thread pool, which
 otherwise sizes itself from the machine's core count and so oversubscribes a
@@ -114,6 +169,11 @@ fails on warnings) so it can gate an HPC run; pass `--offline` to skip the
 network checks. Set `--email` (or `NCBI_EMAIL`) and optionally `--api-key` (or
 `NCBI_API_KEY`, which raises the rate limit) for the API checks.
 
+The STRUCTURE heading also carries the share of records that came out with each
+identifier type (`identifier_coverage` in the report). Nothing gates on it — one
+export in isolation cannot say whether 96% is right and 6% is not — but a rate
+that collapsed between two runs is invisible without the number.
+
 Stdout is a test report: every check is listed with what it expected and what it
 saw, so a reviewer can tell what was verified, what was skipped, and what is not
 covered at all. Abridged, from a full-corpus run:
@@ -137,7 +197,7 @@ FIELD ACCURACY  (240 records sampled: 15/shard x 16 shards, seed 0)
 
 NOT CHECKED
   - compared strictly against Entrez: article_title, volume, issue, pub_year, ...
-  - identifiers other than the PMID (DOI, PMCID) are not part of this export
+  - compared but never fails the run (assigned upstream after our last update file): identifiers
   - MeSH terms, authors, affiliations and grants are stored in the DB, never exported
 ```
 

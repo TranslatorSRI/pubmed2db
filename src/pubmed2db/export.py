@@ -37,6 +37,31 @@ _VERSIONED_CHILDREN = tuple(
 #: Dimension/bookkeeping tables exported as-is.
 _OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid", "pipeline_run")
 
+#: PubMed ``ArticleId/@IdType`` -> CURIE prefix for the JSON ``identifiers``
+#: field. ``doi`` is lowercase to match Babel's ``src/prefixes.py``, so those
+#: CURIEs join against the Babel publication compendium; ``DOI:`` would not.
+#: PubMed's ``pmc`` values already start with ``PMC``, hence the doubled
+#: ``PMCID:PMC1234567``. Values are emitted verbatim, so consumers must match
+#: case-insensitively (DOIs are case-insensitive per spec and PubMed is not).
+#:
+#: **The PMCID prefix is not settled.** Babel's ``prefixes.py`` says ``PMC``,
+#: this export says ``PMCID``, and neither the Core Components spec nor the
+#: DocumentMetadataAPI README carries a PMC example to arbitrate — the
+#: production endpoint does not resolve PMCIDs in either form. ``PMCID`` is our
+#: bet on where that lands. Tracked in issue #33, to be settled alongside
+#: NCATSTranslator/Babel#1044.
+ID_PREFIXES = {"doi": "doi", "pmc": "PMCID"}
+
+#: The same mapping as SQL, derived rather than restated: `validate` imports
+#: `ID_PREFIXES` to rebuild the CURIEs it expects, so a hand-written `CASE` here
+#: would let a new id type or a casing fix reach the validator without reaching
+#: the export, and every sampled record would be reported as a mismatch against
+#: a correct export. No `ELSE` branch: an unlisted type cannot pass the `WHERE`.
+_ID_CURIE_SQL = "CASE id_type " + " ".join(
+    f"WHEN '{t}' THEN '{prefix}:'" for t, prefix in ID_PREFIXES.items()
+) + " END"
+_ID_TYPES_SQL = ", ".join(f"'{t}'" for t in ID_PREFIXES)
+
 
 #: Month abbreviations, frozen rather than taken from ``calendar.month_abbr``:
 #: that is ``strftime('%b')`` under ``LC_TIME``, so any dependency calling
@@ -86,9 +111,14 @@ def _year_from_medline_date(raw: str | None) -> str:
     return match.group(1) if match else ""
 
 
-#: Section ``label``s ("BACKGROUND", "METHODS", ...) are deliberately dropped:
-#: the consumer is a full-text search index, which wants prose, not headings.
-_LATEST_METADATA_SQL = """
+#: Abstract section ``label``s ("BACKGROUND", "METHODS", ...) are deliberately
+#: dropped: the consumer is a full-text search index, which wants prose, not
+#: headings.
+#:
+#: Joining `article_id` on (pmid, source_file) — the same key `abs` uses —
+#: confines the identifiers to the article's *latest* version, so a DOI or PMCID
+#: that only ever appeared on a superseded version does not leak into the export.
+_LATEST_METADATA_SQL = f"""
 WITH abs AS (
     SELECT pmid, source_file, string_agg(text, ' ' ORDER BY seq) AS abstract
     FROM abstract_text a
@@ -99,6 +129,20 @@ WITH abs AS (
         SELECT 1 FROM _latest_snapshot la
         WHERE la.pmid = a.pmid AND la.source_file = a.source_file
     )
+    GROUP BY pmid, source_file
+),
+ids AS (
+    SELECT pmid, source_file, list_sort(list_distinct(list(
+        {_ID_CURIE_SQL} || id_value
+    ))) AS identifiers
+    FROM article_id ai
+    WHERE id_type IN ({_ID_TYPES_SQL})
+      -- Same reason as `abs` above: restrict before aggregating, so the
+      -- group-by does not span the whole version history.
+      AND EXISTS (
+          SELECT 1 FROM _latest_snapshot la
+          WHERE la.pmid = ai.pmid AND la.source_file = ai.source_file
+      )
     GROUP BY pmid, source_file
 )
 SELECT
@@ -112,21 +156,26 @@ SELECT
     la.pub_month,
     la.pub_day,
     la.medline_date,
-    abs.abstract
+    abs.abstract,
+    ids.identifiers
 FROM _latest_snapshot la
 LEFT JOIN journal j ON la.nlm_catalog_id = j.nlm_catalog_id
 LEFT JOIN abs ON abs.pmid = la.pmid AND abs.source_file = la.source_file
+LEFT JOIN ids ON ids.pmid = la.pmid AND ids.source_file = la.source_file
 ORDER BY la.pmid
 """
 
 
-def _document(row: tuple) -> dict[str, str]:
+def _document(row: tuple) -> dict[str, str | list[str]]:
     (
         pmid, journal_name, journal_abbrev, title, volume, issue,
-        year, month, day, medline_date, abstract,
+        year, month, day, medline_date, abstract, identifiers,
     ) = row
     return {
         "id": f"PMID:{pmid}",
+        # The LEFT JOIN yields NULL, not an empty list, for a PMID with neither
+        # a DOI nor a PMCID; such a record still gets its own PMID CURIE.
+        "identifiers": [f"PMID:{pmid}", *(identifiers or [])],
         "journal_name": _s(journal_name),
         "journal_abbrev": _s(journal_abbrev),
         "article_title": _s(title),

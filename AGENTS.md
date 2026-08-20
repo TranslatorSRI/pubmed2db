@@ -41,6 +41,13 @@ explains its part; this table is only a map.
   consumer wants. `parse._cited_pmids` is parked (uncalled) with re-enabling
   instructions in its docstring; `test_no_reference_citation_table` stops it
   creeping back.
+- **`identifiers` is derived at export, never stored.** DOIs and PMCIDs already
+  land in the normalized `article_id` table on every load, so the JSON export
+  aggregates them there (`export._LATEST_METADATA_SQL`'s `ids` CTE says how, and
+  `export.ID_PREFIXES` is the single place the Babel-compatible CURIE casing is
+  written down). A denormalized `article.identifiers` column would have
+  duplicated the data *and* forced a full corpus reload to backfill it, which is
+  the reason not to, and the reason is not visible from the query.
 - **An efetch mismatch is not evidence about what we parsed.** `validate`
   compares the export against Entrez `efetch`, but efetch output is a
   *rendering*, not the archival XML: it serves PMID 152567 as
@@ -60,7 +67,12 @@ explains its part; this table is only a map.
   `run_validation` growing past its 14 keyword arguments — the latter wants an
   options dataclass *within* the file, not a split.
 - **Three upstream bugs are worked around**, each written up in `FUTURE.md` and
-  pinned by a test, so they fail loudly once upstream fixes them. Two upstream
+  pinned by a test, so they fail loudly once upstream fixes them. Two of them are
+  the same mistake: every extraction in `_extract_article` uses a `.//`
+  descendant search, and two of those reach into `<ReferenceList>`. **Check the
+  scope of any field you take from that parser before trusting it** — both were
+  silent, and one had already written 426 foreign DOIs into `article_id` from a
+  single record. Two upstream
   *behaviours* are also easy to assume backwards (`_ensure_urls` sorts
   newest-first, so `--limit N` takes the head; `ensure()` skips by file name, so a
   republished file keeps stale bytes); both are pinned by tests in

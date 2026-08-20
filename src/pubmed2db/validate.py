@@ -6,7 +6,7 @@ archived alongside the export. It runs four checks, split into an **offline
 phase** (fast, deterministic, no network) and an **online phase** (sampled
 Entrez eutils cross-checks):
 
-1. **structure** — every line parses as JSON and matches the exporter's 10-field
+1. **structure** — every line parses as JSON and matches the exporter's 11-field
    record shape (:func:`pubmed2db.export._document`); PMIDs are unique.
 2. **coverage** — how much of PubMed we exported, against *two* denominators:
    the live Entrez total (portable) and the local ``latest_article`` count
@@ -32,6 +32,7 @@ sections skipped otherwise.
 from __future__ import annotations
 
 import difflib
+from collections import Counter
 import gzip
 import json
 import logging
@@ -45,7 +46,13 @@ import duckdb
 import requests
 from lxml import etree
 
-from .export import _MONTH_ABBR, _document, _year_from_medline_date, month_to_abbrev
+from .export import (
+    ID_PREFIXES,
+    _MONTH_ABBR,
+    _document,
+    _year_from_medline_date,
+    month_to_abbrev,
+)
 from .util import fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
@@ -324,7 +331,16 @@ def check_structure(
     invalid_ids = _Examples()
     invalid_months = _Examples()
     unreadable = _Examples()
-    duplicates: dict[int, int] = {}
+    duplicates = _Examples()
+    #: PMIDs already recorded in `duplicates`, so that one PMID exported 25
+    #: times spends one of the 20 example slots rather than all of them, and
+    #: `duplicates.count` stays a count of distinct offending PMIDs.
+    duplicated: set[int] = set()
+    #: CURIE prefix -> records carrying at least one identifier with it. A DOI
+    #: rate that collapsed between two exports is invisible to every check here
+    #: — nothing about one export in isolation says 96.7% is right and 6% is
+    #: not — so record the rate and let a reader compare it to the last run.
+    with_prefix: Counter[str] = Counter()
 
     for shard_index, path in enumerate(shards):
         rng = random.Random(seed + shard_index)
@@ -371,9 +387,14 @@ def check_structure(
                         pmid = None
                     else:
                         pmid = int(match.group(1))
-                        if pmid in result.all_pmids:
-                            duplicates[pmid] = duplicates.get(pmid, 1) + 1
+                        if pmid in result.all_pmids and pmid not in duplicated:
+                            duplicated.add(pmid)
+                            duplicates.append(pmid)
                         result.all_pmids.add(pmid)
+
+                    with_prefix.update(
+                        {c.split(":", 1)[0] for c in doc.get("identifiers") or []}
+                    )
 
                     if doc.get("pub_month") not in _VALID_MONTHS:
                         invalid_months.append(
@@ -405,7 +426,15 @@ def check_structure(
         "invalid_ids": invalid_ids.examples,
         "invalid_months": invalid_months.examples,
         "unreadable_shards": unreadable.examples,
-        "duplicate_pmids": _capped(sorted(duplicates)),
+        "duplicate_pmids": duplicates.examples,
+        "identifier_coverage": {
+            prefix: {
+                "records": with_prefix[prefix],
+                "pct": round(100 * with_prefix[prefix] / result.records_total, 2)
+                if result.records_total else 0.0,
+            }
+            for prefix in ID_PREFIXES.values()
+        },
     }
     report.checks["structure"] = result_dict
 
@@ -434,7 +463,7 @@ def check_structure(
         ("id-format", "every id looks like PMID:<digits>", "invalid id(s)",
          invalid_ids, "invalid_ids", "invalid_ids",
          "Records whose id is not of the form PMID:<digits>.", FAIL),
-        ("pmid-unique", "no PMID is exported twice", "duplicate PMID(s)",
+        ("pmid-unique", "no PMID is exported twice", "duplicated PMID(s)",
          duplicates, "duplicate_pmids", "duplicate_pmids",
          "PMIDs appearing in more than one record.", FAIL),
         ("no-extra-fields", "no record carries an unexpected field",
@@ -504,7 +533,9 @@ def _eutils(
     url = f"{EUTILS_BASE}/{endpoint}"
 
     last_exc: Exception | None = None
+    made = 0
     for attempt in range(retries):
+        made = attempt + 1
         _RATE.wait(has_key=bool(api_key))
         try:
             resp = requests.get(url, params=query, timeout=timeout)
@@ -523,7 +554,7 @@ def _eutils(
                 break
             if attempt < retries - 1:
                 time.sleep(min(2**attempt, 10))
-    raise RuntimeError(f"eutils {endpoint} failed after {retries} attempts") from last_exc
+    raise RuntimeError(f"eutils {endpoint} failed after {made} attempt(s)") from last_exc
 
 
 def entrez_total(*, api_key: str | None, email: str | None) -> int:
@@ -546,6 +577,26 @@ def _text(element, path: str) -> str:
     if node is None:
         return ""
     return _normalize("".join(node.itertext()))
+
+
+def _curie_set(curies) -> set[str]:
+    """Case-folded CURIEs, for comparing two renderings of the same identifiers."""
+    return {c.casefold() for c in (curies or [])}
+
+
+def _identifiers(article, pmid: int) -> list[str]:
+    """Rebuild the exporter's ``identifiers`` CURIEs from an efetch record.
+
+    Reads the same ``ArticleIdList`` the loader does and applies the same
+    :data:`pubmed2db.export.ID_PREFIXES` casing, so a difference between this
+    and the export is a real difference in the data, not in the formatting.
+    """
+    curies = [f"PMID:{pmid}"]
+    for node in article.findall("PubmedData/ArticleIdList/ArticleId"):
+        prefix = ID_PREFIXES.get(node.get("IdType", ""))
+        if prefix and node.text and node.text.strip():
+            curies.append(f"{prefix}:{node.text.strip()}")
+    return curies
 
 
 def efetch_documents(
@@ -592,6 +643,9 @@ def efetch_documents(
             )
             docs[pmid] = {
                 "id": f"PMID:{pmid}",
+                # `art` (the PubmedArticle root), not `article`: ArticleIdList
+                # lives under PubmedData, a sibling of MedlineCitation.
+                "identifiers": _identifiers(art, pmid),
                 "journal_name": _text(article, "Journal/Title"),
                 "journal_abbrev": _text(article, "Journal/ISOAbbreviation"),
                 "article_title": _text(article, "ArticleTitle"),
@@ -809,6 +863,7 @@ def check_fields(
         "core-fields": f"<{_FIELD_MISMATCH_RATE:.0%} of compared fields differ from Entrez",
         "abstract": f"abstracts at least {abstract_threshold:.0%} similar to Entrez",
         "journal-soft": "journal name/abbrev match Entrez (advisory)",
+        "identifiers-soft": "DOIs and PMCIDs match Entrez (advisory)",
     }
     if not online:
         for name, expectation in expectations.items():
@@ -842,6 +897,7 @@ def check_fields(
 
     mismatches: list[dict] = []
     soft_mismatches: list[dict] = []
+    identifier_mismatches: list[dict] = []
     missing_from_api: list[int] = []
     similarities: list[float] = []
     checked = 0
@@ -863,6 +919,30 @@ def check_fields(
                 mismatches.append(
                     {"pmid": pmid, "field": f, "exported": exported.get(f), "entrez": entrez.get(f)}
                 )
+
+        # `identifiers` is the one list-valued field, so it can't go through the
+        # string comparison above. Order is irrelevant; membership is not.
+        #
+        # Advisory, not part of the gated rate: this compares our newest
+        # *loaded* version against live PubMed, so a PMCID assigned after our
+        # last update file reads as a mismatch. That is the same exposure the
+        # core fields carry, but it is not independent of them — an
+        # ahead-of-print record already mismatching on volume/issue is exactly
+        # the one that has since been assigned a PMCID, so counting it here too
+        # would tighten the FAIL threshold on the records most likely to trip
+        # it. Same reasoning as SOFT_FIELDS below: compared, reported, never
+        # fatal.
+        # Compared case-folded, reported verbatim: a DOI is case-insensitive by
+        # specification and PubMed is not internally consistent about its own,
+        # so a case-only change between our load and today's efetch is not a
+        # difference in the data. The prefixes cannot drift — both sides build
+        # them from ID_PREFIXES — so folding them too costs nothing.
+        if _curie_set(exported.get("identifiers")) != _curie_set(entrez.get("identifiers")):
+            identifier_mismatches.append({
+                "pmid": pmid, "field": "identifiers",
+                "exported": exported.get("identifiers"),
+                "entrez": entrez.get("identifiers"),
+            })
 
         exp_abs = _normalize(str(exported.get("abstract", "")))
         ent_abs = entrez.get("abstract", "")
@@ -896,6 +976,7 @@ def check_fields(
         "mismatches_by_field": grouped["by_field"],
         "mismatches_by_kind": grouped["by_kind"],
         "soft_mismatches": _capped(soft_mismatches),
+        "identifier_mismatches": _capped(identifier_mismatches),
         "missing_from_api": _capped(missing_from_api),
         "abstract_similarity": {
             "min": min_similarity,
@@ -951,6 +1032,16 @@ def check_fields(
         code="journal_mismatches",
         message="Sampled journal name/abbrev differs from Entrez (different source).",
         count=len(soft_mismatches), see="checks.field_validation.soft_mismatches",
+    )
+
+    report.record(
+        "identifiers-soft", "field accuracy", expectations["identifiers-soft"],
+        WARN if identifier_mismatches else PASS,
+        f"{len(identifier_mismatches):,} of {checked:,} record(s) differ",
+        code="identifier_mismatches",
+        message="Sampled DOIs/PMCIDs differ from Entrez (may be assigned since our last update).",
+        count=len(identifier_mismatches),
+        see="checks.field_validation.identifier_mismatches",
     )
 
 
@@ -1257,7 +1348,7 @@ def write_report(report: dict, out_path: Path) -> None:
 #: what the export *omits*. Everything else in the NOT CHECKED block is derived
 #: from CORE_FIELDS/SOFT_FIELDS so it cannot fall out of date.
 _NOT_CHECKED = (
-    "identifiers other than the PMID (DOI, PMCID) are not part of this export",
+    "identifiers other than the DOI, PMCID and PMID are exported but never compared",
     "MeSH terms, authors, affiliations and grants are stored in the DB, never exported",
     "records outside the sample are checked for structure only, never against Entrez",
 )
@@ -1333,6 +1424,8 @@ def _not_checked(report: dict) -> list[str]:
     derived = [
         f"compared strictly against Entrez: {', '.join(CORE_FIELDS)}",
         f"compared but never fails the run (NLM Catalog source): {', '.join(SOFT_FIELDS)}",
+        "compared but never fails the run (assigned upstream after our last "
+        "update file): identifiers",
         "abstract compared by similarity ratio"
         + (f" (>= {threshold})" if threshold is not None else "")
         + ", not character-for-character",
@@ -1373,6 +1466,12 @@ def format_summary(report: dict) -> str:
         if not rows:
             continue
         heading = section.upper()
+        if section == "structure" and struct.get("identifier_coverage"):
+            carried = ", ".join(
+                f"{v['pct']:.1f}% {prefix}"
+                for prefix, v in struct["identifier_coverage"].items()
+            )
+            heading += f"  ({carried})"
         if section == "field accuracy" and fv.get("sampled"):
             heading += (
                 f"  ({fv['sampled']:,} records sampled: {inputs.get('sample_size')}/shard "
