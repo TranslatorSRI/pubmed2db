@@ -389,11 +389,10 @@ def check_structure(
             # The raw binary handle rather than `_open_text`, so the progress
             # line below can call `raw.tell()`: for a .gz shard that is the
             # compressed offset, the scale `total_bytes` is measured in.
-            with path.open("rb") as raw:
-                handle = (
-                    gzip.open(raw, "rt", encoding="utf-8") if path.name.endswith(".gz")
-                    else io.TextIOWrapper(raw, encoding="utf-8")
-                )
+            with path.open("rb") as raw, (
+                gzip.open(raw, "rt", encoding="utf-8") if path.name.endswith(".gz")
+                else io.TextIOWrapper(raw, encoding="utf-8")
+            ) as handle:
                 for lineno, line in enumerate(handle, start=1):
                     line = line.strip()
                     if not line:
