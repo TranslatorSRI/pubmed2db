@@ -218,6 +218,8 @@ def test_parquet_export_removes_a_dropped_table_s_file(loaded_con, tmp_path):
 
     assert not orphan.exists()
     assert set(out.glob("*.parquet")) == set(written)
+
+
 def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog):
     """The JSON export's progress branch only fires after 10 s of real work.
 

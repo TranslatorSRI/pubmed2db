@@ -244,6 +244,8 @@ def test_schema_migrates_a_database_without_the_skip_columns(tmp_path):
         ).fetchall() == [(None, None)]
     finally:
         con.close()
+
+
 def test_load_progress_line_reports_rate_and_elapsed(con, gz_fixture, caplog):
     """The progress line must carry what sizes the next srun, not just an ETA.
 
