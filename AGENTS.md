@@ -48,11 +48,16 @@ explains its part; this table is only a map.
   written down). A denormalized `article.identifiers` column would have
   duplicated the data *and* forced a full corpus reload to backfill it, which is
   the reason not to, and the reason is not visible from the query.
-- **Two memory numbers mislead, and both have bitten.** DuckDB sizes `threads`
-  from the machine's core count and `memory_limit` from its *physical RAM* — it
-  cannot see a Slurm cgroup, so on a cluster node both default far above the
-  allocation and a long load caches its way into an OOM kill. And
-  `util.peak_rss_gib` is `ru_maxrss`, a high-water mark that only ever rises, so
+- **Two memory numbers mislead, and both have bitten.** DuckDB's default
+  `memory_limit` is ~80% of physical RAM off a cluster, but **it does read a
+  Slurm cgroup** — measured at ~76% of `--mem` on duckdb 1.5.4 (6.1 GiB under
+  `--mem=8G`, 47.3 GiB under `--mem=62G`). So the buffer pool is not what
+  overruns the allocation; what its limit does not cover is, since the lxml
+  tree, the parsed records and the Arrow batch share the same cgroup and the
+  default already claims three quarters of it. (`threads` is still sized from
+  the machine's core count as far as we know — untested against
+  `--cpus-per-task`.) And `util.peak_rss_gib` is `ru_maxrss`, a high-water mark
+  that only ever rises, so
   a climbing per-file "peak" is not evidence of a leak; `current_rss_gib` is the
   one that can fall — which is why the load and validate progress lines log
   both. Before diagnosing loader memory, read `slurm/README.md` → "Running

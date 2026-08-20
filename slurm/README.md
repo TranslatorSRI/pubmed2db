@@ -9,11 +9,12 @@ Notes for running the loader and the export on the shared cluster (the same one 
 # Put uv's package cache somewhere writable (~/.cache/uv may not be).
 export UV_CACHE_DIR="$PWD/../uv-cache"
 
-# Don't run on the login node. Cap DuckDB's cache below --mem, or it will size
-# itself from the node's RAM and get OOM-killed hours in (see below).
-export PUBMED2DB_DUCKDB_MEMORY_LIMIT=48GB
-
-srun --mem=64G --time=24:00:00 uv run pubmed2db --data-dir data load
+# Don't run on the login node. Cap DuckDB's cache below --mem so the rest of
+# the process (lxml, Arrow) has room inside the same cgroup -- see below.
+# Set it per-srun, not shell-wide: a later export in this shell would inherit it.
+srun --mem=64G --time=24:00:00 \
+  env PUBMED2DB_DUCKDB_MEMORY_LIMIT=48GB \
+  uv run pubmed2db --data-dir data load
 ```
 
 `download → journals → load` can each be a separate `srun`, or use
@@ -43,23 +44,34 @@ The loader holds one file at a time (full lxml tree + that file's parsed records
 + the Arrow batch), then inserts it and moves on. *Our* footprint does not grow
 with the number of files or the size of the database.
 
-DuckDB's does. It runs in the same process, and **it sets its buffer-pool limit
-to ~80% of the machine's physical RAM, not your Slurm allocation** — the same
-mistake `--threads` makes with core count. On a big node that means a limit of
-hundreds of GB inside a `--mem=64G` cgroup: DuckDB caches ever more of a growing
-database, RSS climbs run-long, and the job is eventually OOM-killed with nothing
-to show for it. Cap it explicitly:
+DuckDB's does. It runs in the same process and caches ever more of a growing
+database, so its buffer pool is what makes a long load's RSS climb run-long.
+
+**DuckDB does see the Slurm cgroup**, so its default is not the node-sized
+disaster it looks like: measured on duckdb 1.5.4, it takes ~76% of `--mem`
+(6.1 GiB under `--mem=8G`, 47.3 GiB under `--mem=62G`; off a cluster it is ~80%
+of physical RAM). The problem with the default is subtler — **its limit governs
+only its own buffer pool**, while the lxml tree, the parsed records and the
+Arrow batch live in the same cgroup and count against the same `--mem`. A
+default that claims three quarters of the allocation leaves the rest of the
+process a quarter, and the loader's own footprint is not small.
+
+So cap it to buy that headroom back, not to rescue DuckDB from itself:
 
 ```bash
-export PUBMED2DB_DUCKDB_MEMORY_LIMIT=48GB     # comfortably under --mem=64G
+srun --mem=64G env PUBMED2DB_DUCKDB_MEMORY_LIMIT=48GB uv run pubmed2db ... load
 ```
+
+Set it on the `srun` rather than exporting it into your shell: it is a
+group-level setting every subcommand reads, so a shell-wide value silently caps
+a later `--mem=256G` export at the load's figure.
 
 ### Reading the logged numbers
 
 Each file logs both figures, and the difference between them is the point:
 
 ```
-INFO pubmed2db.load: loaded pubmed26n1201.xml.gz: 30000 articles, 0 deletions, 0 failed to parse (RSS 12.4 GiB, peak 42.1 GiB)
+INFO pubmed2db.load: loaded pubmed26n1201.xml.gz: 30000 articles, 0 deletions, 0 failed to parse, 0 book record(s) skipped (RSS 12.4 GiB, peak 42.1 GiB)
 ```
 
 - **`RSS`** is what the process holds *right now*. It can fall. This is the one
@@ -296,11 +308,11 @@ uv run pubmed2db --threads 8 --memory-limit 200GB \
   --temp-dir /local/scratch/duckdb_tmp export ...
 ```
 
-**The common thread: DuckDB sizes itself from the machine, not the cgroup.** It
-reads the node's core count for `threads` and the node's physical RAM for
-`memory_limit`, and Slurm's limits are invisible to it. On a shared cluster both
-defaults are wrong in the same direction — too big — and the memory one is the
-expensive mistake, because exceeding it is an OOM kill rather than contention.
+**Two of the three defaults come from the machine rather than your allocation.**
+`memory_limit` is the exception: DuckDB reads the Slurm cgroup and defaults to
+~76% of `--mem` (measured on duckdb 1.5.4). The catch is what that limit
+*covers* — DuckDB's buffer pool only, not the rest of a process sharing the same
+cgroup.
 
 **`--threads`** caps DuckDB's thread pool. Left alone, DuckDB sizes the pool
 from the *machine's* core count rather than your allocation, so on a 64-core
@@ -309,13 +321,14 @@ node with `--cpus-per-task=8` it may run 64 threads inside a cgroup that permits
 peak. In practice the measured export ran fine without it, so reach for this
 only if a run is slower than the numbers above or the node is busy.
 
-**`--memory-limit`** caps the buffer pool. Left alone DuckDB picks ~80% of
-physical RAM — on a 512 GB node that is ~410 GB, regardless of your `--mem=64G`.
-It is the likeliest cause of a load whose RSS climbs steadily and then dies hours
-in. Set it a comfortable margin below `--mem` (the process needs room for lxml
-and the Arrow batch on top of it): `48GB` under `--mem=64G`, `200GB` under
-`--mem=256G`. Setting it *too* low is not free either — DuckDB will spill to
-`--temp-dir` instead of caching, which shows up as a collapsed s/file rate.
+**`--memory-limit`** caps the buffer pool. Left alone DuckDB takes ~76% of
+`--mem`, which is the right shape but leaves only the remaining quarter for
+lxml, the parsed records and the Arrow batch — all of which count against the
+same `--mem`. Set it a comfortable margin below the allocation to widen that
+headroom: `48GB` under `--mem=64G`, `200GB` under `--mem=256G`. Both are
+starting points rather than measurements (#37). Setting it *too* low is not free
+either — DuckDB will spill to `--temp-dir` instead of caching, which shows up as
+a collapsed s/file rate.
 
 **`--temp-dir`** is where DuckDB spills when a query exceeds its memory budget.
 The loader inserts file-by-file so it should never need to, but the `export`

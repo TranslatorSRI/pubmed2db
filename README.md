@@ -144,16 +144,16 @@ PubMed supplies (`pii`, `mid`, …) is still loaded and is available in the
 > uv run pubmed2db --data-dir data load
 > ```
 
-Three more group-level options tune DuckDB itself, which matters on a cluster
-because **DuckDB sizes itself from the machine, not from your allocation** — it
-cannot see a Slurm cgroup:
+Three more group-level options tune DuckDB itself, which matters on a cluster:
 
 - `--threads N` (`PUBMED2DB_THREADS`) caps the thread pool, which otherwise comes
   from the machine's core count and oversubscribes a smaller allocation.
 - `--memory-limit SIZE` (`PUBMED2DB_DUCKDB_MEMORY_LIMIT`, e.g. `48GB`) caps the
-  buffer pool, which otherwise defaults to ~80% of the machine's *physical RAM*.
-  Left alone on a big node, a long load's memory climbs until the job is
-  OOM-killed inside a much smaller `--mem`.
+  buffer pool. DuckDB does read the Slurm cgroup, defaulting to ~76% of `--mem`
+  (measured on duckdb 1.5.4), so this is not about rescuing it from a node-sized
+  default — it is about leaving room for the memory DuckDB's limit does *not*
+  cover: the lxml tree, the parsed records and the Arrow batch all live in the
+  same cgroup.
 - `--temp-dir PATH` (`PUBMED2DB_DUCKDB_TEMP_DIR`) sets where DuckDB spills when a
   query exceeds its memory budget.
 
