@@ -163,9 +163,17 @@ def _month_from_medline_date(raw: str | None) -> str:
     that no source says. ``validate._VALID_MONTHS`` is a closed set that
     excludes it *on purpose*, so such records stay visible as ``month-format``
     warnings instead of being blessed. Export and checker disagreeing here is
-    the design, not a bug — this has been raised as one once already. Revisit if
-    a consumer of the export asks for a different representation; until then the
-    warning is the record that the shape exists.
+    the design, not a bug — this has been raised as one once already.
+
+    The wart is real, and it is answered by a *different* field rather than by
+    tidying this one: PR #17 adds a verbatim ``pub_date`` carrying PubMed's own
+    string on every record (``"1998 Dec-1999 Jan"``), the way ``esummary``'s
+    ``pubdate`` does. Consumers rendering a citation read that; the three parsed
+    fields stay parsed conveniences, and no arrangement of them can represent a
+    cross-year range anyway. Whether DocumentMetadataAPI consumers are content
+    to receive ``"pub_month": "Dec-1999 Jan"`` alongside it is the one part
+    still open — asked on issue #14 and unanswered, tracked in FUTURE.md with
+    the rest of the ingest contract.
     """
     if not raw:
         return ""

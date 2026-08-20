@@ -25,6 +25,13 @@ on, and a copy left here rots into a contradiction of the code.
     ingest globs `*.ndjson` or does not decompress, it reads **nothing** — an
     empty ingest, not an error, which is the worst shape for a failure to take.
     `--no-gzip` restores the old artifact if the answer is no.
+  - **`pub_month` can carry a year.** A cross-year `MedlineDate` exports
+    `"pub_month": "Dec-1999 Jan"` (PMID:10188493), verbatim as PubMed wrote it.
+    Raised on #14 and explicitly unanswered: *"whether the DocumentMetadataAPI
+    service and its consumers are comfortable returning unusual values"*. A
+    verbatim `pub_date` field (#17) gives consumers a clean string to render
+    from, but does not by itself answer whether the odd `pub_month` is
+    acceptable alongside it.
   - **Shard names lost their zero padding.** `pubmed_metadata_00000.ndjson`
     became `pubmed_metadata_0.ndjson.gz`: DuckDB's `PER_THREAD_OUTPUT` names
     files from `FILENAME_PATTERN '{i}'`, which emits a bare index. Anything

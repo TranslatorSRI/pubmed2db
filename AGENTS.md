@@ -105,7 +105,14 @@ explains its part; this table is only a map.
   migration), and `_month_from_medline_date` recovers the text after a
   `MedlineDate`'s leading year — whose mandatory *whitespace* is what stops
   `"1999-2000"` (a year range, no month) yielding `"-2000"`. `pub_day` stays
-  blank for these records, as the spec example has it. Note the split: the
+  blank for these records, as the spec example has it. A cross-year
+  `MedlineDate` therefore exports `pub_month` as `"Dec-1999 Jan"` — a month
+  field carrying a year, deliberately, because it is what PubMed wrote and what
+  its API renders back. `validate._VALID_MONTHS` excludes that shape on purpose,
+  so those records stay visible as `month-format` warnings; the checker
+  disagreeing with the export is the design here, not a bug. The wart is
+  answered by a verbatim `pub_date` field (#17), not by inventing a tidier
+  month. Note the split: the
   `MedlineDate` half is export-only and needs no reload, the `<Season>` half only
   takes effect for files loaded after the change. Every `trim` in the generated
   SQL names `_WS`, the character set Python's `.strip()` removes — bare SQL
