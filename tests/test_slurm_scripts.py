@@ -436,3 +436,29 @@ def test_a_trailing_slash_on_manifest_dir_still_excludes_todays_manifest(
     assert "--previous-manifest data/manifests/pmids-20260805.txt.gz" in result.stdout
     assert f"--previous-manifest data/manifests//pmids-{today}" not in result.stdout
     assert f"--previous-manifest data/manifests/pmids-{today}" not in result.stdout
+
+
+def test_validate_feeds_the_newest_earlier_report_back(sandbox: Path) -> None:
+    """Archiving dated reports and never passing one back leaves `vs-previous`
+    reporting `skip` forever, however many reports have piled up."""
+    import datetime
+
+    today = datetime.date.today().strftime("%Y%m%d")
+    (manifests(sandbox) / "validation_report-20260701.json").touch()
+    (manifests(sandbox) / "validation_report-20260805.json").touch()
+    # A same-day re-run must not compare against the report it is about to write.
+    (manifests(sandbox) / f"validation_report-{today}.json").touch()
+
+    result = run_validate(sandbox, NCBI_EMAIL="me@example.org")
+    assert result.returncode == 0, result.stderr
+    assert (
+        "--previous-report data/manifests/validation_report-20260805.json"
+        in result.stdout
+    )
+    assert f"--previous-report data/manifests/validation_report-{today}" not in result.stdout
+
+
+def test_validate_omits_previous_report_on_a_first_run(sandbox: Path) -> None:
+    result = run_validate(sandbox, NCBI_EMAIL="me@example.org")
+    assert result.returncode == 0, result.stderr
+    assert "--previous-report" not in result.stdout

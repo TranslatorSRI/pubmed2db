@@ -71,6 +71,28 @@ fi
 report="$MANIFEST_DIR/validation_report-$today.json"
 validate_args+=(--out "$report")
 
+# ...and the newest earlier one becomes --previous-report, on the same rule as
+# the manifest above. Archiving reports without ever passing one back would mean
+# the `vs-previous` coverage check reports `skip` on every run this script
+# launches, however many reports had piled up.
+#
+# Unlike the manifest, a *failed* run's report is still eligible. It compares
+# coverage percentages rather than absolute counts, so a short export shows up
+# as a drift warning on the next run rather than as a silent pass -- the safe
+# direction, and one a reader can trace back to the dated report that caused it.
+previous_report=""
+if [[ -d "$MANIFEST_DIR" ]]; then
+    while IFS= read -r candidate; do
+        previous_report="$candidate"
+    done < <(find "$MANIFEST_DIR" -maxdepth 1 -name 'validation_report-*.json' \
+                  ! -name "validation_report-$today.json" | sort)
+fi
+
+if [[ -n "$previous_report" ]]; then
+    echo "comparing against previous report: $previous_report"
+    validate_args+=(--previous-report "$previous_report")
+fi
+
 if [[ "$VALIDATE_OFFLINE" == "1" ]]; then
     validate_args+=(--offline)
 else

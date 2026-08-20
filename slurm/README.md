@@ -296,6 +296,15 @@ corpus it describes while still looking current — and one fixed name would be
 overwritten by the next run, leaving nothing to pass as `--previous-report`.
 Running `validate` by hand keeps the default location.
 
+**And feeds the newest earlier one back**, by the same rule the manifest uses:
+archiving dated reports while never passing one back would leave the
+`vs-previous` coverage check reporting `skip` on every run this script launches,
+however many had piled up. Unlike the manifest, a *failed* run's report is still
+eligible — `vs-previous` compares coverage percentages rather than absolute
+counts, so a short export surfaces as a drift warning on the next run rather
+than as a silent pass, and the dated report it came from is right there to
+check.
+
 **The API key is handed over as an environment variable, never as `--api-key`.**
 `argv` is world-readable through `ps` on a shared node, and the CLI's option
 already declares `envvar="NCBI_API_KEY"`, so the two are equivalent to `click`
