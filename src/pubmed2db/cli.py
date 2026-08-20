@@ -92,10 +92,11 @@ def _sync_options(f):
     "--memory-limit",
     default=None,
     envvar="PUBMED2DB_DUCKDB_MEMORY_LIMIT",
+    show_envvar=True,
     help=(
-        "Cap DuckDB's buffer pool, e.g. '48GB' (default: ~80% of the machine's "
-        "physical RAM, which ignores a smaller --mem and invites an OOM kill on "
-        "a long load). Env: PUBMED2DB_DUCKDB_MEMORY_LIMIT."
+        "Cap DuckDB's buffer pool, e.g. '48GB' (default: ~76% of a Slurm "
+        "allocation, which leaves only the remaining quarter for the lxml tree, "
+        "the parsed records and the Arrow batch)."
     ),
 )
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging.")
