@@ -133,9 +133,22 @@ INFO pubmed2db.load: loaded pubmed26n1201.xml.gz: 30000 articles, 0 deletions, 0
   it is what a high-water mark does.
 
 So a run that reaches `peak 42.1 GiB` by file 1201 hit 42 GiB *at some point*;
-whether it is still there is what `RSS` tells you. If both climb together and
-`RSS` never comes down, DuckDB's limit is too high — lower
-`PUBMED2DB_DUCKDB_MEMORY_LIMIT` rather than raising `--mem`.
+whether it is still there is what `RSS` tells you.
+
+If both climb together and `RSS` never comes down, **something is growing, but
+not necessarily DuckDB.** Its buffer pool is the obvious suspect and the easy
+one to test — lower `PUBMED2DB_DUCKDB_MEMORY_LIMIT` and re-run. If `RSS`
+plateaus lower, that was it. If it climbs the same way, the growth is in the
+memory DuckDB's limit does *not* govern (the lxml tree, the parsed records, the
+Arrow batch), and lowering the limit further only buys spilling — visible as a
+collapsed s/file rate — without touching the cause.
+
+That distinction is not academic: the 42.1 GiB reading above has **never been
+explained.** It predates the discovery that DuckDB reads the cgroup, so it was
+originally blamed on a node-sized buffer-pool default that turned out not to
+exist. Which half is growing is one of the questions the next full load answers
+(#37), and #25 — the loader holding a whole lxml DOM per file — is the leading
+candidate for the other half.
 
 (`RSS` reads `/proc`, so it shows `n/a` on macOS. That only affects local
 development; on the cluster it is always available.)
