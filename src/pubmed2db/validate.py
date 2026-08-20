@@ -561,6 +561,11 @@ def _text(element, path: str) -> str:
     return _normalize("".join(node.itertext()))
 
 
+def _curie_set(curies) -> set[str]:
+    """Case-folded CURIEs, for comparing two renderings of the same identifiers."""
+    return {c.casefold() for c in (curies or [])}
+
+
 def _identifiers(article, pmid: int) -> list[str]:
     """Rebuild the exporter's ``identifiers`` CURIEs from an efetch record.
 
@@ -909,7 +914,12 @@ def check_fields(
         # would tighten the FAIL threshold on the records most likely to trip
         # it. Same reasoning as SOFT_FIELDS below: compared, reported, never
         # fatal.
-        if set(exported.get("identifiers") or []) != set(entrez.get("identifiers") or []):
+        # Compared case-folded, reported verbatim: a DOI is case-insensitive by
+        # specification and PubMed is not internally consistent about its own,
+        # so a case-only change between our load and today's efetch is not a
+        # difference in the data. The prefixes cannot drift — both sides build
+        # them from ID_PREFIXES — so folding them too costs nothing.
+        if _curie_set(exported.get("identifiers")) != _curie_set(entrez.get("identifiers")):
             identifier_mismatches.append({
                 "pmid": pmid, "field": "identifiers",
                 "exported": exported.get("identifiers"),

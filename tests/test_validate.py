@@ -193,6 +193,19 @@ def test_field_validation_flags_identifier_mismatch(export_dir, loaded_con, monk
     assert statuses["core-fields"] != "fail"
 
 
+def test_identifier_comparison_ignores_doi_case(export_dir, loaded_con, monkeypatch):
+    """A case-only DOI change is not a difference in the data.
+
+    DOIs are case-insensitive by specification and PubMed is not consistent
+    about its own, so folding case here keeps a re-cased DOI out of the report.
+    """
+    recased = dict(_EFETCH)
+    recased[1001] = _EFETCH[1001].replace("10.1038/example1001", "10.1038/EXAMPLE1001")
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(recased))
+    report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
+    assert report["checks"]["field_validation"]["identifier_mismatches"] == []
+
+
 def test_efetch_identifiers_exclude_cited_references(monkeypatch):
     """validate reads the article's own ArticleIdList, not its references'.
 
