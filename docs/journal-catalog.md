@@ -152,17 +152,20 @@ halves whatever CatfilePlus could add.
   **MARCXML only**. The last NLMXML baseline is 2023, so an NLMXML path means
   `catplusbase*of4.2023.xml` plus ~33 monthly deltas (the monthly
   `catplus.YYYYMMDD.xml` files *are* still NLMXML).
-- **And the 902 are already covered** by `J_Entrez.txt`, which we keep. They land
-  in the dimension with correct titles and NULL years.
+- **And every one of them is already in the dimension** with the correct title,
+  from `J_Entrez.txt`, which we keep. The 473 the deltas do not reach lose only
+  their publication years.
 
-Article-volume impact of the year gap, for scale: **~1,100 articles** across all 902.
+Article-volume impact, for scale: **~1,100 articles** across all 902, so roughly
+**~580** across the 473 that actually end up with NULL years.
 
 > **Caveat — extrapolated.** 60 of the 902 sampled via `esearch "<MedAbbr>"[ta]`
-> → 73 articles, scaled to 902. `[ta]` may undercount proceedings volumes, so
-> read this as an order of magnitude (~0.003% of 40.9M), not a count.
+> → 73 articles, scaled to 902 and then prorated to 473. `[ta]` may undercount
+> proceedings volumes, so read this as an order of magnitude (~0.001% of 40.9M),
+> not a count.
 
 **Conclusion: serfile gives us everything we would take from CatfilePlus, at a
-ninth of the download and without a MARCXML parser.** Do not redo this analysis.
+sixth of the download and without a MARCXML parser.** Do not redo this analysis.
 
 ## Finding 5 — notes on `pubmed_downloader.catalog` (v0.0.14)
 
