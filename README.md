@@ -413,7 +413,9 @@ still fetched, so a changed published checksum is always detected.
 - We reuse `pubmed-downloader` **as-is** for downloading and XML parsing, but work
   around three bugs in it (≤ 0.0.14), all tracked in [`FUTURE.md`](./FUTURE.md):
   `catalog.process_journal_overview()` requires `start_year`/`end_year` fields the
-  real `J_Entrez.txt` does not contain, so it raises on live data; its reference
+  real `J_Entrez.txt` does not contain, so it raises on live data (filed as
+  [pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16),
+  still open); its reference
   extraction looks under `MedlineCitation` for a `<ReferenceList>` that PubMed puts
   under `<PubmedData>`, so it never finds one; and its article-ID extraction
   descends into that `<ReferenceList>`, attributing every cited reference's DOI to

@@ -193,6 +193,31 @@ separate measured reason: in `J_Entrez.txt`, `IsoAbbr` equals `MedAbbr` in
 without a difference. `journal.abbreviation_iso` could be dropped — that is a
 Parquet schema change for downstream consumers, so it is its own decision.
 
+### Why `process_journal_overview()` is still worth fixing upstream
+
+It cannot return a single record in ≤ 0.0.14: `Journal.start_year` and
+`end_year` are annotated `int | None` but given no default, so pydantic makes
+them required, and `J_Entrez.txt` has no such key. Every other field the file
+cannot supply already defaults (`abbreviation_medline`, `abbreviation_iso`,
+`synonyms`, `active`), which is what marks those two as an oversight rather than
+a statement that the overview file is the wrong input.
+
+It is tempting to read Finding 1 as "the catalog is the real source, so this
+function is a vestige — delete it." The finding says the opposite. `J_Entrez.txt`
+is **not** a subset of the catalog: `fulljournalname` and `IsoAbbr` exist nowhere
+in `CatalogRecord`, and no reconstruction from the catalog reaches them (Finding
+2). So `process_journal_overview()` is the only library path to two fields the
+catalog cannot supply; it can *never* supply publication years, because its input
+has none; and therefore those years must be optional. That is precisely the
+load-then-enrich shape this pipeline uses —
+[pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16) is
+what would let a library user build a `Journal` from the overview file and fill
+the years from the catalog afterwards.
+
+One caveat if it lands and we adopt it: `Journal.active` defaults to `True`,
+which is wrong for the 13,012 journals serfile marks ceased, so `active` would
+still have to be set from the catalog rather than taken from the model.
+
 ## How to redo any of this
 
 Per `AGENTS.md`'s sampling note, none of this needs a PubMed baseline download:

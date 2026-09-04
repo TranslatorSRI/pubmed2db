@@ -58,17 +58,23 @@ on, and a copy left here rots into a contradiction of the code.
 The dependency is pinned `<0.1` because we call private APIs (`_extract_article`,
 `_ensure_urls`); re-test before raising the ceiling.
 
-- **The custom journal parser stays — decided, not deferred.**
-  `process_journal_overview()` raises on real data (≤ 0.0.14: it requires
-  `start_year`/`end_year`, which `J_Entrez.txt` does not carry), and
-  https://github.com/cthoyt/pubmed-downloader/pull/16 proposed making them
-  optional. Upstream's answer was that the overview file is the wrong source and
-  the package reads the serfiles instead. We measured that, and it is half right:
-  the catalog does carry the years, but `J_Entrez.txt` is the only place the
-  journal *title* exists in PubMed's own rendering. So we take years from the
-  catalog and titles from the overview file, and keep parsing both ourselves.
-  [`docs/journal-catalog.md`](./docs/journal-catalog.md) has the evidence; PR #16
-  can be closed.
+- **Drop `load._parse_journal_overview` if
+  [pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16)
+  lands** (~35 lines, with `_JOURNAL_KEYS`). `process_journal_overview()` cannot
+  return a single record in ≤ 0.0.14: `Journal.start_year`/`end_year` are
+  annotated `int | None` but given no default, so pydantic makes them required,
+  and `J_Entrez.txt` has no such key. Every *other* field the overview file
+  cannot supply already defaults (`abbreviation_medline`, `synonyms`, `active`),
+  which is what marks these two as an oversight rather than a design statement.
+  Upstream's answer to the PR was that the package reads the serfiles instead;
+  our measurement says that is half right — the catalog does carry the years, but
+  `J_Entrez.txt` is the only place `fulljournalname` and `IsoAbbr` exist at all,
+  so a `Journal` built from it can never have years and the fields must be
+  optional. That makes the PR worth pursuing, not moot: it is the same
+  load-then-enrich shape this pipeline uses.
+  **If it lands, keep setting `active` ourselves** — the model defaults it to
+  `True`, which is wrong for the 13,012 ceased journals serfile identifies. See
+  [`docs/journal-catalog.md`](./docs/journal-catalog.md).
 - **Expose cancelled ISSNs as resolver aliases.** serfile marks 4,763 ISSNs
   `ValidYN="N"` — cancelled or incorrect, recorded so they can be recognized as
   wrong. They would let an old citation carrying a dead ISSN still resolve, but
