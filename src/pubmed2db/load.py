@@ -479,21 +479,31 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
     """
     years: dict[str, tuple[int | None, int | None, bool | None]] = {}
     for path in paths:
-        for _, element in etree.iterparse(os.fspath(path), tag="NLMCatalogRecord", recover=True):
-            nlm_id = element.findtext("NlmUniqueID")
-            if nlm_id:
-                end_raw = element.findtext("PublicationInfo/PublicationEndYear")
-                # 9999 is the catalog's "still publishing" sentinel, not a year.
-                # A *missing* end year means unknown, which is not the same as
-                # ceased, so it leaves `active` NULL rather than false.
-                years[nlm_id] = (
-                    _catalog_year(element.findtext("PublicationInfo/PublicationFirstYear")),
-                    None if end_raw == "9999" else _catalog_year(end_raw),
-                    True if end_raw == "9999" else (None if end_raw is None else False),
-                )
-            element.clear()
-            while element.getprevious() is not None:
-                del element.getparent()[0]
+        try:
+            for _, element in etree.iterparse(
+                os.fspath(path), tag="NLMCatalogRecord", recover=True
+            ):
+                nlm_id = element.findtext("NlmUniqueID")
+                if nlm_id:
+                    end_raw = element.findtext("PublicationInfo/PublicationEndYear")
+                    # 9999 is the catalog's "still publishing" sentinel, not a
+                    # year. A *missing* end year means unknown, which is not the
+                    # same as ceased, so it leaves `active` NULL rather than false.
+                    years[nlm_id] = (
+                        _catalog_year(element.findtext("PublicationInfo/PublicationFirstYear")),
+                        None if end_raw == "9999" else _catalog_year(end_raw),
+                        True if end_raw == "9999" else (None if end_raw is None else False),
+                    )
+                element.clear()
+                while element.getprevious() is not None:
+                    del element.getparent()[0]
+        except etree.XMLSyntaxError as exc:
+            # NLM really does publish empty files -- serfile.20240903.xml is
+            # Content-Length: 0 -- and `recover=True` does not save an empty
+            # document. Per file, because the alternative is that one bad file
+            # costs every journal its years: `_journal_years` catches broadly,
+            # so an exception escaping here would empty the whole mapping.
+            logger.warning("%s failed to parse (%s); skipping it", path, exc)
     return years
 
 

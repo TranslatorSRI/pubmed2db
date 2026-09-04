@@ -302,3 +302,20 @@ def test_serfile_validator_falls_back_and_survives_network_trouble(monkeypatch):
 
     monkeypatch.setattr(load_mod.requests, "head", boom)
     assert load_mod._serfile_validator("https://x") is None
+
+
+def test_parse_serfile_skips_a_file_it_cannot_parse():
+    """NLM really does publish empty files -- serfile.20240903.xml is served with
+    Content-Length: 0 -- and `recover=True` does not save an empty document.
+    Skipping per file matters because `_journal_years` catches broadly, so an
+    exception escaping here would cost *every* journal its years, not just this
+    file's."""
+    from pubmed2db.load import _parse_serfile
+
+    empty = FIXTURES / "serfile_empty.xml"
+    assert empty.stat().st_size == 0
+
+    years = _parse_serfile([FIXTURES / "serfile_sample.xml", empty])
+    assert years["0410462"] == (1869, None, True)  # the good file still counts
+
+    assert _parse_serfile([empty]) == {}  # and alone it is empty, not an error
