@@ -407,13 +407,56 @@ def _serfile_urls() -> list[str]:
     return [_SERFILE_LISTING + name for name in names]
 
 
+def _serfile_validator(url: str) -> str | None:
+    """The server's ETag for a catalog file, or ``None`` if it cannot be read.
+
+    NLM publishes no ``.md5`` sidecars for these files, unlike the PubMed
+    baseline where :mod:`pubmed2db.download` uses them to notice a republished
+    file. The ETag is the validator this server does offer, and a HEAD does the
+    same job for a few hundred bytes instead of ~450 MB. Falls back to
+    ``Last-Modified``, and to ``None`` on any network trouble — the caller then
+    keeps whatever is already cached rather than failing.
+    """
+    try:
+        response = requests.head(url, timeout=60)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        logger.debug("could not read a validator for %s (%s); keeping the cached copy", url, exc)
+        return None
+    return response.headers.get("ETag") or response.headers.get("Last-Modified")
+
+
 def _ensure_serfile() -> list[Path]:
-    """Download the serfile baseline and updates, returning their local paths."""
+    """Download the serfile baseline and updates, returning their local paths.
+
+    pystow's ``ensure()`` skips by file *name*, so a republished file would keep
+    its stale bytes indefinitely — the same hazard `AGENTS.md` records for
+    upstream's ``ensure()``. These files are immutable by name in the normal
+    case, and the baseline is ~450 MB, so re-fetching unconditionally is out;
+    instead each one gets an ``.etag`` sidecar and is re-fetched only when the
+    server's validator moves. A new month simply arrives under a new name, which
+    re-scraping the listing picks up.
+    """
     module = pystow.module("pubmed2db", "serfile")
-    # No force=True here, unlike the overview file: these are immutable by name
-    # and the baseline is ~450 MB. A new month arrives under a new name, which
-    # re-scraping the listing above picks up.
-    return [Path(module.ensure(url=url)) for url in _serfile_urls()]
+    paths = []
+    for url in _serfile_urls():
+        path = module.join(name=url.rsplit("/", 1)[1])
+        stamp = path.with_name(path.name + ".etag")
+        validator = _serfile_validator(url)
+        # "Stale" means we have the file and the server's copy has moved -- a
+        # first download is not a forced refetch, and an unreadable validator
+        # leaves whatever is cached alone.
+        stale = (
+            path.is_file()
+            and validator is not None
+            and (not stamp.is_file() or stamp.read_text().strip() != validator)
+        )
+        if stale:
+            logger.info("%s was republished; re-fetching it", path.name)
+        paths.append(Path(module.ensure(url=url, force=stale)))
+        if validator is not None:
+            stamp.write_text(validator)
+    return paths
 
 
 def _catalog_year(raw: str | None) -> int | None:

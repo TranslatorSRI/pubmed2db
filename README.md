@@ -232,8 +232,10 @@ names would be blank). When in doubt, `uv run pubmed2db update` runs the whole p
 the titles and abbreviations the export ships, and the serial catalog
 (`serfilebase.YYYY.xml`, ~449 MB, plus that year's monthly updates — usually
 ~1 MB but occasionally a bulk re-release of 150-250 MB, so budget ~890 MB of
-cache per year) for `start_year` / `end_year` / `active`. Catalog files are cached
-by name and not refetched. The catalog is an enrichment: if it is unreachable the
+cache per year) for `start_year` / `end_year` / `active`. NLM publishes no `.md5`
+sidecars for the catalog, so each cached file gets an `.etag` sidecar holding the
+server's ETag instead, and a HEAD per file per run decides whether to re-fetch —
+a warm run downloads nothing. The catalog is an enrichment: if it is unreachable the
 step logs a warning and loads the dimension with those three columns NULL rather
 than failing. About 1% of journals (proceedings volumes, mostly) have no catalog
 record and keep NULL years permanently.

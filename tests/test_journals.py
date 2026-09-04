@@ -6,6 +6,11 @@ from pathlib import Path
 
 import pubmed_downloader.catalog as catalog
 
+# Captured at import time, before conftest's autouse fixture rebinds the module
+# attribute to keep the suite offline: the test below is the test *of* this
+# function, so it needs the real one.
+from pubmed2db.load import _serfile_urls as real_serfile_urls
+
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
@@ -127,7 +132,7 @@ def test_serfile_urls_picks_the_newest_baseline_and_skips_marcxml(monkeypatch):
         load_mod.requests, "get", lambda *a, **k: type("R", (), {"text": listing})()
     )
 
-    assert [u.rsplit("/", 1)[1] for u in load_mod._serfile_urls()] == [
+    assert [u.rsplit("/", 1)[1] for u in real_serfile_urls()] == [
         "serfilebase.2026.xml",  # newest baseline, not the 2025 one
         "serfile.20260201.xml",  # updates oldest-first; 2025's delta is dropped
         "serfile.20260301.xml",
@@ -197,3 +202,103 @@ def test_load_journals_survives_an_unreachable_catalog(con, monkeypatch):
     assert con.execute(
         "SELECT start_year FROM journal WHERE nlm_catalog_id = '0410462'"
     ).fetchone() == (None,)
+
+
+def _fake_serfile_module(monkeypatch, tmp_path, downloads):
+    """Point _ensure_serfile at tmp_path, recording every ensure() call."""
+    import pubmed2db.load as load_mod
+
+    class FakeModule:
+        def join(self, *, name):
+            return tmp_path / name
+
+        def ensure(self, *, url, force):
+            name = url.rsplit("/", 1)[1]
+            downloads.append((name, force))
+            (tmp_path / name).write_text("<NLMCatalogRecordSet/>")
+            return tmp_path / name
+
+    monkeypatch.setattr(load_mod.pystow, "module", lambda *a, **k: FakeModule())
+    monkeypatch.setattr(load_mod, "_serfile_urls", lambda: ["https://x/serfile.20260901.xml"])
+
+
+def test_ensure_serfile_skips_a_file_whose_validator_has_not_moved(monkeypatch, tmp_path):
+    """The baseline is ~450 MB; an unchanged file must cost one HEAD, not a refetch."""
+    import pubmed2db.load as load_mod
+
+    downloads = []
+    _fake_serfile_module(monkeypatch, tmp_path, downloads)
+    monkeypatch.setattr(load_mod, "_serfile_validator", lambda url: '"abc123"')
+
+    load_mod._ensure_serfile()
+    assert downloads == [("serfile.20260901.xml", False)]  # first run: no sidecar yet
+    assert (tmp_path / "serfile.20260901.xml.etag").read_text() == '"abc123"'
+
+    downloads.clear()
+    load_mod._ensure_serfile()
+    assert downloads == [("serfile.20260901.xml", False)]  # unchanged: not forced
+
+
+def test_ensure_serfile_refetches_a_republished_file(monkeypatch, tmp_path):
+    """pystow's ensure() skips by name, so without this a republished file would
+    keep its stale bytes indefinitely. NLM publishes no .md5 for these, so the
+    server's ETag is the validator we track."""
+    import pubmed2db.load as load_mod
+
+    downloads = []
+    _fake_serfile_module(monkeypatch, tmp_path, downloads)
+
+    monkeypatch.setattr(load_mod, "_serfile_validator", lambda url: '"old"')
+    load_mod._ensure_serfile()
+
+    downloads.clear()
+    monkeypatch.setattr(load_mod, "_serfile_validator", lambda url: '"new"')
+    load_mod._ensure_serfile()
+
+    assert downloads == [("serfile.20260901.xml", True)]  # forced
+    assert (tmp_path / "serfile.20260901.xml.etag").read_text() == '"new"'
+
+
+def test_ensure_serfile_keeps_the_cached_copy_when_the_head_fails(monkeypatch, tmp_path):
+    """A HEAD failing is not a reason to re-download ~450 MB, nor to give up."""
+    import pubmed2db.load as load_mod
+
+    downloads = []
+    _fake_serfile_module(monkeypatch, tmp_path, downloads)
+    monkeypatch.setattr(load_mod, "_serfile_validator", lambda url: '"abc"')
+    load_mod._ensure_serfile()
+
+    downloads.clear()
+    monkeypatch.setattr(load_mod, "_serfile_validator", lambda url: None)
+    assert load_mod._ensure_serfile() == [tmp_path / "serfile.20260901.xml"]
+    assert downloads == [("serfile.20260901.xml", False)]
+    # The stale-but-unverifiable sidecar is left alone, so the next successful
+    # HEAD still compares against something real.
+    assert (tmp_path / "serfile.20260901.xml.etag").read_text() == '"abc"'
+
+
+def test_serfile_validator_falls_back_and_survives_network_trouble(monkeypatch):
+    import requests
+
+    import pubmed2db.load as load_mod
+
+    class Response:
+        def __init__(self, headers):
+            self.headers = headers
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(load_mod.requests, "head", lambda *a, **k: Response({"ETag": '"e"'}))
+    assert load_mod._serfile_validator("https://x") == '"e"'
+
+    monkeypatch.setattr(
+        load_mod.requests, "head", lambda *a, **k: Response({"Last-Modified": "Tue, 01 Sep 2026"})
+    )
+    assert load_mod._serfile_validator("https://x") == "Tue, 01 Sep 2026"
+
+    def boom(*a, **k):
+        raise requests.ConnectionError("no route to host")
+
+    monkeypatch.setattr(load_mod.requests, "head", boom)
+    assert load_mod._serfile_validator("https://x") is None

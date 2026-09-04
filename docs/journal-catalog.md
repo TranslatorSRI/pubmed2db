@@ -234,6 +234,20 @@ Per `AGENTS.md`'s sampling note, none of this needs a PubMed baseline download:
 4. Normalize whitespace and the trailing period before comparing, or the trailing
    `.` on every `TitleMain` swamps the real differences.
 
+## Keeping the cached catalog fresh
+
+NLM publishes **no `.md5` sidecars** for serfile — checked directly, and there are
+none in the directory listing — so `download.py`'s checksum machinery, which
+relies on NCBI publishing `<file>.xml.gz.md5`, does not transfer. What the server
+does offer is a stable `ETag` (and `Last-Modified`), so each cached file gets an
+`.etag` sidecar and a HEAD per run decides whether it moved.
+
+That matters because pystow's `ensure()` skips by file *name* — the hazard
+`AGENTS.md` already records for upstream's `ensure()`. Without a validator, a
+republished `serfile.YYYYMMDD.xml` would keep its stale bytes indefinitely, and
+re-fetching ~890 MB every run to avoid that is obviously out. A failed HEAD
+returns `None` and leaves the cached copy alone, so a network blip costs nothing.
+
 ## Verifying a real run
 
 ```
