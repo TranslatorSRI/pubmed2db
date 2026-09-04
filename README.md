@@ -29,8 +29,10 @@ data model). On top of it, pubmed2db adds:
   `<Season>` shares the `pub_month` column with `<Month>` — the DTD makes the two
   mutually exclusive — so a Parquet consumer reading `article.pub_month` sees
   `Winter` or `Sep-Dec` as readily as `Mar`.
-- **Journal names** — the journal title and abbreviations come from the NLM Catalog
-  (`uv run pubmed2db journals`) and are joined on `nlm_catalog_id`.
+- **Journal names** — the journal title and abbreviations come from NLM's
+  `J_Entrez.txt` (`uv run pubmed2db journals`) and are joined on `nlm_catalog_id`;
+  publication years come from NLM's serial catalog. Two sources, deliberately:
+  see [`docs/journal-catalog.md`](./docs/journal-catalog.md).
 
 ## Setup
 
@@ -67,7 +69,7 @@ adds that much again — see [Re-running after a gap](#re-running-after-a-gap).
 # Download the baseline + update files to data/ (MD5-checked, incremental).
 uv run pubmed2db --data-dir data download
 
-# Refresh the journal dimension from the NLM Catalog.
+# Refresh the journal dimension from the NLM Catalog (~890 MB on a first run).
 uv run pubmed2db --data-dir data journals
 
 # Parse downloaded files into the database (full history).
@@ -225,6 +227,18 @@ and `export` errors if nothing has been loaded, warns if some downloaded files
 have not been loaded yet, and warns if the journal dimension is empty (journal
 names would be blank). When in doubt, `uv run pubmed2db update` runs the whole pipeline
 (`download → journals → load`) in order.
+
+`journals` reads two NLM sources: `J_Entrez.txt` (10 MB, refetched every run) for
+the titles and abbreviations the export ships, and the serial catalog
+(`serfilebase.YYYY.xml`, ~449 MB, plus that year's monthly updates — usually
+~1 MB but occasionally a bulk re-release of 150-250 MB, so budget ~890 MB of
+cache per year) for `start_year` / `end_year` / `active`. NLM publishes no `.md5`
+sidecars for the catalog, so each cached file gets an `.etag` sidecar holding the
+server's ETag instead, and a HEAD per file per run decides whether to re-fetch —
+a warm run downloads nothing. The catalog is an enrichment: if it is unreachable the
+step logs a warning and loads the dimension with those three columns NULL rather
+than failing. About 1% of journals (proceedings volumes, mostly) have no catalog
+record and keep NULL years permanently.
 
 `uv run pubmed2db validate <dir>` inspects a finished JSON export and writes a
 `validation_report.json` (pretty-printed, archivable) whose leading
@@ -401,18 +415,26 @@ still fetched, so a changed published checksum is always detected.
 - We reuse `pubmed-downloader` **as-is** for downloading and XML parsing, but work
   around three bugs in it (≤ 0.0.14), all tracked in [`FUTURE.md`](./FUTURE.md):
   `catalog.process_journal_overview()` requires `start_year`/`end_year` fields the
-  real `J_Entrez.txt` does not contain, so it raises on live data; its reference
+  real `J_Entrez.txt` does not contain, so it raises on live data (filed as
+  [pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16),
+  still open); its reference
   extraction looks under `MedlineCitation` for a `<ReferenceList>` that PubMed puts
   under `<PubmedData>`, so it never finds one; and its article-ID extraction
   descends into that `<ReferenceList>`, attributing every cited reference's DOI to
   the citing article. We parse the journal file and the article IDs ourselves; the
   reference bug is moot here because we deliberately do not store the citation
   graph (one article carries ~444 references, and nothing consumes them).
+  Separately, `catalog.ensure_serfile_catalog()` skips the `serfilebase*` baseline
+  and takes all 83 monthly deltas instead; that costs 2.52 GiB rather than 872 MiB
+  and returns 80% duplicate records for the same coverage, which is why `journals`
+  enumerates NLM's listing itself.
 - This tool is intended to eventually replace the PubMed download in
   [Babel](https://github.com/NCATSTranslator/Babel) (`createcompendia/publications.py`).
 
 See [`AGENTS.md`](./AGENTS.md) for a map of the source and the design decisions
-behind it, and [`FUTURE.md`](./FUTURE.md) for known limitations and planned work.
+behind it, [`FUTURE.md`](./FUTURE.md) for known limitations and planned work, and
+[`docs/journal-catalog.md`](./docs/journal-catalog.md) for why the journal
+dimension reads from two NLM sources rather than one.
 
 ## Information on running this pipeline
 

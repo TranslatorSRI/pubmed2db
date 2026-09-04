@@ -47,18 +47,34 @@ on, and a copy left here rots into a contradiction of the code.
 - **Semantic field tolerance** (#31). Journal name/abbrev come from the NLM
   Catalog dimension, not the article XML, so they are compared as *soft*
   (warning-only) fields; revisit if a stricter journal cross-check is wanted.
+  Worth knowing before that revisit: `journal.title` is `J_Entrez.txt`'s
+  `JournalTitle`, which is byte-identical to what `esummary` and `efetch` serve
+  (see [`docs/journal-catalog.md`](./docs/journal-catalog.md)), so the two sides
+  agree far more often than "different source" suggests — which makes a hard
+  check more viable than the current wording implies.
 
 ## Upstream dependency (`cthoyt/pubmed-downloader`)
 
 The dependency is pinned `<0.1` because we call private APIs (`_extract_article`,
 `_ensure_urls`); re-test before raising the ceiling.
 
-- **Revert the custom journal parser** in `load._parse_journal_overview` once
-  `pubmed_downloader.catalog.process_journal_overview()` no longer requires
-  `start_year`/`end_year` (broken in ≤ 0.0.14 — those fields aren't in
-  `J_Entrez.txt`, filed at https://github.com/cthoyt/pubmed-downloader/pull/16).
-  Then we can go back to using the library's `Journal` model directly. See
-  `load._parse_journal_overview` for what we do instead.
+- **Drop `load._parse_journal_overview` if
+  [pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16)
+  lands** (~35 lines, with `_JOURNAL_KEYS`). `process_journal_overview()` cannot
+  return a single record in ≤ 0.0.14: `Journal.start_year`/`end_year` are
+  annotated `int | None` but given no default, so pydantic makes them required,
+  and `J_Entrez.txt` has no such key. Every *other* field the overview file
+  cannot supply already defaults (`abbreviation_medline`, `synonyms`, `active`),
+  which is what marks these two as an oversight rather than a design statement.
+  Upstream's answer to the PR was that the package reads the serfiles instead;
+  our measurement says that is half right — the catalog does carry the years, but
+  `J_Entrez.txt` is the only place `fulljournalname` and `IsoAbbr` exist at all,
+  so a `Journal` built from it can never have years and the fields must be
+  optional. That makes the PR worth pursuing, not moot: it is the same
+  load-then-enrich shape this pipeline uses.
+  **If it lands, keep setting `active` ourselves** — the model defaults it to
+  `True`, which is wrong for the 13,012 ceased journals serfile identifies. See
+  [`docs/journal-catalog.md`](./docs/journal-catalog.md).
 - **`cites_pubmed_ids` never matches, but we no longer care.** `_extract_article`
   searches `medline_citation.findall(".//ReferenceList/Reference")`, but PubMed
   nests `<ReferenceList>` under `<PubmedData>`, so `Article.cites_pubmed_ids` is

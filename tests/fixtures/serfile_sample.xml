@@ -1,0 +1,34 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<NLMCatalogRecordSet>
+  <!-- Ongoing: 9999 is the catalog's "still publishing" sentinel, not a year. -->
+  <NLMCatalogRecord Owner="NLM" Status="Completed">
+    <NlmUniqueID>0410462</NlmUniqueID>
+    <TitleMain><Title Sort="0">Nature.</Title></TitleMain>
+    <MedlineTA>Nature</MedlineTA>
+    <PublicationInfo>
+      <Country>England</Country>
+      <PublicationFirstYear>1869</PublicationFirstYear>
+      <PublicationEndYear>9999</PublicationEndYear>
+    </PublicationInfo>
+  </NLMCatalogRecord>
+  <!-- Ceased, and a MARC wildcard start year: `int("19uu")` raises. -->
+  <NLMCatalogRecord Owner="NLM" Status="Completed">
+    <NlmUniqueID>7708172</NlmUniqueID>
+    <TitleMain><Title Sort="0">AADE editors' journal.</Title></TitleMain>
+    <MedlineTA>AADE Ed J</MedlineTA>
+    <PublicationInfo>
+      <Country>United States</Country>
+      <PublicationFirstYear>19uu</PublicationFirstYear>
+      <PublicationEndYear>1983</PublicationEndYear>
+    </PublicationInfo>
+  </NLMCatalogRecord>
+  <!-- No end year at all: unknown, which is not the same as ceased. -->
+  <NLMCatalogRecord Owner="NLM" Status="Completed">
+    <NlmUniqueID>9999999</NlmUniqueID>
+    <TitleMain><Title Sort="0">Journal of unknown fate.</Title></TitleMain>
+    <PublicationInfo>
+      <Country>United States</Country>
+      <PublicationFirstYear>2001</PublicationFirstYear>
+    </PublicationInfo>
+  </NLMCatalogRecord>
+</NLMCatalogRecordSet>
