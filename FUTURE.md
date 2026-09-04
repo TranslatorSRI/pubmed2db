@@ -47,18 +47,34 @@ on, and a copy left here rots into a contradiction of the code.
 - **Semantic field tolerance** (#31). Journal name/abbrev come from the NLM
   Catalog dimension, not the article XML, so they are compared as *soft*
   (warning-only) fields; revisit if a stricter journal cross-check is wanted.
+  Worth knowing before that revisit: `journal.title` is `J_Entrez.txt`'s
+  `JournalTitle`, which is byte-identical to what `esummary` and `efetch` serve
+  (see [`docs/journal-catalog.md`](./docs/journal-catalog.md)), so the two sides
+  agree far more often than "different source" suggests — which makes a hard
+  check more viable than the current wording implies.
 
 ## Upstream dependency (`cthoyt/pubmed-downloader`)
 
 The dependency is pinned `<0.1` because we call private APIs (`_extract_article`,
 `_ensure_urls`); re-test before raising the ceiling.
 
-- **Revert the custom journal parser** in `load._parse_journal_overview` once
-  `pubmed_downloader.catalog.process_journal_overview()` no longer requires
-  `start_year`/`end_year` (broken in ≤ 0.0.14 — those fields aren't in
-  `J_Entrez.txt`, filed at https://github.com/cthoyt/pubmed-downloader/pull/16).
-  Then we can go back to using the library's `Journal` model directly. See
-  `load._parse_journal_overview` for what we do instead.
+- **The custom journal parser stays — decided, not deferred.**
+  `process_journal_overview()` raises on real data (≤ 0.0.14: it requires
+  `start_year`/`end_year`, which `J_Entrez.txt` does not carry), and
+  https://github.com/cthoyt/pubmed-downloader/pull/16 proposed making them
+  optional. Upstream's answer was that the overview file is the wrong source and
+  the package reads the serfiles instead. We measured that, and it is half right:
+  the catalog does carry the years, but `J_Entrez.txt` is the only place the
+  journal *title* exists in PubMed's own rendering. So we take years from the
+  catalog and titles from the overview file, and keep parsing both ourselves.
+  [`docs/journal-catalog.md`](./docs/journal-catalog.md) has the evidence; PR #16
+  can be closed.
+- **Expose cancelled ISSNs as resolver aliases.** serfile marks 4,763 ISSNs
+  `ValidYN="N"` — cancelled or incorrect, recorded so they can be recognized as
+  wrong. They would let an old citation carrying a dead ISSN still resolve, but
+  `journal_issn` needs a `valid` column first so a consumer cannot mistake them
+  for current. (Its *valid* ISSNs are 99.3% identical to J_Entrez's, so there is
+  nothing else to gain there.)
 - **`cites_pubmed_ids` never matches, but we no longer care.** `_extract_article`
   searches `medline_citation.findall(".//ReferenceList/Reference")`, but PubMed
   nests `<ReferenceList>` under `<PubmedData>`, so `Article.cites_pubmed_ids` is

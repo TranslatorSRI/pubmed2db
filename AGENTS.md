@@ -37,6 +37,24 @@ explains its part; this table is only a map.
   `parse.py` drives the XML itself for the fields that pipeline drops (its
   docstring says which). Pinned `<0.1` because we call private APIs
   (`_extract_article`, `_ensure_urls`).
+- **The journal dimension reads two NLM sources, and swapping to one loses
+  data.** `J_Entrez.txt` gives `title`/`abbreviation_*`; NLM's serial catalog
+  (serfile) gives `start_year`/`end_year`/`active`. The tempting simplification —
+  "the catalog is richer, use it for everything" — is wrong: `J_Entrez.txt`'s
+  `JournalTitle` **is** `esummary.fulljournalname`, byte for byte, and the
+  catalog's `TitleMain` differs for 20% of journals (diacritics, corporate
+  suffixes, `(Baltimore, Md.)` disambiguators). Reconstructing the Entrez form
+  from the catalog tops out at 99.22%. CatfilePlus was evaluated and rejected: it
+  covers 867 of the 902 journals the serfile *baseline* lacks, but the monthly
+  deltas already recover 429 of those, so its marginal gain is ~1% of the
+  dimension — for 11× the download, MARCXML-only since 2024, and the same catalog
+  titles. All of it, with the
+  sample sizes and the redo recipe, is in
+  [`docs/journal-catalog.md`](./docs/journal-catalog.md) — written to be
+  shareable outside this repo, which is also why it is not restated here. Two
+  traps it records: ~1,600 catalog years are MARC wildcards (`19uu`, `uuuu`) that
+  `int()` raises on, and ISSN comparisons are meaningless unless filtered to
+  `ValidYN="Y"`.
 - **No citation graph, and that is a decision, not a gap.** One real article
   carries ~444 references, which would make it the largest table here for data no
   consumer wants. `parse._cited_pmids` is parked (uncalled) with re-enabling
