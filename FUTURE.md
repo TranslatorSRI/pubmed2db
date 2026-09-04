@@ -75,12 +75,6 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
   **If it lands, keep setting `active` ourselves** — the model defaults it to
   `True`, which is wrong for the 13,012 ceased journals serfile identifies. See
   [`docs/journal-catalog.md`](./docs/journal-catalog.md).
-- **Expose cancelled ISSNs as resolver aliases.** serfile marks 4,763 ISSNs
-  `ValidYN="N"` — cancelled or incorrect, recorded so they can be recognized as
-  wrong. They would let an old citation carrying a dead ISSN still resolve, but
-  `journal_issn` needs a `valid` column first so a consumer cannot mistake them
-  for current. (Its *valid* ISSNs are 99.3% identical to J_Entrez's, so there is
-  nothing else to gain there.)
 - **`cites_pubmed_ids` never matches, but we no longer care.** `_extract_article`
   searches `medline_citation.findall(".//ReferenceList/Reference")`, but PubMed
   nests `<ReferenceList>` under `<PubmedData>`, so `Article.cites_pubmed_ids` is
