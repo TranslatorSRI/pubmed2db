@@ -115,8 +115,9 @@ def test_parse_serfile_later_files_win():
 
 
 def test_serfile_urls_picks_the_newest_baseline_and_skips_marcxml(monkeypatch):
-    """Upstream's ensure_serfile_catalog() skips serfilebase*, leaving only the
-    ~1 MB monthly deltas; the ~150k records we need are in the baseline."""
+    """Anchoring on the newest baseline is what keeps this to 10 files instead of
+    the 83 upstream's ensure_serfile_catalog() takes -- same coverage, a third of
+    the bytes, and no duplicate records to dedupe."""
     import pubmed2db.load as load_mod
 
     listing = """

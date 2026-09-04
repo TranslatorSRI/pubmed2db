@@ -169,22 +169,48 @@ sixth of the download and without a MARCXML parser.** Do not redo this analysis.
 
 ## Finding 5 — notes on `pubmed_downloader.catalog` (v0.0.14)
 
-Three reasons `load.py` does its own serfile download and parse rather than
+Two reasons `load.py` does its own serfile download and parse rather than
 calling upstream, recorded here so the choice is not mistaken for
 not-invented-here:
 
-- **`ensure_serfile_catalog()` skips the baseline.** `catalog.py:734-740` passes
-  `skip_prefix="serfilebase"`, so it only ever fetches the ~80 monthly
-  `serfile.YYYYMMDD.xml` deltas (~0.5–1 MB each, Dec 2019 onward) — records
-  *changed* since then, not the catalog. The ~150k records live in the 449 MB
-  baseline it excludes.
-- **The per-file cache is dead code.** `catalog.py:661` reads
-  `if cache_path.is_file() and not force_process and False:` — the `and False`
-  means the `.json.gz` it writes is never read back.
+- **`ensure_serfile_catalog()` skips the baseline — a cost problem, not a
+  coverage one.** `main` passes `skip_prefix="serfilebase"`, so it takes every
+  monthly `serfile.YYYYMMDD.xml` and no baseline. The obvious inference is that
+  it therefore sees only records changed since Dec 2019. **Measured, that
+  inference is wrong:**
+
+  | | distinct `NlmUniqueID` | vs. the union of everything (151,984) |
+  | --- | --- | --- |
+  | 83 deltas, no baseline | 151,974 | misses **10** |
+  | baseline + 2026 deltas (what we do) | 151,615 | misses 369 |
+  | `serfilebase.2026.xml` alone | 150,942 | misses 1,042 |
+
+  Only 10 of 150,942 baseline records never appear in a delta, because NLM
+  re-releases the whole catalog through the monthly files over time — 2026's May
+  and June deltas are 169 MB and 249 MB against the usual ~1 MB. Coverage is
+  effectively complete, and marginally *better* than ours.
+
+  What is genuinely wrong with it: it costs **2.52 GiB across 83 files** where
+  the baseline plus that year's deltas is **872 MiB across 10**, and it yields
+  **761,624 records for 151,974 distinct journals — 80% superseded duplicates**,
+  one record appearing 24 times. `process_catalog()` returns a `list`, so a
+  caller either dedupes by hand or keeps whichever came last in listing order.
+  The completeness also holds only because NLM re-released everything and never
+  prunes the listing; the docstring promises "the entire NLM Catalog", which is
+  what would quietly stop being true if it did.
 - **`process_catalog()` is unusable for us regardless.** It hard-imports `pyobo`
   and `orcid_downloader.lexical` and builds three grounders before parsing
   anything; both are in the `[process]` extra, and grounding is explicitly out of
   scope for this pipeline.
+
+**Check the installed version against `main` before writing any of this up.** The
+`_parse_catalog` cache was unreachable in 0.0.14 — `catalog.py:661` read
+`if cache_path.is_file() and not force_process and False:` — and is already fixed
+on `main` (`catalog.py:660`), so reporting it would be reporting a solved problem.
+The `Journal` year fields go the other way: still `int | None` with no default on
+`main` (`catalog.py:72-73`), so
+[pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16)
+remains live.
 
 `CatalogRecord` also has no ISO abbreviation field, which is moot for us for a
 separate measured reason: in `J_Entrez.txt`, `IsoAbbr` equals `MedAbbr` in
@@ -247,6 +273,21 @@ That matters because pystow's `ensure()` skips by file *name* — the hazard
 republished `serfile.YYYYMMDD.xml` would keep its stale bytes indefinitely, and
 re-fetching ~890 MB every run to avoid that is obviously out. A failed HEAD
 returns `None` and leaves the cached copy alone, so a network blip costs nothing.
+
+Two properties of NLM's files that this strategy has to live with:
+
+- **Anchoring on the newest baseline drops records NLM has since removed.** The
+  baseline plus that year's deltas gives 151,615 of the 151,984 records that exist
+  across every file ever posted. The 369 missing were dropped from the 2026
+  baseline; **11 are J_Entrez journals** (0.03% of 42,056) — `L'Actualite
+  economique`, `Earth Negotiations Bulletin` and nine similar, which lose their
+  publication years. Accepted: closing an 11-journal gap is not worth 2.52 GiB and
+  a dedupe pass.
+- **NLM publishes zero-byte files.** `serfile.20240903.xml` is served with
+  `Content-Length: 0`, and `iterparse` raises `XMLSyntaxError` on it even with
+  `recover=True`. `_parse_serfile` therefore skips a file it cannot parse and
+  carries on, because `_journal_years` catches broadly — an exception escaping the
+  per-file loop would cost *every* journal its years, not just that file's.
 
 ## Verifying a real run
 

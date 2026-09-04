@@ -424,9 +424,10 @@ still fetched, so a changed published checksum is always detected.
   the citing article. We parse the journal file and the article IDs ourselves; the
   reference bug is moot here because we deliberately do not store the citation
   graph (one article carries ~444 references, and nothing consumes them).
-  `catalog.ensure_serfile_catalog()` has a fourth problem — it skips the
-  `serfilebase*` baseline and so only sees the monthly deltas — which is why
-  `journals` enumerates NLM's listing itself.
+  Separately, `catalog.ensure_serfile_catalog()` skips the `serfilebase*` baseline
+  and takes all 83 monthly deltas instead; that costs 2.52 GiB rather than 872 MiB
+  and returns 80% duplicate records for the same coverage, which is why `journals`
+  enumerates NLM's listing itself.
 - This tool is intended to eventually replace the PubMed download in
   [Babel](https://github.com/NCATSTranslator/Babel) (`createcompendia/publications.py`).
 

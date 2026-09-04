@@ -388,9 +388,12 @@ def _serfile_urls() -> list[str]:
 
     We enumerate the listing ourselves rather than calling
     ``pubmed_downloader.catalog.ensure_serfile_catalog()``, which skips
-    ``serfilebase*`` and so only ever fetches the ~1 MB monthly deltas — records
-    *changed* since Dec 2019, not the catalog. The ~150k records we need are in
-    the baseline it leaves out.
+    ``serfilebase*`` and takes every monthly delta instead. That is **not** a
+    coverage problem — measured, its 83 files carry 151,974 distinct records
+    against the baseline's 150,942, because NLM re-releases the whole catalog
+    through the deltas over time. It is a cost problem: 2.52 GiB against 872 MiB
+    here, and 80% of the records it yields are superseded duplicates that a
+    caller has to dedupe. Anchoring on the baseline avoids both.
     """
     html = requests.get(_SERFILE_LISTING, timeout=300).text
     # Both patterns require `.xml` immediately after the digits, which is what
