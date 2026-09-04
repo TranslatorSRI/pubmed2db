@@ -9,11 +9,16 @@ first — which is also how an MD5 change triggers a refresh.
 from __future__ import annotations
 
 import logging
+import os
+import re
 import time
 from pathlib import Path
 
 import duckdb
 import pyarrow as pa
+import pystow
+import requests
+from lxml import etree
 from pubmed_downloader.utils import Collective
 
 from .db import NEEDS_LOAD_SQL, parse_file_name, record_run
@@ -369,12 +374,113 @@ def _parse_journal_overview(path: Path):
         yield record, issns
 
 
+#: NLM's serial catalog. It carries the publication years `J_Entrez.txt` omits,
+#: but *not* the journal titles — those stay with J_Entrez, which is PubMed's own
+#: rendering. `docs/journal-catalog.md` has the measurements behind that split.
+_SERFILE_LISTING = "https://ftp.nlm.nih.gov/projects/serfilelease/"
+_SERFILE_BASELINE_RE = re.compile(r"serfilebase\.(\d{4})\.xml\b")
+_SERFILE_UPDATE_RE = re.compile(r"serfile\.(\d{8})\.xml\b")
+_YEAR_RE = re.compile(r"\d{4}")
+
+
+def _serfile_urls() -> list[str]:
+    """Return the newest serfile baseline plus its monthly updates, oldest first.
+
+    We enumerate the listing ourselves rather than calling
+    ``pubmed_downloader.catalog.ensure_serfile_catalog()``, which skips
+    ``serfilebase*`` and so only ever fetches the ~1 MB monthly deltas — records
+    *changed* since Dec 2019, not the catalog. The ~150k records we need are in
+    the baseline it leaves out.
+    """
+    html = requests.get(_SERFILE_LISTING, timeout=300).text
+    # Both patterns require `.xml` immediately after the digits, which is what
+    # rejects the `.marcxml.xml` spelling of the same data.
+    baselines = set(_SERFILE_BASELINE_RE.findall(html))
+    if not baselines:
+        raise ValueError(f"no serfilebase.YYYY.xml in the listing at {_SERFILE_LISTING}")
+    year = max(baselines)
+    # Updates from the baseline's year onward. NLM posts the baseline in mid
+    # January, so the January delta is usually already inside it; re-applying it
+    # is harmless because these two year fields do not churn.
+    updates = sorted(d for d in set(_SERFILE_UPDATE_RE.findall(html)) if d >= f"{year}0101")
+    names = [f"serfilebase.{year}.xml"] + [f"serfile.{d}.xml" for d in updates]
+    return [_SERFILE_LISTING + name for name in names]
+
+
+def _ensure_serfile() -> list[Path]:
+    """Download the serfile baseline and updates, returning their local paths."""
+    module = pystow.module("pubmed2db", "serfile")
+    # No force=True here, unlike the overview file: these are immutable by name
+    # and the baseline is ~450 MB. A new month arrives under a new name, which
+    # re-scraping the listing above picks up.
+    return [Path(module.ensure(url=url)) for url in _serfile_urls()]
+
+
+def _catalog_year(raw: str | None) -> int | None:
+    """Parse a catalog publication year, rejecting MARC's wildcard forms.
+
+    Roughly 1,600 values in the baseline are ``19uu``, ``199u`` or ``uuuu`` —
+    MARC's "unknown digit" placeholder — and ``int()`` raises on those. Only four
+    digits count as a year.
+    """
+    return int(raw) if raw and _YEAR_RE.fullmatch(raw) else None
+
+
+def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None, bool | None]]:
+    """Map ``nlm_catalog_id -> (start_year, end_year, active)`` from serfile XML.
+
+    Files are read in the order given, so a later monthly update wins over the
+    baseline. This uses ``iterparse`` rather than the whole-tree ``etree.parse``
+    that :mod:`pubmed2db.parse` uses for the much smaller PubMed files: the
+    baseline is ~450 MB, and streaming it costs ~5 s and ~50 MiB.
+    """
+    years: dict[str, tuple[int | None, int | None, bool | None]] = {}
+    for path in paths:
+        for _, element in etree.iterparse(os.fspath(path), tag="NLMCatalogRecord", recover=True):
+            nlm_id = element.findtext("NlmUniqueID")
+            if nlm_id:
+                end_raw = element.findtext("PublicationInfo/PublicationEndYear")
+                # 9999 is the catalog's "still publishing" sentinel, not a year.
+                # A *missing* end year means unknown, which is not the same as
+                # ceased, so it leaves `active` NULL rather than false.
+                years[nlm_id] = (
+                    _catalog_year(element.findtext("PublicationInfo/PublicationFirstYear")),
+                    None if end_raw == "9999" else _catalog_year(end_raw),
+                    True if end_raw == "9999" else (None if end_raw is None else False),
+                )
+            element.clear()
+            while element.getprevious() is not None:
+                del element.getparent()[0]
+    return years
+
+
+def _journal_years() -> dict[str, tuple[int | None, int | None, bool | None]]:
+    """Publication years for the journal dimension, empty if the catalog is unreachable.
+
+    These three columns are an enrichment: the title and abbreviation the export
+    actually reads come from J_Entrez. Losing a ~450 MB download must not cost us
+    the dimension, so a failure here degrades to NULL years — the same posture
+    ``cli.update`` takes towards the journal step as a whole.
+    """
+    try:
+        return _parse_serfile(_ensure_serfile())
+    except Exception as exc:  # noqa: BLE001 — network, XML or disk; all survivable
+        logger.warning(
+            "serial catalog unavailable (%s); loading journals without publication years", exc
+        )
+        return {}
+
+
 def load_journals(con: duckdb.DuckDBPyConnection) -> int:
     """Load the NLM Catalog journal dimension.
 
     Downloads NLM's journal overview (J_Entrez) via ``pubmed_downloader`` and
     replaces the ``journal`` / ``journal_issn`` tables. Returns the number of
     journals loaded.
+
+    J_Entrez defines the row set and the titles; the serial catalog only fills
+    ``start_year`` / ``end_year`` / ``active``. `docs/journal-catalog.md` records
+    why the titles do not come from the catalog.
     """
     from pubmed_downloader.catalog import ensure_journal_overview
 
@@ -383,6 +489,7 @@ def load_journals(con: duckdb.DuckDBPyConnection) -> int:
     # frozen at whatever the first run fetched while `status` kept reporting a
     # fresh refresh. It is one small text file.
     path = Path(ensure_journal_overview(force=True))
+    years = _journal_years()
 
     journals: dict[str, dict] = {}
     issn_rows: list[tuple[str, str, str]] = []
@@ -416,9 +523,11 @@ def load_journals(con: duckdb.DuckDBPyConnection) -> int:
                     rec.get("title"),
                     rec.get("abbreviation_medline"),
                     rec.get("abbreviation_iso"),
-                    None,  # start_year: not present in the overview file
-                    None,  # end_year: not present in the overview file
-                    None,  # active: unknown from the overview file
+                    # The overview file has no publication years; the serial
+                    # catalog does. A journal the catalog does not cover (~2% of
+                    # them, mostly proceedings volumes) keeps NULLs rather than
+                    # being dropped — see docs/journal-catalog.md.
+                    *years.get(nlm_id, (None, None, None)),
                 )
                 for nlm_id, rec in journals.items()
             ],

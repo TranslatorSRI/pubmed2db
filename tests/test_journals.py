@@ -75,3 +75,125 @@ def test_load_journals_always_refetches(con, monkeypatch):
     monkeypatch.setattr(catalog, "ensure_journal_overview", fake_ensure)
     load_journals(con)
     assert calls == [{"force": True}]
+
+
+def test_catalog_year_rejects_marc_wildcards():
+    """~1,600 baseline years are MARC's `19uu` / `uuuu` placeholders, and
+    `int()` raises on those -- this is the one that fires on real data."""
+    from pubmed2db.load import _catalog_year
+
+    assert _catalog_year("1869") == 1869
+    for wildcard in ("19uu", "199u", "uuuu", "", None, "186", "18690"):
+        assert _catalog_year(wildcard) is None
+
+
+def test_parse_serfile_years():
+    from pubmed2db.load import _parse_serfile
+
+    years = _parse_serfile([FIXTURES / "serfile_sample.xml"])
+
+    # 9999 is "still publishing", not a year: it must not reach end_year.
+    assert years["0410462"] == (1869, None, True)
+    # A wildcard start year degrades to NULL; a real end year means ceased.
+    assert years["7708172"] == (None, 1983, False)
+    # No end year at all is unknown, which is not the same as ceased.
+    assert years["9999999"] == (2001, None, None)
+
+
+def test_parse_serfile_later_files_win():
+    """The baseline is a snapshot; the monthly deltas amend it, so order matters."""
+    from pubmed2db.load import _parse_serfile
+
+    paths = [FIXTURES / "serfile_sample.xml", FIXTURES / "serfile_update_sample.xml"]
+    assert _parse_serfile(paths)["0410462"] == (1869, 2025, False)
+    assert _parse_serfile(list(reversed(paths)))["0410462"] == (1869, None, True)
+
+
+def test_serfile_urls_picks_the_newest_baseline_and_skips_marcxml(monkeypatch):
+    """Upstream's ensure_serfile_catalog() skips serfilebase*, leaving only the
+    ~1 MB monthly deltas; the ~150k records we need are in the baseline."""
+    import pubmed2db.load as load_mod
+
+    listing = """
+      <a href="serfilebase.2025.xml">serfilebase.2025.xml</a>
+      <a href="serfilebase.2026.xml">serfilebase.2026.xml</a>
+      <a href="serfilebase.2026.marcxml.xml">serfilebase.2026.marcxml.xml</a>
+      <a href="serfile.20251101.xml">serfile.20251101.xml</a>
+      <a href="serfile.20260301.xml">serfile.20260301.xml</a>
+      <a href="serfile.20260201.xml">serfile.20260201.xml</a>
+      <a href="serfile.20260301.marcxml.xml">serfile.20260301.marcxml.xml</a>
+    """
+    monkeypatch.setattr(
+        load_mod.requests, "get", lambda *a, **k: type("R", (), {"text": listing})()
+    )
+
+    assert [u.rsplit("/", 1)[1] for u in load_mod._serfile_urls()] == [
+        "serfilebase.2026.xml",  # newest baseline, not the 2025 one
+        "serfile.20260201.xml",  # updates oldest-first; 2025's delta is dropped
+        "serfile.20260301.xml",
+    ]
+
+
+def test_load_journals_takes_years_from_the_catalog_and_titles_from_j_entrez(con, monkeypatch):
+    """The whole point of not switching sources: J_Entrez owns the row set and
+    the title (it is PubMed's own rendering), the catalog only fills the years.
+    See docs/journal-catalog.md."""
+    from pubmed2db.load import load_journals
+
+    monkeypatch.setattr(
+        catalog, "ensure_journal_overview", lambda **_: FIXTURES / "J_Entrez_sample.txt"
+    )
+    monkeypatch.setattr(
+        "pubmed2db.load._ensure_serfile", lambda: [FIXTURES / "serfile_sample.xml"]
+    )
+    assert load_journals(con) == 2
+
+    # Title stays J_Entrez's ("Nature"), not the catalog's ("Nature.").
+    assert con.execute(
+        "SELECT title, start_year, end_year, active FROM journal"
+        " WHERE nlm_catalog_id = '0410462'"
+    ).fetchone() == ("Nature", 1869, None, True)
+
+    # A catalog-only journal is not inserted; J_Entrez defines the row set.
+    assert con.execute(
+        "SELECT count(*) FROM journal WHERE nlm_catalog_id = '9999999'"
+    ).fetchone()[0] == 0
+
+
+def test_load_journals_keeps_journals_the_catalog_does_not_cover(con, monkeypatch, tmp_path):
+    """~2% of J_Entrez journals (proceedings volumes, mostly) have no catalog
+    record. They keep NULL years rather than being dropped."""
+    from pubmed2db.load import load_journals
+
+    monkeypatch.setattr(
+        catalog, "ensure_journal_overview", lambda **_: FIXTURES / "J_Entrez_sample.txt"
+    )
+    empty = tmp_path / "empty_serfile.xml"
+    empty.write_text("<?xml version='1.0'?><NLMCatalogRecordSet/>")
+    monkeypatch.setattr("pubmed2db.load._ensure_serfile", lambda: [empty])
+
+    assert load_journals(con) == 2
+    assert con.execute(
+        "SELECT title, start_year, end_year, active FROM journal"
+        " WHERE nlm_catalog_id = '0410462'"
+    ).fetchone() == ("Nature", None, None, None)
+
+
+def test_load_journals_survives_an_unreachable_catalog(con, monkeypatch):
+    """The years are an enrichment; the export reads title/abbrev. A ~450 MB
+    download failing must not cost us the dimension."""
+    from pubmed2db.load import load_journals
+
+    monkeypatch.setattr(
+        catalog, "ensure_journal_overview", lambda **_: FIXTURES / "J_Entrez_sample.txt"
+    )
+
+    def boom():
+        raise OSError("ftp.nlm.nih.gov unreachable")
+
+    monkeypatch.setattr("pubmed2db.load._ensure_serfile", boom)
+
+    assert load_journals(con) == 2
+    assert con.execute(
+        "SELECT start_year FROM journal WHERE nlm_catalog_id = '0410462'"
+    ).fetchone() == (None,)
