@@ -653,6 +653,26 @@ def test_date_renderings_are_compared_normalized(export_dir, loaded_con, monkeyp
     assert all(m.get("field") != "pub_date" for m in fields["soft_mismatches"]), fields
 
 
+def test_each_soft_reason_is_its_own_check(monkeypatch):
+    """A pub_date disagreement used to be reported as `journal_mismatches`,
+    with a message blaming the journal's different source -- one check covered
+    every soft field long after they stopped sharing a reason."""
+    report = validate.Report()
+    doc = {**_valid_doc(), "id": "PMID:9", "pub_date": "2020 Mar 16"}
+    sample = {9: doc}
+    fetched = {9: {**doc, "pub_date": "2020 Mar 17"}}
+    monkeypatch.setattr(validate, "efetch_documents", lambda *a, **k: fetched)
+    validate.check_fields(
+        report, sample, online=True, api_key=None, email="me@example.com",
+        abstract_threshold=0.9,
+    )
+
+    statuses = {c.name: c.status for c in report.checks_run}
+    assert statuses["journal-soft"] == "pass"
+    assert statuses["pub-date-soft"] == "warn"
+    assert [w["code"] for w in report.warnings] == ["pub_date_mismatches"]
+
+
 def test_pub_date_cannot_fail_a_run(export_dir, loaded_con):
     """SOFT, not CORE -- and for a reason normalization does not address.
 

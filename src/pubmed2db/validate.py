@@ -42,6 +42,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 import duckdb
 import requests
@@ -96,17 +97,37 @@ CORE_FIELDS = ("article_title", "volume", "issue",
 #: That is the same reasoning that keeps the ``identifiers`` comparison
 #: advisory below, and it is unaffected by how well the two sides are
 #: normalized.
-#: Keyed by *why* each field is soft, because the two reasons are unrelated and
-#: the run summary prints them separately. ``SOFT_FIELDS`` is derived from this
-#: rather than written twice — the summary line used to say "NLM Catalog source"
-#: for the whole tuple, which stopped being true the moment ``pub_date`` joined
-#: it for an entirely different reason.
-SOFT_FIELD_REASONS: dict[str, tuple[str, ...]] = {
-    "NLM Catalog source": ("journal_name", "journal_abbrev"),
-    "efetch renders a date, we ship the archival string": ("pub_date",),
-}
+#: Grouped by *why* each field is soft, because the reasons are unrelated: the
+#: run summary prints them separately, and each group is its own report check
+#: with its own warning code. Everything else is derived from this rather than
+#: written twice — the summary line once said "NLM Catalog source" for every
+#: soft field, and the single report check still called a ``pub_date``
+#: disagreement a journal mismatch, both long after ``pub_date`` joined for an
+#: entirely different reason.
+class _SoftGroup(NamedTuple):
+    reason: str  # printed in the run summary
+    fields: tuple[str, ...]
+    check: str  # the report check's name
+    code: str  # its warning code
+    message: str
 
-SOFT_FIELDS = tuple(f for fields in SOFT_FIELD_REASONS.values() for f in fields)
+
+_SOFT_GROUPS: tuple[_SoftGroup, ...] = (
+    _SoftGroup(
+        "NLM Catalog source", ("journal_name", "journal_abbrev"),
+        "journal-soft", "journal_mismatches",
+        "Sampled journal name/abbrev differs from Entrez (different source).",
+    ),
+    _SoftGroup(
+        "efetch renders a date, we ship the archival string", ("pub_date",),
+        "pub-date-soft", "pub_date_mismatches",
+        "Sampled pub_date differs from Entrez's rendering of the same record.",
+    ),
+)
+
+SOFT_FIELD_REASONS: dict[str, tuple[str, ...]] = {g.reason: g.fields for g in _SOFT_GROUPS}
+
+SOFT_FIELDS = tuple(f for g in _SOFT_GROUPS for f in g.fields)
 
 _ID_RE = re.compile(r"^PMID:(\d+)$")
 
@@ -1016,7 +1037,7 @@ def check_fields(
         "sample-fetched": "PubMed still serves every sampled record",
         "core-fields": f"<{_FIELD_MISMATCH_RATE:.0%} of compared fields differ from Entrez",
         "abstract": f"abstracts at least {abstract_threshold:.0%} similar to Entrez",
-        "journal-soft": "journal name/abbrev match Entrez (advisory)",
+        **{g.check: f"{', '.join(g.fields)} match Entrez (advisory)" for g in _SOFT_GROUPS},
         "identifiers-soft": "DOIs and PMCIDs match Entrez (advisory)",
     }
     if not online:
@@ -1179,14 +1200,15 @@ def check_fields(
             f"min {min_similarity:.3f}, mean {mean:.3f} over {len(similarities):,} record(s)",
         )
 
-    report.record(
-        "journal-soft", "field accuracy", expectations["journal-soft"],
-        WARN if soft_mismatches else PASS,
-        f"{len(soft_mismatches):,} of {checked:,} record(s) differ",
-        code="journal_mismatches",
-        message="Sampled journal name/abbrev differs from Entrez (different source).",
-        count=len(soft_mismatches), see="checks.field_validation.soft_mismatches",
-    )
+    for group in _SOFT_GROUPS:
+        differing = {m["pmid"] for m in soft_mismatches if m["field"] in group.fields}
+        report.record(
+            group.check, "field accuracy", expectations[group.check],
+            WARN if differing else PASS,
+            f"{len(differing):,} of {checked:,} record(s) differ",
+            code=group.code, message=group.message,
+            count=len(differing), see="checks.field_validation.soft_mismatches",
+        )
 
     report.record(
         "identifiers-soft", "field accuracy", expectations["identifiers-soft"],
