@@ -27,6 +27,11 @@ _EFETCH = {
         </Journal>
         <ArticleTitle>Revised title for article one.</ArticleTitle>
         <Abstract><AbstractText>The revised abstract for article one.</AbstractText></Abstract>
+        <PublicationTypeList>
+          <PublicationType UI="D016422">Letter</PublicationType>
+          <PublicationType UI="D013485">Research Support, Non-U.S. Gov't</PublicationType>
+          <PublicationType UI="D016420">Comment</PublicationType>
+        </PublicationTypeList>
       </Article></MedlineCitation>
       <PubmedData><ArticleIdList>
         <ArticleId IdType="pubmed">1001</ArticleId>
@@ -209,7 +214,7 @@ def _valid_doc():
         "identifiers": ["PMID:9"],
         "journal_name": "", "journal_abbrev": "", "article_title": "",
         "volume": "", "issue": "", "pub_year": "", "pub_month": "",
-        "pub_day": "", "pub_date": "", "abstract": "",
+        "pub_day": "", "pub_date": "", "publication_types": [], "abstract": "",
     }
 
 
@@ -248,6 +253,42 @@ def test_field_validation_matches(export_dir, loaded_con, monkeypatch):
     assert fv["mismatches"] == []
     assert fv["soft_mismatches"] == []
     assert report["status"] == "pass", report["errors"] + report["warnings"]
+
+
+@pytest.mark.parametrize(
+    "label,edit",
+    [
+        # Indexing added a type after our last update file -- the usual cause.
+        ("added", lambda x: x.replace(
+            '<PublicationType UI="D016420">Comment</PublicationType>',
+            '<PublicationType UI="D016420">Comment</PublicationType>'
+            '<PublicationType UI="D016454">Review</PublicationType>',
+        )),
+        # Same types, different order: order is part of what we ship.
+        ("reordered", lambda x: x.replace(
+            '<PublicationType UI="D016422">Letter</PublicationType>', ""
+        ).replace(
+            '<PublicationType UI="D016420">Comment</PublicationType>',
+            '<PublicationType UI="D016420">Comment</PublicationType>'
+            '<PublicationType UI="D016422">Letter</PublicationType>',
+        )),
+    ],
+)
+def test_publication_types_mismatch_is_soft(export_dir, loaded_con, monkeypatch, label, edit):
+    """Compared in order, reported, never fatal: NLM revises types when MEDLINE
+    indexing completes, so live efetch can be ahead of the load."""
+    tampered = dict(_EFETCH)
+    tampered[1001] = edit(_EFETCH[1001])
+    assert tampered[1001] != _EFETCH[1001]
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(tampered))
+    report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
+
+    fv = report["checks"]["field_validation"]
+    assert [m["field"] for m in fv["soft_mismatches"]] == ["publication_types"]
+    assert fv["mismatches"] == []
+    # A warning under its own code -- not a failure, and not blamed on the journal.
+    assert report["status"] == "warn", report["errors"]
+    assert [w["code"] for w in report["warnings"]] == ["publication_type_mismatches"]
 
 
 def test_field_validation_flags_mismatch(export_dir, loaded_con, monkeypatch):

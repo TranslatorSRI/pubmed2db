@@ -51,6 +51,7 @@ from lxml import etree
 from .export import (
     ID_PREFIXES,
     JSON_FIELDS,
+    MESH_PREFIX,
     _MONTH_ABBR,
     normalize_day,
     normalize_month,
@@ -58,6 +59,7 @@ from .export import (
     pub_date,
     pub_month,
 )
+from .parse import _publication_types
 from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
@@ -122,6 +124,15 @@ _SOFT_GROUPS: tuple[_SoftGroup, ...] = (
         "efetch renders a date, we ship the archival string", ("pub_date",),
         "pub-date-soft", "pub_date_mismatches",
         "Sampled pub_date differs from Entrez's rendering of the same record.",
+    ),
+    # NLM revises a record's types after publication, when MEDLINE indexing
+    # completes, so live efetch can be ahead of our last update file without
+    # anything being wrong with the load.
+    _SoftGroup(
+        "indexing revises types after our last update file", ("publication_types",),
+        "publication-types-soft", "publication_type_mismatches",
+        "Sampled publication types differ from Entrez "
+        "(may have been revised by indexing since our last update).",
     ),
 )
 
@@ -356,7 +367,13 @@ _DATE_RENDERED_FIELDS = frozenset({"pub_date"})
 
 def _compare_value(field: str, record: dict) -> str:
     """One side of a field comparison, normalized for rendering differences."""
-    value = _normalize(str(record.get(field, "")))
+    raw = record.get(field, "")
+    if isinstance(raw, list):
+        # `str()` of a list would compare Python reprs -- quoting and key order
+        # included. Canonical JSON compares the values, in order: order is part
+        # of `publication_types`, which ships PubMed's own.
+        return json.dumps(raw, sort_keys=True, ensure_ascii=False)
+    value = _normalize(str(raw))
     return _normalize_date(value) if field in _DATE_RENDERED_FIELDS else value
 
 
@@ -831,6 +848,12 @@ def efetch_documents(
                     _text(pub, "Day"),
                     _text(pub, "MedlineDate"),
                 ) if pub is not None else "",
+                # The loader's own parser, so both sides read the same exact
+                # path and keep PubMed's order.
+                "publication_types": [
+                    {"id": f"{MESH_PREFIX}:{ui}", "name": name}
+                    for ui, name in _publication_types(art)
+                ],
                 "abstract": _normalize(abstract),
             }
     return docs
