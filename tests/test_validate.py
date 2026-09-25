@@ -369,10 +369,11 @@ def test_cli_validate_fails_on_error(export_dir):
 def test_expected_fields_matches_spec():
     """EXPECTED_FIELDS derives from the exporter; lock it to the shipped spec.
 
-    The 12 exported field names are an external contract (Node Annotator /
+    The 13 exported field names are an external contract (Node Annotator /
     ElasticSearch consume them), so changing the export shape should trip a test
     rather than silently re-define what validate accepts. Nine of them are the
-    DocumentMetadataAPI spec's; `id`, `identifiers` and `pub_date` are ours.
+    DocumentMetadataAPI spec's; `id`, `identifiers`, `pub_date` and
+    `publication_types` are ours.
     """
     assert set(validate.EXPECTED_FIELDS) == {
         "id",
@@ -386,6 +387,7 @@ def test_expected_fields_matches_spec():
         "pub_month",
         "pub_day",
         "pub_date",
+        "publication_types",
         "abstract",
     }
 

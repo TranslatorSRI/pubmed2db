@@ -59,6 +59,11 @@ _OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid", "pipe
 #: NCATSTranslator/Babel#1044.
 ID_PREFIXES = {"doi": "doi", "pmc": "PMCID"}
 
+#: CURIE prefix for a publication type's MeSH UI (``MESH:D016454``), Biolink's
+#: casing. One place, for the same reason as :data:`ID_PREFIXES`: `validate`
+#: rebuilds the efetch side's ids from it.
+MESH_PREFIX = "MESH"
+
 #: The same mapping as SQL, derived rather than restated: `validate` imports
 #: `ID_PREFIXES` to rebuild the CURIEs it expects, so a hand-written `CASE` here
 #: would let a new id type or a casing fix reach the validator without reaching
@@ -448,6 +453,13 @@ _JSON_FIELDS: tuple[tuple[str, str], ...] = (
     # PubMed's own date string, verbatim -- the three fields above are parsed
     # conveniences and cannot represent a cross-year range. See pub_date.
     ("pub_date", _PUB_DATE_SQL),
+    # [{"id": "MESH:D016454", "name": "Review"}, ...] in PubMed's order, which
+    # is esummary's `pubtype` order. Our own field, like `identifiers`; a
+    # record with none gets [], never null.
+    (
+        "publication_types",
+        "COALESCE(pts.publication_types, []::STRUCT(id VARCHAR, name VARCHAR)[])",
+    ),
     ("abstract", "COALESCE(abs.abstract, '')"),
 )
 
@@ -494,6 +506,21 @@ ids AS (
           WHERE la.pmid = ai.pmid AND la.source_file = ai.source_file
       )
     GROUP BY pmid, source_file
+),
+pts AS (
+    -- A NULL name or position is a row loaded before either was parsed (see
+    -- schema.sql); `export_json` warns about those. Ordering on the UI as well
+    -- keeps such a record's list deterministic until it is reloaded.
+    SELECT pmid, source_file, list(
+        {{'id': '{MESH_PREFIX}:' || type_ui, 'name': COALESCE(type_name, '')}}
+        ORDER BY position NULLS LAST, type_ui
+    ) AS publication_types
+    FROM publication_type pt
+    WHERE EXISTS (
+        SELECT 1 FROM _latest_snapshot la
+        WHERE la.pmid = pt.pmid AND la.source_file = pt.source_file
+    )
+    GROUP BY pmid, source_file
 )
 SELECT
     PROJECTION
@@ -501,10 +528,37 @@ FROM _latest_snapshot la
 LEFT JOIN journal j ON la.nlm_catalog_id = j.nlm_catalog_id
 LEFT JOIN abs ON abs.pmid = la.pmid AND abs.source_file = la.source_file
 LEFT JOIN ids ON ids.pmid = la.pmid AND ids.source_file = la.source_file
+LEFT JOIN pts ON pts.pmid = la.pmid AND pts.source_file = la.source_file
 """.replace(
     "PROJECTION",
     ",\n    ".join(f'{expr} AS "{name}"' for name, expr in _JSON_FIELDS),
 )
+
+
+def _warn_unnamed_publication_types(con: duckdb.DuckDBPyConnection) -> int:
+    """Warn if latest-version publication types predate the name column.
+
+    Names are parsed at load time, so a database loaded before they were ships
+    ``"name": ""`` for every type until it is reloaded — valid JSON, and silent
+    without this. Returns the count, for tests.
+    """
+    unnamed = con.execute(
+        """
+        SELECT count(*) FROM publication_type pt
+        WHERE pt.type_name IS NULL AND EXISTS (
+            SELECT 1 FROM _latest_snapshot la
+            WHERE la.pmid = pt.pmid AND la.source_file = pt.source_file
+        )
+        """
+    ).fetchone()[0]
+    if unnamed:
+        logger.warning(
+            "%d publication type(s) have no name because their files were loaded "
+            "before names were parsed; they export as \"name\": \"\". Run "
+            "`load --force` or rebuild the database to fill them.",
+            unnamed,
+        )
+    return unnamed
 
 
 def _shard_paths(out_dir: Path) -> list[Path]:
@@ -619,6 +673,7 @@ def export_json(
         total, f"at most {shards} shard(s)" if shards else "one shard per thread",
         out_dir, " (gzip)" if gzip_output else "",
     )
+    _warn_unnamed_publication_types(con)
 
     # DuckDB appends to a per-thread output directory rather than clearing it,
     # so a previous run's shards would survive this one and be read back as if
