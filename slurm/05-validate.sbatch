@@ -65,6 +65,26 @@ else
     echo "This run writes one, so the *next* run is the first that can compare (#32)."
 fi
 
+# --sample-size is per *shard*, so the total moves with the export's write
+# parallelism unless something compensates: 15/shard is 240 records across 16
+# shards and 120 across 8. Divide a target total by the shards actually present
+# instead, so halving the export's --cpus-per-task does not halve how much of
+# the corpus gets checked against Entrez on the run that matters most.
+if [[ -n "$VALIDATE_SAMPLE_TOTAL" ]]; then
+    shard_count=$(find "$EXPORT_DIR" -maxdepth 1 -name 'pubmed_metadata_*.ndjson*' \
+                  2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$shard_count" -gt 0 ]]; then
+        per_shard=$(( VALIDATE_SAMPLE_TOTAL / shard_count ))
+        # A corpus with more shards than the target still samples every shard.
+        if [[ "$per_shard" -lt 1 ]]; then
+            per_shard=1
+        fi
+        validate_args+=(--sample-size "$per_shard")
+        echo "sampling $per_shard record(s) per shard across $shard_count shard(s)" \
+             "(~$(( per_shard * shard_count )) total, target $VALIDATE_SAMPLE_TOTAL)"
+    fi
+fi
+
 # Keep the report beside the manifest as well as in the export directory: the
 # next export republishes EXPORT_DIR in place, so a report left only there
 # describes a corpus that no longer exists.
