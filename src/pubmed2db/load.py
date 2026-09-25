@@ -439,27 +439,48 @@ def _ensure_serfile() -> list[Path]:
     instead each one gets an ``.etag`` sidecar and is re-fetched only when the
     server's validator moves. A new month simply arrives under a new name, which
     re-scraping the listing picks up.
+
+    A monthly update that fails to download is skipped with a warning, the same
+    posture `_parse_serfile` takes towards one that fails to parse: one bad month
+    must not cost every journal its years. The baseline is not skippable — the
+    updates only amend it — so its failure propagates.
     """
     module = pystow.module("pubmed2db", "serfile")
     paths = []
-    for url in _serfile_urls():
-        path = module.join(name=url.rsplit("/", 1)[1])
-        stamp = path.with_name(path.name + ".etag")
-        validator = _serfile_validator(url)
-        # "Stale" means we have the file and the server's copy has moved -- a
-        # first download is not a forced refetch, and an unreadable validator
-        # leaves whatever is cached alone.
-        stale = (
-            path.is_file()
-            and validator is not None
-            and (not stamp.is_file() or stamp.read_text().strip() != validator)
-        )
-        if stale:
-            logger.info("%s was republished; re-fetching it", path.name)
-        paths.append(Path(module.ensure(url=url, force=stale)))
-        if validator is not None:
-            stamp.write_text(validator)
+    for i, url in enumerate(_serfile_urls()):
+        try:
+            paths.append(_ensure_serfile_file(module, url))
+        except Exception as exc:  # noqa: BLE001 — network or disk; see docstring
+            if i == 0:  # _serfile_urls puts the baseline first
+                raise
+            logger.warning("%s failed to download (%s); skipping it", url, exc)
     return paths
+
+
+def _ensure_serfile_file(module: pystow.Module, url: str) -> Path:
+    """Fetch one catalog file, re-fetching it if the server's validator moved.
+
+    pystow deletes a partial file when a download raises, and the sidecar is
+    written only after a successful one, so a failed fetch is simply retried on
+    the next run rather than leaving bytes that look current.
+    """
+    path = module.join(name=url.rsplit("/", 1)[1])
+    stamp = path.with_name(path.name + ".etag")
+    validator = _serfile_validator(url)
+    # "Stale" means we have the file and the server's copy has moved -- a
+    # first download is not a forced refetch, and an unreadable validator
+    # leaves whatever is cached alone.
+    stale = (
+        path.is_file()
+        and validator is not None
+        and (not stamp.is_file() or stamp.read_text().strip() != validator)
+    )
+    if stale:
+        logger.info("%s was republished; re-fetching it", path.name)
+    fetched = Path(module.ensure(url=url, force=stale))
+    if validator is not None:
+        stamp.write_text(validator)
+    return fetched
 
 
 def _catalog_year(raw: str | None) -> int | None:

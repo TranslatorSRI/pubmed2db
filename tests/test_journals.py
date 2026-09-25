@@ -220,8 +220,11 @@ def test_load_journals_survives_an_unreachable_catalog(con, monkeypatch):
     ).fetchone() == (None,)
 
 
-def _fake_serfile_module(monkeypatch, tmp_path, downloads):
-    """Point _ensure_serfile at tmp_path, recording every ensure() call."""
+def _fake_serfile_module(monkeypatch, tmp_path, downloads, fail=frozenset()):
+    """Point _ensure_serfile at tmp_path, recording every ensure() call.
+
+    A file named in `fail` raises from ensure(), as pystow does on a 5xx.
+    """
     import pubmed2db.load as load_mod
 
     class FakeModule:
@@ -231,6 +234,8 @@ def _fake_serfile_module(monkeypatch, tmp_path, downloads):
         def ensure(self, *, url, force):
             name = url.rsplit("/", 1)[1]
             downloads.append((name, force))
+            if name in fail:
+                raise OSError(f"HTTP Error 503 fetching {name}")
             (tmp_path / name).write_text("<NLMCatalogRecordSet/>")
             return tmp_path / name
 
@@ -291,6 +296,53 @@ def test_ensure_serfile_keeps_the_cached_copy_when_the_head_fails(monkeypatch, t
     # The stale-but-unverifiable sidecar is left alone, so the next successful
     # HEAD still compares against something real.
     assert (tmp_path / "serfile.20260901.xml.etag").read_text() == '"abc"'
+
+
+def test_ensure_serfile_skips_an_update_that_fails_to_download(monkeypatch, tmp_path):
+    """One bad month must not cost every journal its years -- the same posture
+    `_parse_serfile` takes towards a file that will not parse. Without this,
+    the exception reaches `_journal_years`'s broad catch and the already-cached
+    baseline is thrown away with it."""
+    import pubmed2db.load as load_mod
+
+    downloads = []
+    _fake_serfile_module(monkeypatch, tmp_path, downloads, fail={"serfile.20260801.xml"})
+    monkeypatch.setattr(
+        load_mod,
+        "_serfile_urls",
+        lambda: [
+            "https://x/serfilebase.2026.xml",
+            "https://x/serfile.20260801.xml",
+            "https://x/serfile.20260901.xml",
+        ],
+    )
+    monkeypatch.setattr(load_mod, "_serfile_validator", lambda url: '"v"')
+
+    assert load_mod._ensure_serfile() == [
+        tmp_path / "serfilebase.2026.xml",
+        tmp_path / "serfile.20260901.xml",  # the months after the bad one still count
+    ]
+    # No sidecar for the failed file, so the next run fetches it afresh.
+    assert not (tmp_path / "serfile.20260801.xml.etag").exists()
+
+
+def test_ensure_serfile_fails_when_the_baseline_does(monkeypatch, tmp_path):
+    """The updates only amend the baseline, so it is not skippable: without it
+    the "years" would be whatever a few monthly deltas happen to restate."""
+    import pytest
+
+    import pubmed2db.load as load_mod
+
+    _fake_serfile_module(monkeypatch, tmp_path, [], fail={"serfilebase.2026.xml"})
+    monkeypatch.setattr(
+        load_mod,
+        "_serfile_urls",
+        lambda: ["https://x/serfilebase.2026.xml", "https://x/serfile.20260901.xml"],
+    )
+    monkeypatch.setattr(load_mod, "_serfile_validator", lambda url: None)
+
+    with pytest.raises(OSError):
+        load_mod._ensure_serfile()
 
 
 def test_serfile_validator_falls_back_and_survives_network_trouble(monkeypatch):
