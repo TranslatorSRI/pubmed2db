@@ -1,8 +1,10 @@
 """Download PubMed baseline and update files, with MD5 sidecar tracking.
 
 We reuse the `pubmed_downloader library
-<https://github.com/cthoyt/pubmed-downloader>`_ for the actual file transfers
-(pystow-backed, HTTP, skip-by-name). On top of that we fetch each
+<https://github.com/cthoyt/pubmed-downloader>`_ for the file listing and the
+cache layout (its pystow modules), but not for the transfers themselves:
+pystow's ``ensure()`` sets no timeout, so :func:`pubmed2db.util.download_file`
+fetches each file instead. On top of that we fetch each
 ``<file>.md5`` sidecar, store the published checksum in the ``source_file``
 registry, and bump ``downloaded_at`` whenever a file is new or its checksum
 changed — which is what later triggers a reload in :func:`pubmed2db.load.needs_load`.
@@ -32,6 +34,7 @@ from pubmed_downloader.api import (
 from tqdm import tqdm
 
 from .db import register_source_file
+from .util import download_file
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +63,7 @@ def _sync_kind(
     kind: str,
     base_url: str,
     list_cache: Path,
-    ensure_module,
+    cache_module,
     registry: dict[str, str | None],
     limit: int | None,
     verify: bool,
@@ -98,25 +101,25 @@ def _sync_kind(
         # downloaded_at on every sync and re-parse the file every run.
         changed = file_name not in registry or prior != published_md5
 
-        # ensure() skips by file name, so a file republished under its old name
-        # would keep its stale bytes on disk: we would record the new checksum
+        # We skip any file already on disk, so a file republished under its old
+        # name would keep its stale bytes: we would record the new checksum
         # against the old content and never look again. Drop the local copy
         # before fetching, whether or not we go on to hash it. Only when we had
         # a prior checksum to compare — a first sync over an existing cache must
         # not re-download the whole corpus.
-        local_path = Path(ensure_module.join(name=file_name))
+        local_path = Path(cache_module.join(name=file_name))
         if prior is not None and published_md5 is not None and prior != published_md5:
             logger.info("published md5 changed for %s; re-downloading", file_name)
             local_path.unlink(missing_ok=True)
 
-        # Whether ensure() will actually transfer bytes: it skips by file name,
-        # so a file already on disk is left alone. One that vanished locally —
+        # A file already on disk is left alone. One that vanished locally —
         # pruned to reclaim disk, or an interrupted earlier transfer — is
         # fetched again even when its published checksum never moved, and those
         # bytes have never been hashed.
-        fetched = not local_path.exists()
-
-        path = Path(ensure_module.ensure(url=url))
+        path = local_path
+        fetched = not path.exists()
+        if fetched:
+            download_file(url, path)
 
         # Only hash files we just fetched or whose published checksum moved:
         # re-hashing an unchanged, already-verified corpus costs tens of GiB of
@@ -132,7 +135,7 @@ def _sync_kind(
                     published_md5,
                 )
                 path.unlink(missing_ok=True)
-                path = Path(ensure_module.ensure(url=url))
+                download_file(url, path)
                 # A retry that is also corrupt must not be registered as good.
                 # Delete it too: `load` globs the download directories rather
                 # than reading sync()'s return value, so a corrupt file left on
@@ -201,7 +204,7 @@ def sync(
     # pays a fresh TCP+TLS handshake, which is most of a no-op sync's runtime.
     session = requests.Session()
     results: list[tuple[Path, str]] = []
-    for kind, wanted, base_url, list_cache, ensure_module in (
+    for kind, wanted, base_url, list_cache, cache_module in (
         ("baseline", baseline, BASELINE_URL, BASELINE_PATH, BASELINE_MODULE),
         ("update", updates, UPDATES_URL, UPDATES_PATH, UPDATES_MODULE),
     ):
@@ -211,7 +214,7 @@ def sync(
                 kind=kind,
                 base_url=base_url,
                 list_cache=list_cache,
-                ensure_module=ensure_module,
+                cache_module=cache_module,
                 registry=registry,
                 limit=limit,
                 verify=verify,

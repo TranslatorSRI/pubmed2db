@@ -64,18 +64,21 @@ class _FakeResponse:
 
 
 class _FakeEnsure:
-    """Stands in for a pystow module: skips by name, like the real ensure()."""
+    """Stands in for a pystow module (``join``) and ``util.download_file``.
+
+    There is deliberately no ``ensure()``: pystow's sets no timeout, so a
+    stalled connection hung a live run, and calling it again would fail here.
+    """
 
     def __init__(self, path: Path, payload: bytes = b"fresh") -> None:
         self.path = path
         self.payload = payload
         self.downloads = 0
 
-    def ensure(self, *, url: str) -> Path:
-        if not self.path.exists():
-            self.path.write_bytes(self.payload)
-            self.downloads += 1
-        return self.path
+    def download(self, url: str, path: Path) -> None:
+        assert path == self.path
+        path.write_bytes(self.payload)
+        self.downloads += 1
 
     def join(self, *, name: str) -> Path:
         return self.path
@@ -91,6 +94,7 @@ def _sync_kind(con, monkeypatch, tmp_path, *, urls, body, registry=None, limit=N
         blob.write_bytes(b"")
         ensure_module = _FakeEnsure(blob)
     monkeypatch.setattr(download, "_ensure_urls", lambda *a, **k: urls)
+    monkeypatch.setattr(download, "download_file", ensure_module.download)
     session = SimpleNamespace(get=lambda *a, **k: _FakeResponse(body))
 
     return download._sync_kind(
@@ -98,7 +102,7 @@ def _sync_kind(con, monkeypatch, tmp_path, *, urls, body, registry=None, limit=N
         kind="update",
         base_url="https://example.invalid/updatefiles/",
         list_cache=tmp_path / "listing.html",
-        ensure_module=ensure_module,
+        cache_module=ensure_module,
         registry=registry if registry is not None else {},
         limit=limit,
         verify=verify,
@@ -152,8 +156,9 @@ def test_unusable_md5_sidecar_keeps_prior_checksum(con, monkeypatch, tmp_path):
 
 
 def test_changed_checksum_replaces_the_local_file(con, monkeypatch, tmp_path):
-    """ensure() skips by name, so a republished file needs its stale copy removed
-    first -- with --no-verify nothing else would notice the content is old."""
+    """A file already on disk is not fetched again, so a republished file needs
+    its stale copy removed first -- with --no-verify nothing else would notice
+    the content is old."""
     from pubmed2db.db import register_source_file
 
     file_name = "pubmed25n0001.xml.gz"

@@ -55,9 +55,7 @@ explains its part; this table is only a map.
   traps it records: ~1,600 catalog years are MARC wildcards (`19uu`, `uuuu`) that
   `int()` raises on; those wildcards split two ways for `active` (`uuuu` is
   *unknown*, `19uu` is *ceased* at an uncertain date); and ISSN comparisons are
-  meaningless unless filtered to `ValidYN="Y"`. The catalog is also fetched with
-  our own timed download rather than pystow's `ensure()`, whose urllib backend has
-  no timeout and hung a live run — `load._download_serfile` says why.
+  meaningless unless filtered to `ValidYN="Y"`.
 - **No citation graph, and that is a decision, not a gap.** One real article
   carries ~444 references, which would make it the largest table here for data no
   consumer wants. `parse._cited_pmids` is parked (uncalled) with re-enabling
@@ -250,11 +248,19 @@ explains its part; this table is only a map.
   descendant search, and two of those reach into `<ReferenceList>`. **Check the
   scope of any field you take from that parser before trusting it** — both were
   silent, and one had already written 426 foreign DOIs into `article_id` from a
-  single record. Two upstream
+  single record. Two download
   *behaviours* are also easy to assume backwards (`_ensure_urls` sorts
-  newest-first, so `--limit N` takes the head; `ensure()` skips by file name, so a
-  republished file keeps stale bytes); both are pinned by tests in
-  `tests/test_db_download.py`, whose docstrings say what they hold in place.
+  newest-first, so `--limit N` takes the head; a cached file is skipped by name,
+  so a republished one keeps stale bytes unless its checksum moved); both are
+  pinned by tests in `tests/test_db_download.py`, whose docstrings say what they
+  hold in place.
+- **Nothing large is fetched with pystow's `ensure()`.** Its urllib backend sets
+  no timeout, and a stalled NLM connection hung a live `journals` run with the
+  socket still open; its requests backend never checks the status. Both
+  `download.py` and the serial catalog go through `util.download_file` (timeout,
+  `raise_for_status`, `.part` then rename), while pubmed-downloader and pystow
+  still supply the listing and the cache paths. The test fakes have no
+  `ensure()`, so a call creeping back fails.
 
 - **The `#SBATCH` headers in `slurm/` are the only place an allocation is
   written down**, and `slurm/README.md` deliberately does not repeat them — it
