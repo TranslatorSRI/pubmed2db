@@ -432,9 +432,9 @@ def _serfile_validator(url: str) -> str | None:
 def _ensure_serfile() -> list[Path]:
     """Download the serfile baseline and updates, returning their local paths.
 
-    pystow's ``ensure()`` skips by file *name*, so a republished file would keep
-    its stale bytes indefinitely — the same hazard `AGENTS.md` records for
-    upstream's ``ensure()``. These files are immutable by name in the normal
+    Skipping a cached file by *name* alone would let a republished one keep its
+    stale bytes indefinitely — the hazard `AGENTS.md` records for pystow's
+    ``ensure()``. These files are immutable by name in the normal
     case, and the baseline is ~450 MB, so re-fetching unconditionally is out;
     instead each one gets an ``.etag`` sidecar and is re-fetched only when the
     server's validator moves. A new month simply arrives under a new name, which
@@ -460,9 +460,9 @@ def _ensure_serfile() -> list[Path]:
 def _ensure_serfile_file(module: pystow.Module, url: str) -> Path:
     """Fetch one catalog file, re-fetching it if the server's validator moved.
 
-    pystow deletes a partial file when a download raises, and the sidecar is
-    written only after a successful one, so a failed fetch is simply retried on
-    the next run rather than leaving bytes that look current.
+    The sidecar is written only after a successful download, and
+    `_download_serfile` never leaves a partial file under the real name, so a
+    failed fetch is simply retried on the next run.
     """
     path = module.join(name=url.rsplit("/", 1)[1])
     stamp = path.with_name(path.name + ".etag")
@@ -477,10 +477,36 @@ def _ensure_serfile_file(module: pystow.Module, url: str) -> Path:
     )
     if stale:
         logger.info("%s was republished; re-fetching it", path.name)
-    fetched = Path(module.ensure(url=url, force=stale))
+    if stale or not path.is_file():
+        _download_serfile(url, path)
     if validator is not None:
         stamp.write_text(validator)
-    return fetched
+    return path
+
+
+def _download_serfile(url: str, path: Path) -> None:
+    """Stream one catalog file to ``path``, replacing it only once complete.
+
+    Not pystow's ``ensure()``: its default urllib backend sets no timeout, so a
+    connection NLM stops sending on hangs the step until Slurm kills it —
+    observed live, with serfile.20260901.xml stalled at 200 KB of 730 KB and
+    the socket still open. Its requests backend takes a timeout but never
+    checks the status, so it would save a 5xx page as the file. The read timeout
+    bounds the gap between chunks, not the whole ~450 MB transfer. Writing to a
+    ``.part`` and renaming means a killed job never leaves a truncated file
+    under the real name for the next run to trust.
+    """
+    logger.info("downloading %s", url)
+    part = path.with_name(path.name + ".part")
+    try:
+        with requests.get(url, stream=True, timeout=(60, 120)) as response:
+            response.raise_for_status()
+            with part.open("wb") as out:
+                for chunk in response.iter_content(chunk_size=1 << 20):
+                    out.write(chunk)
+        os.replace(part, path)
+    finally:
+        part.unlink(missing_ok=True)
 
 
 def _catalog_year(raw: str | None) -> int | None:
