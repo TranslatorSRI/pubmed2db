@@ -513,6 +513,9 @@ Tests gzip the readable XML fixtures under `tests/fixtures/` into temporary
 `pubmedNNnNNNN.xml.gz` files; scratch downloads and databases go under `./data`
 (gitignored).
 
+Releases, and the dated data builds they produce, follow
+[`docs/releasing.md`](./docs/releasing.md).
+
 Helper scripts live in `scripts/` and document themselves — run one with
 `--help` for its usage and options. `benchmark_load.py` times parsing against
 insertion for a given file, which is where [`slurm/README.md`](slurm/README.md)'s

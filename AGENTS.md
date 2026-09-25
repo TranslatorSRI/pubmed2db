@@ -7,8 +7,9 @@ Parquet (PubMed field names, for downloadable queries).
 
 Everything a user needs — commands, options, operational notes, the year-boundary
 rebuild — is in [`README.md`](./README.md); deferred work and known limitations
-are in [`FUTURE.md`](./FUTURE.md). This file is the map plus the handful of
-decisions you cannot see from the code.
+are in [`FUTURE.md`](./FUTURE.md); how a release and its data build are cut is in
+[`docs/releasing.md`](./docs/releasing.md). This file is the map plus the handful
+of decisions you cannot see from the code.
 
 ## Layout
 
