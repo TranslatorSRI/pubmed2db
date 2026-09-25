@@ -11,7 +11,7 @@ it, and both tags are cut from it.
 | --- | --- | --- |
 | Milestone | `pubmed2db v<version>`, due on the planned build date | "pubmed2db v1.1" |
 | Release branch | `pubmed2db-v<version>` | `pubmed2db-v1.1` |
-| Release PR | `pubmed2db v<version>`, into `main` | "pubmed2db v1.1" |
+| Release PR | `pubmed2db v<version>`, stacked on the last feature PR | "pubmed2db v1.1" |
 | Data-build tag | the date the outputs were produced | `2026aug21` |
 | Version tag and GitHub release | `v<version>` / "pubmed2db v<version>" | `v1.0` |
 
@@ -29,7 +29,7 @@ it, and both tags are cut from it.
 
 2. **Cut the release branch.**
    - Branch from the tip of the last PR in the stack, or from `main` if there is no stack.
-   - Open the release PR into `main` on the milestone.
+   - Open the release PR on the milestone, with that same branch as its base, so its diff shows only what the release branch adds. GitHub retargets it onto `main` once the feature PRs beneath it merge (step 5).
    - Its description lists the PRs it carries, anything the build needs that a routine run does not (a reload, new outbound hosts, new settings), and a checklist to clear before the run.
 
 3. **Build on the cluster from the release branch** ([`slurm/README.md`](../slurm/README.md)). Fix what the run turns up:
