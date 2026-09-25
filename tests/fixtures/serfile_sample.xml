@@ -31,4 +31,34 @@
       <PublicationFirstYear>2001</PublicationFirstYear>
     </PublicationInfo>
   </NLMCatalogRecord>
+  <!-- End year all wildcards: status unknown (an open imprint), not ceased. -->
+  <NLMCatalogRecord Owner="NLM" Status="Completed">
+    <NlmUniqueID>100888585</NlmUniqueID>
+    <TitleMain><Title Sort="0">International Chinese psychosomatic medicine journal.</Title></TitleMain>
+    <PublicationInfo>
+      <Country>United States</Country>
+      <PublicationFirstYear>1999</PublicationFirstYear>
+      <PublicationEndYear>uuuu</PublicationEndYear>
+    </PublicationInfo>
+  </NLMCatalogRecord>
+  <!-- End year partly known: ceased sometime in the 1990s. -->
+  <NLMCatalogRecord Owner="NLM" Status="Completed">
+    <NlmUniqueID>9999998</NlmUniqueID>
+    <TitleMain><Title Sort="0">Journal ceased in the nineties.</Title></TitleMain>
+    <PublicationInfo>
+      <Country>United States</Country>
+      <PublicationFirstYear>1970</PublicationFirstYear>
+      <PublicationEndYear>199u</PublicationEndYear>
+    </PublicationInfo>
+  </NLMCatalogRecord>
+  <!-- An empty end year element carries no more information than a missing one. -->
+  <NLMCatalogRecord Owner="NLM" Status="Completed">
+    <NlmUniqueID>9999997</NlmUniqueID>
+    <TitleMain><Title Sort="0">Journal with a blank end year.</Title></TitleMain>
+    <PublicationInfo>
+      <Country>United States</Country>
+      <PublicationFirstYear>2005</PublicationFirstYear>
+      <PublicationEndYear/>
+    </PublicationInfo>
+  </NLMCatalogRecord>
 </NLMCatalogRecordSet>

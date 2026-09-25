@@ -472,6 +472,25 @@ def _catalog_year(raw: str | None) -> int | None:
     return int(raw) if raw and _YEAR_RE.fullmatch(raw) else None
 
 
+def _catalog_active(end_raw: str | None) -> bool | None:
+    """Whether a journal is still publishing, from its catalog end year.
+
+    ``9999`` is the "still publishing" sentinel. A missing, blank or all-wildcard
+    (``uuuu``) end year means the status is *unknown* — the ``uuuu`` records are
+    open-ended imprints like ``c1999-`` — so it is NULL, not false. A partly
+    known year (``19uu``, ``199u``) is a journal that ceased at an uncertain
+    date, so it is false even though `_catalog_year` gives it no ``end_year``.
+    Measured on a bulk catalog re-release (serfile.20260501.xml, 45,934
+    records): 214 ``uuuu``, ~2,100 partial wildcards.
+    """
+    end = (end_raw or "").strip()
+    if end == "9999":
+        return True
+    if not end.strip("u"):
+        return None
+    return False
+
+
 def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None, bool | None]]:
     """Map ``nlm_catalog_id -> (start_year, end_year, active)`` from serfile XML.
 
@@ -489,13 +508,11 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
                 nlm_id = element.findtext("NlmUniqueID")
                 if nlm_id:
                     end_raw = element.findtext("PublicationInfo/PublicationEndYear")
-                    # 9999 is the catalog's "still publishing" sentinel, not a
-                    # year. A *missing* end year means unknown, which is not the
-                    # same as ceased, so it leaves `active` NULL rather than false.
+                    # 9999 is the catalog's "still publishing" sentinel, not a year.
                     years[nlm_id] = (
                         _catalog_year(element.findtext("PublicationInfo/PublicationFirstYear")),
                         None if end_raw == "9999" else _catalog_year(end_raw),
-                        True if end_raw == "9999" else (None if end_raw is None else False),
+                        _catalog_active(end_raw),
                     )
                 element.clear()
                 while element.getprevious() is not None:

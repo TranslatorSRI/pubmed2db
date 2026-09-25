@@ -103,6 +103,21 @@ def test_parse_serfile_years():
     assert years["7708172"] == (None, 1983, False)
     # No end year at all is unknown, which is not the same as ceased.
     assert years["9999999"] == (2001, None, None)
+    # Nor is an all-wildcard or blank one: `uuuu` marks an open imprint.
+    assert years["100888585"] == (1999, None, None)
+    assert years["9999997"] == (2005, None, None)
+    # A partly known end year *is* ceased, just at an uncertain date.
+    assert years["9999998"] == (1970, None, False)
+
+
+def test_catalog_active_separates_unknown_from_ceased():
+    from pubmed2db.load import _catalog_active
+
+    assert _catalog_active("9999") is True
+    for unknown in (None, "", "  ", "uuuu"):
+        assert _catalog_active(unknown) is None
+    for ceased in ("1983", "19uu", "199u", "1uuu"):
+        assert _catalog_active(ceased) is False
 
 
 def test_parse_serfile_later_files_win():

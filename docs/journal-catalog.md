@@ -104,7 +104,7 @@ Taking the field from `J_Entrez.txt` is exact and free.
 | --- | --- | --- |
 | `PublicationFirstYear` | **take** | present for 41,118 (99.9%) — but see the wildcard note: 96.0% of loaded journals end up with a *parseable* start year |
 | `PublicationEndYear` | **take** | present for 40,618 (98.7%); `9999` = ongoing for 27,687 (67.3%) |
-| `active` (derived) | **take** | `end == "9999"` → true; absent (536, 1.3%) → NULL |
+| `active` (derived) | **take** | `9999` → true; absent (536, 1.3%), blank or `uuuu` → NULL; any other value, including a partial wildcard like `199u`, → false |
 | ISSNs | skip | filtered to `ValidYN="Y"`: 51,108 vs J_Entrez's 51,128 — **99.3% identical sets** (+143 / −156) |
 | `ISSNLinking` | skip | 86% coverage, but `article.issn_linking` already carries it per-article from the XML |
 | publisher, country, language, journal MeSH, homepage | skip | nothing consumes them |
@@ -121,6 +121,14 @@ before comparing ISSN sets.
 > *usability* differ: 99.9% of overlapping journals have a `PublicationFirstYear`
 > element, but a real load yields **40,384 / 42,056 (96.0%)** non-NULL
 > `start_year`. Quote the second number when checking a run.
+>
+> For `active` the wildcards split two ways. `uuuu` in the end year is an
+> open-ended imprint (`c1999-`) whose status NLM does not know, so it is NULL;
+> a *partial* wildcard (`19uu`, `199u`) is a journal that ceased at an
+> uncertain date, so it is false even though its `end_year` is NULL. On the
+> bulk re-release `serfile.20260501.xml` (45,934 records) that is 214 `uuuu`
+> against ~2,100 partial wildcards. Pinned by
+> `test_catalog_active_separates_unknown_from_ceased`.
 
 The 4,763 `ValidYN="N"` ISSNs are the one genuinely new thing we are leaving on
 the table. They would be useful as *resolver aliases* (an old citation carrying a
@@ -241,7 +249,7 @@ what would let a library user build a `Journal` from the overview file and fill
 the years from the catalog afterwards.
 
 One caveat if it lands and we adopt it: `Journal.active` defaults to `True`,
-which is wrong for the 13,012 journals serfile marks ceased, so `active` would
+which is wrong for the ~13,000 journals serfile marks ceased, so `active` would
 still have to be set from the catalog rather than taken from the model.
 
 ## How to redo any of this

@@ -73,7 +73,7 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
   optional. That makes the PR worth pursuing, not moot: it is the same
   load-then-enrich shape this pipeline uses.
   **If it lands, keep setting `active` ourselves** — the model defaults it to
-  `True`, which is wrong for the 13,012 ceased journals serfile identifies. See
+  `True`, which is wrong for the ~13,000 ceased journals serfile identifies. See
   [`docs/journal-catalog.md`](./docs/journal-catalog.md).
 - **`cites_pubmed_ids` never matches, but we no longer care.** `_extract_article`
   searches `medline_citation.findall(".//ReferenceList/Reference")`, but PubMed
