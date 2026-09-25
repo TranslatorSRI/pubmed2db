@@ -9,7 +9,7 @@ it, and both tags are cut from it.
 
 | Thing | Form | Example |
 | --- | --- | --- |
-| Milestone | the planned build date | `2026sep27` |
+| Milestone | `pubmed2db v<version>`, due on the planned build date | "pubmed2db v1.1" |
 | Release branch | `pubmed2db-v<version>` | `pubmed2db-v1.1` |
 | Release PR | `pubmed2db v<version>`, into `main` | "pubmed2db v1.1" |
 | Data-build tag | the date the outputs were produced | `2026aug21` |
@@ -23,8 +23,8 @@ it, and both tags are cut from it.
 ## Steps
 
 1. **Plan.**
-   - Open a milestone named for the planned build date, with that date as its due date.
-   - Put the build's issues and PRs on it.
+   - Open a milestone named for the version, with the planned build date as its due date. It is named for the version, not the date, so a build that slips does not leave it misnamed; the data-build tag records the actual date.
+   - Put the build's issues and PRs on it. An item the run only has to *observe*, such as a measurement read from its logs, goes on the next milestone, with a line in the release PR's post-run checklist to record what the run showed.
    - Feature PRs may be stacked on each other, and each is reviewed on its own.
 
 2. **Cut the release branch.**
@@ -64,7 +64,7 @@ it, and both tags are cut from it.
 
    `--generate-notes` lists the merged PRs by title, which is why PR titles are written as changelog lines.
 
-8. **Close the milestone.** Move anything still open on it to the next build's milestone or to one of the undated ones ("Needed soon", "Needed later", "Not urgent").
+8. **Close the milestone.** Move anything still open on it to the next version's milestone or to one of the undated ones ("Needed soon", "Needed later", "Not urgent"). Never rename a milestone to reuse it for the next version: its closed items are the record of what that version shipped.
 
 ## Why merge commits, not squash
 
