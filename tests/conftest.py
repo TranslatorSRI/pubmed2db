@@ -39,6 +39,18 @@ def gz_fixture(tmp_path):
     return partial(gzip_fixture, dst_dir=tmp_path)
 
 
+@pytest.fixture(autouse=True)
+def no_serfile_download(monkeypatch):
+    """Keep the test suite offline.
+
+    ``load_journals`` now also pulls NLM's serial catalog for publication years.
+    Default the *URL list* to empty, so `_ensure_serfile` still runs (and stays
+    testable in its own right) but downloads nothing; tests that care about the
+    years re-patch `_ensure_serfile`, and the ones that test it re-patch this.
+    """
+    monkeypatch.setattr("pubmed2db.load._serfile_urls", lambda: [])
+
+
 @pytest.fixture
 def con(tmp_path):
     """A fresh DuckDB connection with the schema initialized."""

@@ -23,6 +23,7 @@ dependencies = [
     "pyarrow>=25",
     "click>=8.4",
     "requests>=2.34",
+    "pystow>=0.9",
     "tqdm>=4.70",
     "lxml>=6.1",
 ]
