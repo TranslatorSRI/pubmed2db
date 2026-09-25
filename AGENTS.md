@@ -82,9 +82,10 @@ explains its part; this table is only a map.
     directory rather than clearing it, so `export_json` deletes its own
     `pubmed_metadata_*` files first — otherwise a shorter run leaves a previous
     run's shards to be read as current. `PARTITION_BY (pmid % shards)` would
-    restore an exact count, but **DuckDB ≤ 1.5.4 rejects `PARTITION_BY` for
-    `FORMAT JSON`** (`Binder Error: Unknown option`), so don't reach for it
-    without checking again first.
+    restore an exact count, but **DuckDB still rejects `PARTITION_BY` for
+    `FORMAT JSON`** (`Binder Error: Unknown option for COPY ... TO ...
+    (FORMAT JSON): "partition_by"`) — re-checked on 1.5.5, the version
+    `pyproject.toml` now floors. Don't reach for it without checking again.
   - **There is no `ORDER BY`, and that is deliberate (issue #8).** Sorting all
     40.9M rows by PMID materialized them before the first could be written —
     ~3 minutes of an 18-minute run, and the export's peak-memory event. Shard
@@ -181,6 +182,12 @@ explains its part; this table is only a map.
   `test_cli_export_then_validate_needs_no_flags` runs both commands with no
   flags, because a compressed default is only safe while the checker downstream
   stays flag-free.
+- **The cgroup measurements below were taken on duckdb 1.5.4 and have not been
+  re-taken.** The dependency floor is now 1.5.5, and nothing about the readings
+  is version-fragile in principle — but they are measurements, and the rule that
+  produced them is *measure it, don't reason about it*. Re-run the one-line
+  probe on the first cluster job rather than assuming they carried over (#42 is
+  the run that will have the chance).
 - **DuckDB reads the Slurm cgroup. Both of its sized defaults do — we guessed
   otherwise twice and were wrong twice.** Measured on duckdb 1.5.4:
   `memory_limit` is ~76% of `--mem` (6.1 GiB under `--mem=8G`, 47.3 GiB under
