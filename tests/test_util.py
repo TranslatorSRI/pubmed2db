@@ -50,3 +50,74 @@ def test_current_rss_is_optional_but_plausible():
     assert 0 < rss < 1024
     # It tracks the real footprint, so it must not exceed the high-water mark.
     assert rss <= peak_rss_gib() + 0.5
+
+
+class _StreamedResponse:
+    """Enough of `requests.Response` for `download_file`."""
+
+    def __init__(self, status, chunks):
+        self.status, self.chunks = status, chunks
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        import requests
+
+        if self.status >= 400:
+            raise requests.HTTPError(f"{self.status} Server Error")
+
+    def iter_content(self, chunk_size):
+        for chunk in self.chunks:
+            if isinstance(chunk, Exception):
+                raise chunk
+            yield chunk
+
+
+def test_download_file_sets_a_timeout(monkeypatch, tmp_path):
+    """pystow's urllib backend has none, and a stalled NLM connection hung the
+    journals step indefinitely on a live run. The read timeout bounds a stall."""
+    import pubmed2db.util as util_mod
+
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(kwargs)
+        return _StreamedResponse(200, [b"<NLMCatalog", b"RecordSet/>"])
+
+    monkeypatch.setattr(util_mod.requests, "get", fake_get)
+    util_mod.download_file("https://x/serfile.20260901.xml", tmp_path / "f.xml")
+
+    assert (tmp_path / "f.xml").read_bytes() == b"<NLMCatalogRecordSet/>"
+    assert calls[0]["timeout"] and calls[0]["stream"]
+
+
+def test_download_file_never_leaves_a_partial_file(monkeypatch, tmp_path):
+    """A 5xx must not be saved as the file (pystow's requests backend would),
+    and a transfer that dies partway must not leave a truncated file under the
+    real name -- nor replace a good cached one."""
+    import requests
+
+    import pubmed2db.util as util_mod
+
+    target = tmp_path / "serfile.20260901.xml"
+    target.write_text("previous good copy")
+
+    monkeypatch.setattr(
+        util_mod.requests, "get", lambda url, **k: _StreamedResponse(503, [b"<html>"])
+    )
+    with pytest.raises(requests.HTTPError):
+        util_mod.download_file("https://x", target)
+
+    stalled = requests.ConnectionError("Read timed out")
+    monkeypatch.setattr(
+        util_mod.requests, "get", lambda url, **k: _StreamedResponse(200, [b"<NLM", stalled])
+    )
+    with pytest.raises(requests.ConnectionError):
+        util_mod.download_file("https://x", target)
+
+    assert target.read_text() == "previous good copy"
+    assert list(tmp_path.iterdir()) == [target]  # no .part left behind

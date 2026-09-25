@@ -1,9 +1,16 @@
-"""Small helpers shared by long-running pipeline steps (load, export)."""
+"""Small helpers shared by long-running pipeline steps (download, load, export)."""
 
 from __future__ import annotations
 
+import logging
+import os
 import resource
 import sys
+from pathlib import Path
+
+import requests
+
+logger = logging.getLogger(__name__)
 
 
 def peak_rss_gib() -> float:
@@ -57,3 +64,29 @@ def eta_str(elapsed: float, done: int, remaining: int) -> str:
     if done <= 0:
         return "?"
     return fmt_duration(elapsed / done * remaining)
+
+
+def download_file(url: str, path: Path) -> None:
+    """Stream ``url`` to ``path``, replacing it only once the transfer completes.
+
+    Use this rather than pystow's ``ensure()`` for anything large. Its default
+    urllib backend sets no timeout, so a connection the server stops sending on
+    hangs the step until Slurm kills it — observed live on NLM's serial
+    catalog, with serfile.20260901.xml stalled at 200 KB of 730 KB and the
+    socket still open. Its requests backend takes a timeout but never checks
+    the status, so it would save a 5xx page as the file. The read timeout bounds
+    the gap between chunks, not the whole transfer. Writing to a ``.part`` and
+    renaming means a killed job never leaves a truncated file under the real
+    name for the next run to trust.
+    """
+    logger.info("downloading %s", url)
+    part = path.with_name(path.name + ".part")
+    try:
+        with requests.get(url, stream=True, timeout=(60, 120)) as response:
+            response.raise_for_status()
+            with part.open("wb") as out:
+                for chunk in response.iter_content(chunk_size=1 << 20):
+                    out.write(chunk)
+        os.replace(part, path)
+    finally:
+        part.unlink(missing_ok=True)
