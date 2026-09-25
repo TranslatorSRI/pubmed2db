@@ -553,8 +553,9 @@ def _journal_years() -> dict[str, tuple[int | None, int | None, bool | None]]:
 
     These three columns are an enrichment: the title and abbreviation the export
     actually reads come from J_Entrez. Losing a ~450 MB download must not cost us
-    the dimension, so a failure here degrades to NULL years — the same posture
-    ``cli.update`` takes towards the journal step as a whole.
+    the dimension, so a failure here returns nothing rather than raising — the
+    same posture ``cli.update`` takes towards the journal step as a whole — and
+    `load_journals` keeps whatever years a previous run loaded.
     """
     try:
         return _parse_serfile(_ensure_serfile())
@@ -604,6 +605,22 @@ def load_journals(con: duckdb.DuckDBPyConnection) -> int:
             path,
         )
         return 0
+
+    if not years:
+        # The catalog could not be read (a real one has ~150k records). The
+        # DELETE below would then replace every year a previous run loaded with
+        # NULL -- the same "don't swap a good dimension for an empty one" rule
+        # as the guard above -- so carry the existing years over instead.
+        years = {
+            nlm_id: (start, end, active)
+            for nlm_id, start, end, active in con.execute(
+                "SELECT nlm_catalog_id, start_year, end_year, active FROM journal"
+            ).fetchall()
+        }
+        if years:
+            logger.warning(
+                "keeping the publication years already loaded for %d journals", len(years)
+            )
 
     con.execute("BEGIN TRANSACTION")
     try:

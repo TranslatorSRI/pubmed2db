@@ -13,8 +13,8 @@
 #
 # Needs outbound HTTPS from the compute node to ftp.ncbi.nlm.nih.gov (the journal
 # overview) and ftp.nlm.nih.gov (the serial catalog), plus ~890 MB of cache under
-# $DATA_DIR. A catalog fetch that fails degrades to NULL publication years rather
-# than failing the job -- see docs/journal-catalog.md.
+# $DATA_DIR. A catalog fetch that fails keeps the publication years already
+# loaded rather than failing the job -- see README.md.
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"

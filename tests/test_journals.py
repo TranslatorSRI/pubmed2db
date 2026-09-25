@@ -202,7 +202,8 @@ def test_load_journals_keeps_journals_the_catalog_does_not_cover(con, monkeypatc
 
 def test_load_journals_survives_an_unreachable_catalog(con, monkeypatch):
     """The years are an enrichment; the export reads title/abbrev. A ~450 MB
-    download failing must not cost us the dimension."""
+    download failing must not cost us the dimension. On a first load there are
+    no years to keep, so they are NULL."""
     from pubmed2db.load import load_journals
 
     monkeypatch.setattr(
@@ -218,6 +219,31 @@ def test_load_journals_survives_an_unreachable_catalog(con, monkeypatch):
     assert con.execute(
         "SELECT start_year FROM journal WHERE nlm_catalog_id = '0410462'"
     ).fetchone() == (None,)
+
+
+def test_load_journals_keeps_loaded_years_when_the_catalog_is_unreachable(con, monkeypatch):
+    """A monthly `journals` run that hits an NLM outage must not replace a
+    good dimension's years with NULL -- the same rule as refusing to load an
+    empty J_Entrez. The titles still refresh; only the years carry over."""
+    from pubmed2db.load import load_journals
+
+    monkeypatch.setattr(
+        catalog, "ensure_journal_overview", lambda **_: FIXTURES / "J_Entrez_sample.txt"
+    )
+    monkeypatch.setattr(
+        "pubmed2db.load._ensure_serfile", lambda: [FIXTURES / "serfile_sample.xml"]
+    )
+    load_journals(con)
+
+    def boom():
+        raise OSError("ftp.nlm.nih.gov unreachable")
+
+    monkeypatch.setattr("pubmed2db.load._ensure_serfile", boom)
+    assert load_journals(con) == 2
+    assert con.execute(
+        "SELECT title, start_year, end_year, active FROM journal"
+        " WHERE nlm_catalog_id = '0410462'"
+    ).fetchone() == ("Nature", 1869, None, True)
 
 
 def _fake_serfile_module(monkeypatch, tmp_path, downloads, fail=frozenset()):
