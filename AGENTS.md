@@ -51,10 +51,13 @@ explains its part; this table is only a map.
   titles. All of it, with the
   sample sizes and the redo recipe, is in
   [`docs/journal-catalog.md`](./docs/journal-catalog.md) — written to be
-  shareable outside this repo, which is also why it is not restated here. Two
+  shareable outside this repo, which is also why it is not restated here. Three
   traps it records: ~1,600 catalog years are MARC wildcards (`19uu`, `uuuu`) that
-  `int()` raises on, and ISSN comparisons are meaningless unless filtered to
-  `ValidYN="Y"`.
+  `int()` raises on; those wildcards split two ways for `active` (`uuuu` is
+  *unknown*, `19uu` is *ceased* at an uncertain date); and ISSN comparisons are
+  meaningless unless filtered to `ValidYN="Y"`. The catalog is also fetched with
+  our own timed download rather than pystow's `ensure()`, whose urllib backend has
+  no timeout and hung a live run — `load._download_serfile` says why.
 - **No citation graph, and that is a decision, not a gap.** One real article
   carries ~444 references, which would make it the largest table here for data no
   consumer wants. `parse._cited_pmids` is parked (uncalled) with re-enabling
