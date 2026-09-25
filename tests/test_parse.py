@@ -78,6 +78,37 @@ def test_article_ids_exclude_reference_ids(gz_fixture):
     assert ("doi", "10.1000/nopmid") in {(x.prefix, x.identifier) for x in article.article.xrefs}
 
 
+def test_publication_types_keep_names_and_pubmed_order(gz_fixture):
+    """Upstream's `type_mesh_ids` sorts the UIs and drops the names; ours keeps
+    both in document order, which is the order esummary's `pubtype` serves --
+    here deliberately not alphabetical by name or by UI."""
+    from pubmed2db.parse import parse_file
+
+    parsed = parse_file(gz_fixture("pubmed25n0002"))
+    article = next(pa for pa in parsed.articles if pa.pubmed == 1001)
+
+    assert article.publication_types == [
+        ("D016422", "Letter"),
+        ("D013485", "Research Support, Non-U.S. Gov't"),
+        ("D016420", "Comment"),
+    ]
+    assert article.article.type_mesh_ids == ["D013485", "D016420", "D016422"]  # upstream
+
+
+def test_publication_types_skip_an_entry_without_a_ui():
+    from lxml import etree
+
+    from pubmed2db.parse import _publication_types
+
+    element = etree.fromstring(
+        "<PubmedArticle><MedlineCitation><Article><PublicationTypeList>"
+        '<PublicationType UI="D016454"> Review </PublicationType>'
+        "<PublicationType>Orphan</PublicationType>"
+        "</PublicationTypeList></Article></MedlineCitation></PubmedArticle>"
+    )
+    assert _publication_types(element) == [("D016454", "Review")]
+
+
 def test_cited_pmids_is_parked_but_works(gz_fixture):
     """`_cited_pmids` is not wired into parse_file -- the citation graph is not
     stored. Kept working so re-enabling it is a one-line change, and because it

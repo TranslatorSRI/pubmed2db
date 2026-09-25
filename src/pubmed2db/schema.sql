@@ -141,6 +141,15 @@ CREATE TABLE IF NOT EXISTS publication_type (
     type_ui     TEXT                            -- MeSH LUID of the publication type
 );
 
+-- The name ("Review") and PubMed's order, which esummary's `pubtype` shares.
+-- Added after the first release, so migrated here rather than in the CREATE
+-- above -- which keeps fresh and migrated databases at the same column order,
+-- and `load` inserts BY POSITION. NULL means the row was loaded before names
+-- were parsed: `load --force` (or a fresh database) fills it, and `export`
+-- warns while any latest-version row is still NULL.
+ALTER TABLE publication_type ADD COLUMN IF NOT EXISTS type_name TEXT;
+ALTER TABLE publication_type ADD COLUMN IF NOT EXISTS position INTEGER;  -- 0-based
+
 CREATE TABLE IF NOT EXISTS grant_ (
     pmid        BIGINT NOT NULL,
     source_file TEXT   NOT NULL,

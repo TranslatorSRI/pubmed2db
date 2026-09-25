@@ -47,6 +47,9 @@ class ParsedArticle:
     #: ``(id_type, id_value)`` for the article itself; see :func:`_article_ids`
     #: for why we don't use the upstream ``Article.xrefs``.
     article_ids: list[tuple[str, str]] = field(default_factory=list)
+    #: ``(mesh_ui, name)`` in PubMed's order; see :func:`_publication_types` for
+    #: why we don't use the upstream ``Article.type_mesh_ids``.
+    publication_types: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def pubmed(self) -> int:
@@ -107,6 +110,29 @@ def _article_ids(element: etree._Element) -> list[tuple[str, str]]:
         if article_id.get("IdType") not in (None, "pubmed")
         and article_id.text
         and article_id.text.strip()
+    ]
+
+
+#: The article's publication types. Exact rather than ``.//``, for the reason
+#: `_ARTICLE_ID_PATH` is: a descendant search is how two upstream fields ended up
+#: reading another record's data.
+_PUBLICATION_TYPE_PATH = "MedlineCitation/Article/PublicationTypeList/PublicationType"
+
+
+def _publication_types(element: etree._Element) -> list[tuple[str, str]]:
+    """``(mesh_ui, name)`` pairs, in document order.
+
+    We can't use ``Article.type_mesh_ids``: upstream keeps only the UI and
+    *sorts* it, losing both the name ("Review" is what a consumer filters on)
+    and PubMed's order — which is not alphabetical (``Letter, Research
+    Support…, Comment``) and is exactly the order esummary's ``pubtype``
+    serves. The DTD requires ``UI``; an entry without one is skipped rather
+    than stored as a type nothing can join on.
+    """
+    return [
+        (ui, (pt.text or "").strip())
+        for pt in element.findall(_PUBLICATION_TYPE_PATH)
+        if (ui := (pt.get("UI") or "").strip())
     ]
 
 
@@ -186,6 +212,7 @@ def parse_file(path: str | Path) -> ParsedFile:
                 pub_day=day,
                 medline_date=medline_date,
                 article_ids=_article_ids(element),
+                publication_types=_publication_types(element),
             )
         )
 

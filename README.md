@@ -7,9 +7,10 @@ queries).
 
 The JSON export follows the field names of the NCATS Translator
 [DocumentMetadataAPI](https://github.com/NCATSTranslator/DocumentMetadataAPI),
-plus three fields of our own: `id`, [`identifiers`](#identifiers-in-the-json-export)
-and [`pub_date`](#pub_date-in-the-json-export). The database itself uses PubMed's
-own field names.
+plus four fields of our own: `id`, [`identifiers`](#identifiers-in-the-json-export),
+[`pub_date`](#pub_date-in-the-json-export) and
+[`publication_types`](#publication-types-in-the-json-export). The database itself
+uses PubMed's own field names.
 
 ## How it works
 
@@ -147,7 +148,49 @@ own `sortpubdate` does. A consumer that needs the trailing year reads it out of
 `pub_date`.
 
 > **`pub_date` is new, and a re-export is required to ship it.** An export made
-> before this field existed has eleven fields, not twelve.
+> before this field existed has no `pub_date` field.
+
+### Publication types in the JSON export
+
+Each record carries `publication_types`, PubMed's publication types. Each entry
+has the type's MeSH descriptor as a CURIE and PubMed's name for it. They are in
+PubMed's own order, the order NCBI's `esummary` serves as `pubtype`:
+
+```json
+{
+  "id": "PMID:22456213",
+  "publication_types": [
+    {"id": "MESH:D002363", "name": "Case Reports"},
+    {"id": "MESH:D016428", "name": "Journal Article"},
+    {"id": "MESH:D016454", "name": "Review"}
+  ],
+  "...": "..."
+}
+```
+
+- **Verbatim.** Every type PubMed lists is included, funding labels such as
+  `Research Support, Non-U.S. Gov't` too (about a fifth of records carry one).
+  Filter on `name` or `id` to pick out reviews, trials, errata and so on.
+- **Usually more than one.** In a sample of 3,600 random PMIDs, about half
+  carried two or more types and 89% carried `Journal Article`. A record with no
+  types gets `[]`, never null.
+- `id` uses the `MESH:` prefix, Biolink's casing.
+
+The same data is in the database's `publication_type` table (`type_ui`,
+`type_name`, and `position` for PubMed's order), so a direct query needs no MeSH
+lookup:
+
+```sql
+SELECT count(*) FROM latest_article la
+JOIN publication_type pt USING (pmid, source_file)
+WHERE pt.type_name = 'Review';
+```
+
+> **Names need a reload.** They are parsed at load time, and a database loaded
+> before this field existed stored only the MeSH ids. There, `export` writes
+> `"name": ""` for every type and logs a warning with the count until the corpus
+> is re-parsed. See [`load --force` or a fresh database?](#load---force-or-a-fresh-database);
+> `load --force` is enough, since the new columns are added automatically.
 
 ### Identifiers in the JSON export
 

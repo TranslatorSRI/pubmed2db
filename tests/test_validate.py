@@ -27,6 +27,11 @@ _EFETCH = {
         </Journal>
         <ArticleTitle>Revised title for article one.</ArticleTitle>
         <Abstract><AbstractText>The revised abstract for article one.</AbstractText></Abstract>
+        <PublicationTypeList>
+          <PublicationType UI="D016422">Letter</PublicationType>
+          <PublicationType UI="D013485">Research Support, Non-U.S. Gov't</PublicationType>
+          <PublicationType UI="D016420">Comment</PublicationType>
+        </PublicationTypeList>
       </Article></MedlineCitation>
       <PubmedData><ArticleIdList>
         <ArticleId IdType="pubmed">1001</ArticleId>
@@ -209,7 +214,7 @@ def _valid_doc():
         "identifiers": ["PMID:9"],
         "journal_name": "", "journal_abbrev": "", "article_title": "",
         "volume": "", "issue": "", "pub_year": "", "pub_month": "",
-        "pub_day": "", "pub_date": "", "abstract": "",
+        "pub_day": "", "pub_date": "", "publication_types": [], "abstract": "",
     }
 
 
@@ -248,6 +253,42 @@ def test_field_validation_matches(export_dir, loaded_con, monkeypatch):
     assert fv["mismatches"] == []
     assert fv["soft_mismatches"] == []
     assert report["status"] == "pass", report["errors"] + report["warnings"]
+
+
+@pytest.mark.parametrize(
+    "label,edit",
+    [
+        # Indexing added a type after our last update file -- the usual cause.
+        ("added", lambda x: x.replace(
+            '<PublicationType UI="D016420">Comment</PublicationType>',
+            '<PublicationType UI="D016420">Comment</PublicationType>'
+            '<PublicationType UI="D016454">Review</PublicationType>',
+        )),
+        # Same types, different order: order is part of what we ship.
+        ("reordered", lambda x: x.replace(
+            '<PublicationType UI="D016422">Letter</PublicationType>', ""
+        ).replace(
+            '<PublicationType UI="D016420">Comment</PublicationType>',
+            '<PublicationType UI="D016420">Comment</PublicationType>'
+            '<PublicationType UI="D016422">Letter</PublicationType>',
+        )),
+    ],
+)
+def test_publication_types_mismatch_is_soft(export_dir, loaded_con, monkeypatch, label, edit):
+    """Compared in order, reported, never fatal: NLM revises types when MEDLINE
+    indexing completes, so live efetch can be ahead of the load."""
+    tampered = dict(_EFETCH)
+    tampered[1001] = edit(_EFETCH[1001])
+    assert tampered[1001] != _EFETCH[1001]
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(tampered))
+    report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
+
+    fv = report["checks"]["field_validation"]
+    assert [m["field"] for m in fv["soft_mismatches"]] == ["publication_types"]
+    assert fv["mismatches"] == []
+    # A warning under its own code -- not a failure, and not blamed on the journal.
+    assert report["status"] == "warn", report["errors"]
+    assert [w["code"] for w in report["warnings"]] == ["publication_type_mismatches"]
 
 
 def test_field_validation_flags_mismatch(export_dir, loaded_con, monkeypatch):
@@ -369,10 +410,11 @@ def test_cli_validate_fails_on_error(export_dir):
 def test_expected_fields_matches_spec():
     """EXPECTED_FIELDS derives from the exporter; lock it to the shipped spec.
 
-    The 12 exported field names are an external contract (Node Annotator /
+    The 13 exported field names are an external contract (Node Annotator /
     ElasticSearch consume them), so changing the export shape should trip a test
     rather than silently re-define what validate accepts. Nine of them are the
-    DocumentMetadataAPI spec's; `id`, `identifiers` and `pub_date` are ours.
+    DocumentMetadataAPI spec's; `id`, `identifiers`, `pub_date` and
+    `publication_types` are ours.
     """
     assert set(validate.EXPECTED_FIELDS) == {
         "id",
@@ -386,6 +428,7 @@ def test_expected_fields_matches_spec():
         "pub_month",
         "pub_day",
         "pub_date",
+        "publication_types",
         "abstract",
     }
 
@@ -649,6 +692,26 @@ def test_date_renderings_are_compared_normalized(export_dir, loaded_con, monkeyp
     assert fields["checked"] == 1
     assert all(m.get("field") != "pub_date" for m in fields["mismatches"]), fields
     assert all(m.get("field") != "pub_date" for m in fields["soft_mismatches"]), fields
+
+
+def test_each_soft_reason_is_its_own_check(monkeypatch):
+    """A pub_date disagreement used to be reported as `journal_mismatches`,
+    with a message blaming the journal's different source -- one check covered
+    every soft field long after they stopped sharing a reason."""
+    report = validate.Report()
+    doc = {**_valid_doc(), "id": "PMID:9", "pub_date": "2020 Mar 16"}
+    sample = {9: doc}
+    fetched = {9: {**doc, "pub_date": "2020 Mar 17"}}
+    monkeypatch.setattr(validate, "efetch_documents", lambda *a, **k: fetched)
+    validate.check_fields(
+        report, sample, online=True, api_key=None, email="me@example.com",
+        abstract_threshold=0.9,
+    )
+
+    statuses = {c.name: c.status for c in report.checks_run}
+    assert statuses["journal-soft"] == "pass"
+    assert statuses["pub-date-soft"] == "warn"
+    assert [w["code"] for w in report.warnings] == ["pub_date_mismatches"]
 
 
 def test_pub_date_cannot_fail_a_run(export_dir, loaded_con):
