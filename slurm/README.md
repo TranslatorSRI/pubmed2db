@@ -380,7 +380,11 @@ and only one of them leaks. It is exported only when non-empty: exported empty,
 `NCBI_EMAIL` stays an explicit flag; it is contact details, not a credential.
 
 Set `VALIDATE_OFFLINE=1` for a node without egress, and `VALIDATE_FAIL_ON_WARN=1`
-to make warnings non-zero too.
+to make warnings non-zero too — but not on a corpus run expecting a clean pass.
+The `month-format` check warns there by design: `pub_month` passes shapes like
+`"Sep-Oct 01"`, `"1st Quarter"` and `"Jun-Jun"` through verbatim (~0.02% of
+records, 5 in the 23,052 of one baseline plus one update file), so a correct
+corpus export reports `WARN`, not `PASS`. See #43.
 
 It reads the *export*, not the database: every line of every shard is
 `json.loads`-ed once (gzipped shards are decompressed on the fly), and the only
