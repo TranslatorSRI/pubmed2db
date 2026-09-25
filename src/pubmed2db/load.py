@@ -23,7 +23,7 @@ from pubmed_downloader.utils import Collective
 
 from .db import NEEDS_LOAD_SQL, parse_file_name, record_run
 from .parse import ParsedArticle, ParsedFile, parse_file
-from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
+from .util import current_rss_gib, download_file, eta_str, fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
 
@@ -461,7 +461,7 @@ def _ensure_serfile_file(module: pystow.Module, url: str) -> Path:
     """Fetch one catalog file, re-fetching it if the server's validator moved.
 
     The sidecar is written only after a successful download, and
-    `_download_serfile` never leaves a partial file under the real name, so a
+    `util.download_file` never leaves a partial file under the real name, so a
     failed fetch is simply retried on the next run.
     """
     path = module.join(name=url.rsplit("/", 1)[1])
@@ -478,35 +478,10 @@ def _ensure_serfile_file(module: pystow.Module, url: str) -> Path:
     if stale:
         logger.info("%s was republished; re-fetching it", path.name)
     if stale or not path.is_file():
-        _download_serfile(url, path)
+        download_file(url, path)
     if validator is not None:
         stamp.write_text(validator)
     return path
-
-
-def _download_serfile(url: str, path: Path) -> None:
-    """Stream one catalog file to ``path``, replacing it only once complete.
-
-    Not pystow's ``ensure()``: its default urllib backend sets no timeout, so a
-    connection NLM stops sending on hangs the step until Slurm kills it —
-    observed live, with serfile.20260901.xml stalled at 200 KB of 730 KB and
-    the socket still open. Its requests backend takes a timeout but never
-    checks the status, so it would save a 5xx page as the file. The read timeout
-    bounds the gap between chunks, not the whole ~450 MB transfer. Writing to a
-    ``.part`` and renaming means a killed job never leaves a truncated file
-    under the real name for the next run to trust.
-    """
-    logger.info("downloading %s", url)
-    part = path.with_name(path.name + ".part")
-    try:
-        with requests.get(url, stream=True, timeout=(60, 120)) as response:
-            response.raise_for_status()
-            with part.open("wb") as out:
-                for chunk in response.iter_content(chunk_size=1 << 20):
-                    out.write(chunk)
-        os.replace(part, path)
-    finally:
-        part.unlink(missing_ok=True)
 
 
 def _catalog_year(raw: str | None) -> int | None:
