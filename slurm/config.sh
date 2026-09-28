@@ -80,9 +80,13 @@ export UV_CACHE_DIR
 # memory after the fact. NCBI_EMAIL and NCBI_API_KEY are left out: see above.
 # Each sbatch script calls this right after sourcing the file, so the values
 # printed are the ones the step then uses, overrides included.
+run_commit() {
+    git describe --always --dirty --match 'v*' 2>/dev/null || echo '(not a git checkout)'
+}
+
 log_run_settings() {
     local name
-    echo "pubmed2db $(git describe --always --dirty --match 'v*' 2>/dev/null || echo '(not a git checkout)')"
+    echo "pubmed2db $(run_commit)"
     for name in SLURM_JOB_ID SLURM_JOB_NAME SLURMD_NODENAME SLURM_MEM_PER_NODE \
                 SLURM_CPUS_PER_TASK DATA_DIR EXPORT_DIR MANIFEST_DIR SHARDS \
                 VALIDATE_SAMPLE_TOTAL LOAD_MEMORY_LIMIT EXPORT_MEMORY_LIMIT \

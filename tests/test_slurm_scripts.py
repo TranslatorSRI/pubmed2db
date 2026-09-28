@@ -10,6 +10,7 @@ Nothing runs ``sbatch``: ``submit.sh --dry-run`` prints what it would submit.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -633,3 +634,46 @@ def test_every_step_logs_the_settings_it_runs_with(sandbox: Path, script: Path) 
     output = result.stdout + result.stderr
     assert "not-a-real-key" not in output
     assert "someone@example.org" not in output.split("UV_ARGS")[0]
+
+
+def _submit_with_stub_sbatch(tmp: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    sbatch = tmp / "sbatch"
+    sbatch.write_text('#!/bin/sh\necho "12345;ht1"\n')
+    sbatch.chmod(0o755)
+    return subprocess.run(
+        ["bash", str(SUBMIT), *args],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+        env={
+            "PATH": f"{tmp}:/usr/bin:/bin",
+            "HOME": str(REPO_ROOT),
+            "NCBI_EMAIL": "someone@example.org",
+            "DATA_DIR": str(tmp / "data"),
+        },
+    )
+
+
+def test_submit_appends_each_job_and_its_command_to_a_submit_log(tmp_path: Path) -> None:
+    """The command a run was submitted with is the one thing no step log sees.
+
+    One line per job, appended as each is submitted, so a chain that fails to
+    submit partway still records what did go in, and a second submission adds
+    to the history rather than replacing it.
+    """
+    for _ in range(2):
+        result = _submit_with_stub_sbatch(tmp_path, "export", "validate")
+        assert result.returncode == 0, result.stderr
+
+    lines = (tmp_path / "data" / "logs" / "submit.log").read_text().splitlines()
+    assert len(lines) == 4, lines
+    assert all("./slurm/submit.sh export validate: " in line for line in lines)
+    assert lines[0].endswith(": export    job 12345")
+    assert lines[1].endswith(": validate  job 12345 (after 12345)")
+    # A timestamp, then the commit: this test runs in the repo, so a real one.
+    assert re.match(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \S+ \./slurm", lines[0]), lines[0]
+    assert "(not a git checkout)" not in lines[0]
+
+
+def test_a_dry_run_writes_no_submit_log(tmp_path: Path) -> None:
+    result = _submit_with_stub_sbatch(tmp_path, "--dry-run", "all")
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "data" / "logs" / "submit.log").exists()
