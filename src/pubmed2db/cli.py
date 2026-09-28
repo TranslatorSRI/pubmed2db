@@ -8,10 +8,13 @@ from contextlib import closing
 from pathlib import Path
 
 import click
+import duckdb
 from click.core import ParameterSource
 
 from . import __version__
 from .db import connect
+
+log = logging.getLogger(__name__)
 
 def _load_local(con, *, force: bool, require_files: bool) -> None:
     """Load every downloaded file, reporting the counts the CLI prints.
@@ -128,13 +131,28 @@ def main(
 
 
 def _connect(ctx: click.Context):
-    """Open the database with the group-level DuckDB tuning options applied."""
-    return connect(
+    """Open the database with the group-level DuckDB tuning options applied.
+
+    Logs what DuckDB actually runs with, which is not always what was asked
+    for: with no limit passed, ``memory_limit`` and ``threads`` are what it
+    derived from the Slurm cgroup, so every step that sets none (download,
+    journals, validate) records the cgroup probe AGENTS.md asks to re-take.
+    """
+    con = connect(
         ctx.obj["db"],
         threads=ctx.obj["threads"],
         temp_directory=ctx.obj["temp_dir"],
         memory_limit=ctx.obj["memory_limit"],
     )
+    memory_limit, threads, temp_directory = con.execute(
+        "SELECT current_setting('memory_limit'), current_setting('threads'), "
+        "current_setting('temp_directory')"
+    ).fetchone()
+    log.info(
+        "DuckDB %s: memory_limit=%s, threads=%s, temp_directory=%s",
+        duckdb.__version__, memory_limit, threads, temp_directory,
+    )
+    return con
 
 
 @main.command()

@@ -34,7 +34,7 @@ it, and both tags are cut from it.
    - Every item on that checklist is required. Something worth doing only if convenient goes on the next release's checklist instead: v1.1's one "optionally" item, the DuckDB cgroup probe, was the one skipped.
 
 3. **Build on the cluster from the release branch** ([`slurm/README.md`](../slurm/README.md)).
-   - Record in the release PR the exact `submit.sh` command and every environment override it ran with (`LOAD_MEMORY_LIMIT=…`). The logs record neither: the v1.1 build's memory limits had to be inferred from `config.sh`'s defaults, and #37's answer rests on that inference.
+   - Copy this build's lines from `data/logs/submit.log` into the release PR: `submit.sh` appends the command and commit behind every job it submits. The step logs carry the rest: each opens with the commit, the allocation and every setting it ran with, overrides included, and each command then logs DuckDB's effective limits ([`slurm/README.md`](../slurm/README.md#monitoring-memory-and-runtime)). The v1.1 build's logs had none of this, so its limits had to be confirmed from memory.
 
    Fix what the run turns up:
    - Put the fixes in a PR against the release branch (#58 for v1.1), so they are reviewed and described like any other change, and merge it into the release branch.

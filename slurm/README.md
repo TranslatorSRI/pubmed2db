@@ -225,6 +225,17 @@ Three independent ways, in rough order of convenience:
    peak, rate, elapsed and ETA), once a minute with an ETA for the JSON export.
    The simplest in-process signal,
    no Slurm tooling needed, and the only one of the three available on `ht1`.
+   Every step's log also opens with what it ran with. First comes a block from
+   `config.sh`'s `log_run_settings`: `git describe` of the checkout, the Slurm
+   job and allocation, and each setting after overrides (never the NCBI
+   credentials). Then each command logs one
+   `DuckDB <version>: memory_limit=…, threads=…, temp_directory=…` line, giving
+   the values DuckDB actually uses. The download, journals and validate steps
+   pass no limit, so their lines are the cgroup-derived defaults. That is the
+   probe AGENTS.md asks to re-take, taken on every run. `submit.sh` appends
+   one line per job it submits to `data/logs/submit.log`: the time, the
+   commit, the command as typed and the job id. That is the one thing no step
+   log sees.
 
 2. **`sstat` while it runs** / **`sacct` after** — live or historical MaxRSS:
 

@@ -15,6 +15,7 @@
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 source slurm/config.sh
+log_run_settings
 
 uv run pubmed2db --data-dir "$DATA_DIR" download
 

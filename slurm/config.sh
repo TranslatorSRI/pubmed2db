@@ -73,3 +73,24 @@ export UV_CACHE_DIR
 # raises the rate limit from 3 to 10 requests/second. Neither is ever logged.
 : "${NCBI_EMAIL:=}"
 : "${NCBI_API_KEY:=}"
+
+# What this step runs with, printed at the top of its log: the commit, the
+# allocation Slurm granted, and every setting above. A run's logs are the only
+# record it leaves, and the v1.1 build's memory limits had to be confirmed from
+# memory after the fact. NCBI_EMAIL and NCBI_API_KEY are left out: see above.
+# Each sbatch script calls this right after sourcing the file, so the values
+# printed are the ones the step then uses, overrides included.
+run_commit() {
+    git describe --always --dirty --match 'v*' 2>/dev/null || echo '(not a git checkout)'
+}
+
+log_run_settings() {
+    local name
+    echo "pubmed2db $(run_commit)"
+    for name in SLURM_JOB_ID SLURM_JOB_NAME SLURMD_NODENAME SLURM_MEM_PER_NODE \
+                SLURM_CPUS_PER_TASK DATA_DIR EXPORT_DIR MANIFEST_DIR SHARDS \
+                VALIDATE_SAMPLE_TOTAL LOAD_MEMORY_LIMIT EXPORT_MEMORY_LIMIT \
+                DUCKDB_TEMP_DIR UV_CACHE_DIR; do
+        echo "  $name=${!name-}"
+    done
+}
