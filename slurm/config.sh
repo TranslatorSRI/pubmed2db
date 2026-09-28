@@ -57,11 +57,12 @@
 : "${LOAD_MEMORY_LIMIT=48GB}"
 : "${EXPORT_MEMORY_LIMIT=160GB}"
 
-# Fast local scratch for DuckDB to spill into. Only the export is likely to need
-# it; the loader inserts file-by-file. Set it to empty (DUCKDB_TEMP_DIR=) to
-# leave DuckDB's default -- note the `=` rather than `:=` here, which is what
-# makes an explicit empty value stick instead of falling back to the default.
-: "${DUCKDB_TEMP_DIR=/local/scratch/duckdb_tmp}"
+# Fast local scratch for DuckDB to spill into, e.g. /local/scratch/duckdb_tmp
+# on a node that has one. Empty leaves DuckDB's default (next to the database
+# file), which is what every ht1 run has actually used: the old default path
+# does not exist there, so 04-export.sbatch warned and fell back on every run,
+# and neither export spilled anyway -- RSS stayed under the buffer-pool limit.
+: "${DUCKDB_TEMP_DIR=}"
 
 # uv's package cache. ~/.cache/uv is not always writable on the cluster.
 : "${UV_CACHE_DIR:=$PWD/../uv-cache}"
