@@ -38,7 +38,7 @@ it, and both tags are cut from it.
 
    Fix what the run turns up:
    - Put the fixes in a PR against the release branch (#58 for v1.1), so they are reviewed and described like any other change, and merge it into the release branch.
-   - A closing keyword in that PR does nothing, because its base is not the default branch. An issue the run answers gets `Closes #N` in the **release** PR, which is the one that merges into `main`.
+   - GitHub links a closing keyword only while the PR's base is the default branch, so one in that PR does nothing. An issue the run answers gets `Closes #N` in the **release** PR. But the release PR is stacked on a feature branch too, so GitHub does not link those keywords either until it is retargeted onto `main` (step 5). After the retarget, check with `gh pr view <N> --json closingIssuesReferences`. If any are missing, re-save the description or link them from the PR's *Development* sidebar. Whether GitHub re-reads the keywords on retarget has not been tested. On v1.1, #55 linked `closes #46`, written while it briefly targeted `main`, but not #11 and #37, which were added after it was retargeted.
    - Fix anything that belongs to a feature PR in that PR, then **merge** its branch into the release branch.
    - Merge rather than rebase: the commit the cluster ran has to stay reachable.
 
