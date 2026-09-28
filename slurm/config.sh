@@ -45,6 +45,8 @@
 # by DuckDB's limit. The load figure is measured: RSS settles at the cap plus
 # ~5-6 GiB at both 32GB and 48GB, with no change in rate, so 48GB under 64G
 # leaves ~11 GiB spare (slurm/README.md -> "Running `load`: how much memory?").
+# The export figure too: DuckDB fills whatever it is given (peak 153.3 GiB at
+# 160GB, 191.9 GiB at 200GB, same wall time), so 160GB is the measured one.
 #
 # `=` rather than `:=`, so `LOAD_MEMORY_LIMIT= ./slurm/submit.sh load` really
 # does leave DuckDB's own cgroup-derived default in place. With `:=` an empty
@@ -53,7 +55,7 @@
 # these two were not. An empty value is safe all the way down: the CLI's option
 # is falsy, so `db.connect` never issues a SET.
 : "${LOAD_MEMORY_LIMIT=48GB}"
-: "${EXPORT_MEMORY_LIMIT=200GB}"
+: "${EXPORT_MEMORY_LIMIT=160GB}"
 
 # Fast local scratch for DuckDB to spill into. Only the export is likely to need
 # it; the loader inserts file-by-file. Set it to empty (DUCKDB_TEMP_DIR=) to

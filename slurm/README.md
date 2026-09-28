@@ -260,27 +260,34 @@ the size of the database rather than with the largest input file:
 Neither step can be done a file at a time, which is why the numbers are an order
 of magnitude above the loader's.
 
-**Observed on full JSON exports of the whole corpus (`--shards 16`):**
+**Observed on full JSON exports of the whole corpus, all under `--mem=256G`:**
 
-| Run | Documents | Peak RSS | Wall time |
-| --- | --- | --- | --- |
-| Earlier | — | 199.6 GiB | "a few hours" (before progress logging; never timed) |
-| 2026-07-30 | 40,901,984 | 201.1 GiB | 23m 13s, ≈30k documents/s |
-| 2026-08-05 | 40,923,261 | 201.0 GiB | 18m 06s, ≈38k documents/s |
+| Run | Documents | Shards | `EXPORT_MEMORY_LIMIT` | Peak RSS | Wall time |
+| --- | --- | --- | --- | --- | --- |
+| Earlier | — | 16 | default | 199.6 GiB | "a few hours" (before progress logging; never timed) |
+| 2026-07-30 | 40,901,984 | 16 | default | 201.1 GiB | 23m 13s, ≈30k documents/s |
+| 2026-08-05 | 40,923,261 | 16 | default | 201.0 GiB | 18m 06s, ≈38k documents/s |
+| 2026-08-21 | 40,990,218 | 8, gzip | 160GB | **153.3 GiB** | **12m 03s**, ≈57k documents/s |
+| 2026-09-26 | 41,153,516 | 8, gzip | 200GB | 191.9 GiB | 13m 14s, ≈52k documents/s |
 
-Those three runs all predate the `COPY`-based writer. **They are the numbers to
-beat, not the numbers to request** — see "What changed" below; the first run of
-the new export should be sized from the table above and will re-baseline it.
+The first three predate the `COPY`-based writer (see "What changed" below); the
+last two are it. Read the pair together: DuckDB's peak tracks the buffer-pool
+limit it is given, not what the query needs — 40 GB more limit bought 38 GiB
+more peak and a slightly *slower* run — so `config.sh` now sets `160GB`, the
+lower of the two measured values. `--mem=256G` is the allocation both ran
+under; a 192G node would leave ~38 GiB over the 160GB run's peak and is the
+next thing to measure, not a number to assume.
 
 For the record, the 2026-08-05 run on `ht1` was submitted as `srun --mem=256G
 --cpus-per-task=8 --time=02:00:00` (12:14:50 started, 12:32:56 finished) — kept
 here as the provenance of the numbers above, not as a command to copy;
-`04-export.sbatch` is what to run.
+`04-export.sbatch` is what to run. The 2026-08-21 and 2026-09-26 runs were
+`./slurm/submit.sh all`, the first with `EXPORT_MEMORY_LIMIT=160GB` set by hand.
 
-Treat **~200 GiB** as the working memory figure until a new one is measured — it
-was stable across all three runs, and is why this needs a big node; do not copy
-the loader's allocation. Time is the cheap dimension: the script's limit is
-generous margin on 18 minutes.
+Time is the cheap dimension: `04-export.sbatch` asks for an hour against a
+measured 13 minutes. Expect the first ~5 minutes to log `0.0 GiB across 0
+shard(s)` while RSS climbs — that is the `_latest_snapshot` window and the
+`string_agg` materializing before the first shard opens; both runs did it.
 
 ### What changed (and what to record next run)
 
@@ -295,29 +302,23 @@ whole corpus by PMID first. Both are gone: DuckDB now writes the NDJSON itself
 | `COPY`, no sort | **35.5s** | **56.2k docs/s** |
 
 Both wrote byte-identical record sets (2M rows, `EXCEPT` in both directions
-returns nothing). Two things to read off the next cluster run, since neither can
-be predicted from a laptop:
-
-1. **Peak RSS.** The sort was the export's peak-memory event, so the `--mem` in
-   `04-export.sbatch` is probably now over-provisioned — but *how* over is a
-   measurement, and asking for less than the job needs is an OOM kill several
-   minutes in.
-2. **Wall time**, which sets whether the header's `--time` is still generous.
-
-Tracked in #42; the header is the thing to edit once the numbers exist.
+returns nothing). On the cluster the rewrite came out at 12–13 minutes for the
+whole corpus against 18–23 before (table above), and the peak moved from a
+fixed ~201 GiB to whatever the buffer-pool limit allows — which is what let
+`EXPORT_MEMORY_LIMIT` be lowered. Whether `--mem` itself can come down is
+still open (#42).
 
 Because the whole export is one statement, there are no per-batch progress
 lines any more; a heartbeat logs output size and current RSS once a minute
-instead, and `-v` additionally enables DuckDB's own progress bar:
+instead, and `-v` additionally enables DuckDB's own progress bar. From the
+2026-09-26 run:
 
 ```
-INFO pubmed2db.export: starting JSON export: 40923261 document(s) to at most 16 shard(s) in data/json
-INFO pubmed2db.export: writing: 22.4 GiB across 16 shard(s) · 187 MiB/s · elapsed 2m 03s · RSS 143.1 GiB
-INFO pubmed2db.export: exported 40923261 documents to 16 shard(s) in data/json in 5m 12s (peak RSS 88.0 GiB)
+INFO pubmed2db.export: starting JSON export: 41153516 document(s) to at most 8 shard(s) in data/json (gzip)
+INFO pubmed2db.export: writing: 0.0 GiB across 0 shard(s) · 0 MiB/s · elapsed 4m 21s · RSS 157.0 GiB
+INFO pubmed2db.export: writing: 8.8 GiB across 8 shard(s) · 16 MiB/s · elapsed 9m 27s · RSS 144.4 GiB
+INFO pubmed2db.export: exported 41153516 documents to 8 shard(s) in data/json in 13m 14s (peak RSS 191.9 GiB)
 ```
-
-(The `writing:` and completion figures above are shapes, not measurements — the
-new export has not been run on the cluster yet.)
 
 Notes on the knobs:
 
@@ -444,19 +445,24 @@ matters far less here than it does for `load`.
 | --- | --- | --- | --- | --- |
 | earlier (no API key) | 40,901,984 | 16 | 10m 51s | 5.2 GiB |
 | 2026-08-05 (API key) | 40,923,261 | 16, 52.0 GiB | **7m 57s** | **5.182 GiB** |
+| 2026-08-21 (API key) | 40,990,218 | 8 gzip, 15.4 GiB | 25m 47s | 5.184 GiB |
+| 2026-09-26 (API key, `--previous-manifest`) | 41,153,516 | 8 gzip, 15.7 GiB | 28m 37s | 8.802 GiB |
 
-The script's allocation is roughly 3× that peak, which is the margin to keep if you pass
-`--previous-manifest`: that manifest is read into a second PMID set of
-comparable size. Both figures are in every report (`duration`,
-`peak_rss_gib`) — size the next run from those, not from this note. (The
-2026-08-05 run was submitted with `--mem=256G --time=06:00:00`, copied from the
-export. It used 2% of that memory and 2% of the time; there is no reason to hold
-a big node for this job.)
+The script's allocation is roughly 2× the larger peak, which is the margin to
+keep when passing `--previous-manifest`: that manifest is read into a second
+PMID set of comparable size, and it is what took the 2026-09-26 run from 5.2 to
+8.8 GiB. Both figures are in every report (`duration`, `peak_rss_gib`) — size
+the next run from those, not from this note. (The 2026-08-05 run was submitted
+with `--mem=256G --time=06:00:00`, copied from the export. It used 2% of that
+memory and 2% of the time; there is no reason to hold a big node for this job.)
 
-Nearly all of it is one thing: **7m 38s of that 7m 57s is the shard read.** Every
-Entrez check together took 19 seconds. The read is a single-threaded
-`json.loads` per line — 89k records/s, ~116 MiB/s — so if this job ever needs to
-be faster, that pass is the only place worth touching (issue #13).
+Nearly all of it is one thing: **the shard read** — 7m 38s of the 7m 57s on
+16 uncompressed shards, 26m 26s of the 28m 37s on 8 gzipped ones. Every Entrez
+check together takes ~20 seconds. The read is a single-threaded `json.loads`
+per line — 89k records/s uncompressed, ~26k records/s through gzip — so if this
+job ever needs to be faster, that pass is the only place worth touching (issue
+#13). The gzip default (~4× smaller shards) is paid for here, at ~3.5× the
+read time.
 
 The log tells you the same while it runs. The start line confirms what was picked
 up before any of the slow work (the key itself is never logged, here or in the

@@ -174,8 +174,10 @@ still has a populated `reference_citation` table, which nothing will clear.
   while the other seven idled. DuckDB now writes the NDJSON itself
   (`COPY ... FORMAT JSON`, one file per writer thread) with no sort: 3x faster
   end-to-end on a 2M-document benchmark (112.9s → 35.5s), byte-identical record
-  sets. Closes issue #8. **Still to record from a cluster run:** the new peak
-  RSS, which decides whether `--mem=256G` can come down.
+  sets. Closes issue #8. At corpus scale: 12–13 minutes against 18–23 before,
+  and the peak now follows the DuckDB memory limit (153.3 GiB at 160GB, 191.9
+  at 200GB) rather than sitting at ~201 GiB; whether `--mem=256G` itself can
+  come down is #42.
 - **No indexes** are created on the big per-version tables yet (kept lean for bulk
   load). Add them if interactive querying of the DB becomes a use case.
 
