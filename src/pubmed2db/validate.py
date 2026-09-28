@@ -1150,9 +1150,20 @@ def check_fields(
             core_comparisons += 1
             if ratio < abstract_threshold:
                 core_mismatch += 1
-                mismatches.append(
-                    {"pmid": pmid, "field": "abstract", "similarity": round(ratio, 3)}
-                )
+                if exp_abs and ent_abs:
+                    mismatches.append(
+                        {"pmid": pmid, "field": "abstract", "similarity": round(ratio, 3)}
+                    )
+                else:
+                    # One side is blank: that is missing or extra data, not
+                    # text that diverged. Carry the two values, as CORE_FIELDS
+                    # do, so `_mismatch_kind` reads it as exported_blank /
+                    # entrez_blank rather than "possible truncation". (PMID
+                    # 4825553: no <Abstract> in the baseline XML, efetch has one.)
+                    mismatches.append({
+                        "pmid": pmid, "field": "abstract",
+                        "exported": exported.get("abstract"), "entrez": ent_abs,
+                    })
 
         for f in SOFT_FIELDS:
             if _compare_value(f, exported) != _compare_value(f, entrez):

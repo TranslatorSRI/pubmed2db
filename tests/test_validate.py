@@ -531,6 +531,39 @@ def test_mismatch_kind_classification(mismatch, expected):
     assert validate._mismatch_kind(mismatch) == expected
 
 
+@pytest.mark.parametrize(
+    "exported_abs,entrez_abs,kind",
+    [
+        ("", "An abstract efetch serves but the baseline XML lacks.", "exported_blank"),
+        ("An abstract we exported that efetch no longer serves.", "", "entrez_blank"),
+        ("The exported abstract, quite unlike the other.", "Totally different text.",
+         "low_similarity"),
+    ],
+)
+def test_blank_abstract_is_missing_data_not_truncation(monkeypatch, exported_abs, entrez_abs, kind):
+    """PMID 4825553 has no <Abstract> in its baseline file; efetch serves one.
+
+    The 2026-09-26 corpus run reported it as "abstract text diverged (possible
+    truncation)" because the abstract mismatch carried only a similarity and
+    `_mismatch_kind` never saw a blank side. It is missing data, and the report
+    should say so -- while the 0.0 still counts as a low-similarity record for
+    the advisory `abstract` check.
+    """
+    report = validate.Report()
+    doc = {**_valid_doc(), "id": "PMID:1", "abstract": exported_abs}
+    fetched = {1: {**doc, "abstract": entrez_abs}}
+    monkeypatch.setattr(validate, "efetch_documents", lambda *a, **k: fetched)
+    validate.check_fields(
+        report, {1: doc}, online=True, api_key=None, email="me@example.com",
+        abstract_threshold=0.9,
+    )
+
+    fv = report.checks["field_validation"]
+    assert fv["core_mismatches"] == 1
+    assert fv["mismatches_by_kind"][kind] == 1
+    assert fv["abstract_similarity"]["min"] < 0.9
+
+
 def test_group_mismatches_tallies_by_field_and_kind():
     grouped = validate.group_mismatches([
         {"field": "pub_year", "exported": "", "entrez": "1978"},
