@@ -75,6 +75,8 @@ EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 EXPECTED_FIELDS = frozenset(JSON_FIELDS)
 
 #: Fields compared strictly against Entrez; a high mismatch rate here is an error.
+#: (``article_title`` is compared through :func:`_normalize_title`, which folds
+#: efetch's rendering of the title, not its wording.)
 CORE_FIELDS = ("article_title", "volume", "issue",
                "pub_year", "pub_month", "pub_day")
 
@@ -362,6 +364,7 @@ def _normalize(value: str) -> str:
 
 #: Fields whose two sides can be *written* differently while describing the same
 #: value, so they are compared through :func:`_normalize_date`.
+#: ``article_title`` is the same idea through :func:`_normalize_title`.
 _DATE_RENDERED_FIELDS = frozenset({"pub_date"})
 
 
@@ -374,7 +377,11 @@ def _compare_value(field: str, record: dict) -> str:
         # of `publication_types`, which ships PubMed's own.
         return json.dumps(raw, sort_keys=True, ensure_ascii=False)
     value = _normalize(str(raw))
-    return _normalize_date(value) if field in _DATE_RENDERED_FIELDS else value
+    if field in _DATE_RENDERED_FIELDS:
+        return _normalize_date(value)
+    if field == "article_title":
+        return _normalize_title(value)
+    return value
 
 
 def _normalize_date(value: str) -> str:
@@ -402,6 +409,31 @@ def _normalize_date(value: str) -> str:
         else [parts[0], normalize_month(parts[1])] if len(parts) == 2
         else [parts[0], normalize_month(parts[1]), normalize_day(parts[2])] + parts[3:]
     )
+
+
+def _normalize_title(value: str) -> str:
+    """Collapse efetch's *renderings* of an article title, for comparison only.
+
+    The export ships the archival ``<ArticleTitle>`` verbatim; efetch re-renders
+    it. All four title mismatches in the 2026-09-26 corpus sample were this,
+    checked against the raw baseline files:
+
+    - a terminal period added where the archival title has none
+      (PMID:10205128 ``"…in health care "`` vs. ``"…in health care."``,
+      PMID:36326224 ``"[…how?]"`` vs. ``"[…how?]."``);
+    - the ``[…]`` marking a translated title dropped
+      (PMID:5684047 ``"[Surgical results…]."`` vs. ``"Surgical results…."``);
+    - an empty ``<ArticleTitle/>`` served as ``"[Not Available]."``
+      (PMID:33511611).
+
+    Fold all three on both sides; a change of wording still differs. The period
+    comes off before the brackets because efetch writes ``[…].``. As with
+    :func:`_normalize_date`, nothing here reaches the export.
+    """
+    value = _normalize(value).removesuffix(".")
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+    return "" if value == "Not Available" else value
 
 
 # --------------------------------------------------------------------------- #
@@ -1691,6 +1723,8 @@ def _not_checked(report: dict) -> list[str]:
     threshold = report["inputs"].get("abstract_threshold")
     derived = [
         f"compared strictly against Entrez: {', '.join(CORE_FIELDS)}",
+        "article_title compared after folding efetch's rendering (terminal "
+        "period, [ ] around a translated title, [Not Available] for an empty title)",
         *(
             f"compared but never fails the run ({reason}): {', '.join(fields)}"
             for reason, fields in SOFT_FIELD_REASONS.items()

@@ -690,6 +690,38 @@ def test_medline_date_year_is_not_a_false_mismatch(export_dir, loaded_con, monke
             if m["field"] in ("pub_year", "pub_month")] == []
 
 
+@pytest.mark.parametrize(
+    "exported,entrez,same",
+    [
+        # PMID:5684047 -- efetch drops the [ ] marking a translated title.
+        ("[Surgical results in the reconstruction of the lacrimal ducts with out cannula probes].",
+         "Surgical results in the reconstruction of the lacrimal ducts with out cannula probes.",
+         True),
+        # PMID:10205128 -- the archival title has a trailing space and no period.
+        ("Rationing-talk and action in health care ",
+         "Rationing-talk and action in health care.", True),
+        # PMID:33511611 -- an empty <ArticleTitle/> is served as "[Not Available].".
+        ("", "[Not Available].", True),
+        # PMID:36326224 -- no terminal period inside the brackets.
+        ("[An infectious diseases ward dedicated to elderly patients: why and how?]",
+         "[An infectious diseases ward dedicated to elderly patients: why and how?].", True),
+        # A change of wording must still be reported.
+        ("Revised title for article one.", "A completely different title.", False),
+    ],
+)
+def test_title_renderings_converge(exported, entrez, same):
+    """efetch re-renders <ArticleTitle>; the export ships it verbatim.
+
+    The four real pairs are every title mismatch of the 2026-09-26 corpus
+    sample, each checked against its raw baseline file. Only the rendering is
+    folded, only at comparison time, and through `_compare_value` so the hook
+    is pinned as well as the helper.
+    """
+    a = validate._compare_value("article_title", {"article_title": exported})
+    b = validate._compare_value("article_title", {"article_title": entrez})
+    assert (a == b) is same
+
+
 def test_date_renderings_are_compared_normalized(export_dir, loaded_con, monkeypatch):
     """The two sides can be *written* differently while describing one date.
 
