@@ -395,3 +395,24 @@ def test_env_var_names_are_written_down_once():
             f"{envvar} appears more than once in --help; the click marker "
             "should be its only mention"
         )
+
+
+def test_every_command_logs_the_duckdb_settings_it_runs_with(tmp_path, caplog):
+    """What DuckDB actually runs with, not what was asked for.
+
+    With no limit passed these are what it derived from the Slurm cgroup, so a
+    cluster log records the probe AGENTS.md asks to keep re-taking; with one
+    passed, they confirm it took.
+    """
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="pubmed2db.cli"):
+        result = CliRunner().invoke(
+            main, ["--db", str(tmp_path / "x.duckdb"), "--memory-limit", "1GB", "status"],
+        )
+    assert result.exit_code == 0, result.output
+    [line] = [r.getMessage() for r in caplog.records if r.getMessage().startswith("DuckDB ")]
+    # DuckDB reports its limit in binary units: 1GB is 953.6 MiB.
+    assert "memory_limit=953.6 MiB" in line
+    assert "threads=" in line
+    assert f"temp_directory={tmp_path / 'x.duckdb'}.tmp" in line
