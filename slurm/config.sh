@@ -40,9 +40,11 @@
 # PUBMED2DB_DUCKDB_MEMORY_LIMIT, and a shell-wide value would silently cap the
 # export at the load's figure. Each script passes its own via `env`.
 #
-# Both are starting points rather than measured optima (#37). They sit below
-# each step's --mem to leave room for the lxml tree, the parsed records and the
-# Arrow batch, which share the same cgroup and are not covered by DuckDB's limit.
+# Both sit below each step's --mem to leave room for the lxml tree, the parsed
+# records and the Arrow batch, which share the same cgroup and are not covered
+# by DuckDB's limit. The load figure is measured: RSS settles at the cap plus
+# ~5-6 GiB at both 32GB and 48GB, with no change in rate, so 48GB under 64G
+# leaves ~11 GiB spare (slurm/README.md -> "Running `load`: how much memory?").
 #
 # `=` rather than `:=`, so `LOAD_MEMORY_LIMIT= ./slurm/submit.sh load` really
 # does leave DuckDB's own cgroup-derived default in place. With `:=` an empty

@@ -3,16 +3,22 @@
 #SBATCH --output=data/logs/%x-%j.out
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=1
-#SBATCH --time=24:00:00
+#SBATCH --time=36:00:00
 #
 # Parse downloaded files into DuckDB, keeping full version history. The long
-# pole: ~5-6 s/file warm, so ~1,500 files is 2-3 hours, and a full baseline year
-# from cold has run considerably slower. Hence --time=24:00:00.
+# pole: a from-scratch load of the 2026 corpus took 21h 29m for 1,636 files
+# (2026-09-25; 47 s/file on average, climbing from ~30 s/file on an empty
+# database to ~65 s/file by the end of the baseline). That used 90% of a 24h
+# limit, and every month's update files add to the count, hence 36h. A
+# killed load resumes where it stopped, so the cost of running over is a
+# resubmit, not lost work.
 #
 # --mem=64G with the buffer pool capped below it. DuckDB's own default is
 # already allocation-scaled (~76% of --mem), so the cap is not rescuing it from
 # a node-sized cache -- it is leaving room for the lxml tree, the parsed records
 # and the Arrow batch, which share the cgroup and are not covered by that limit.
+# Measured: RSS settles at the cap plus ~5-6 GiB (53.3 GiB peak under 48GB),
+# so 48GB under 64G leaves ~11 GiB spare.
 #
 # The progress lines report s/file, elapsed, current RSS and peak RSS. Read the
 # next run's --time off the rate and the next --mem off the RSS ramp; see

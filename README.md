@@ -400,8 +400,9 @@ neither a parser fix nor a schema change reaches data that is already loaded.
 Two ways to apply one, and they are not interchangeable:
 
 - **`load --force`** re-parses every local file and replaces its rows, so it
-  applies a *parsing* change to the whole corpus: roughly a baseline's worth of
-  time (~2–3 h), no re-download, and the database keeps its history.
+  applies a *parsing* change to the whole corpus: roughly a full load's worth of
+  time (about a day at corpus scale — see [`slurm/README.md`](./slurm/README.md#running-load-how-long---time)),
+  no re-download, and the database keeps its history.
 - **A fresh database** (delete `<data-dir>/pubmed.duckdb`, then `load`) is the
   answer whenever the *schema* changed, and the safer default if you are unsure.
 
@@ -414,7 +415,7 @@ reload also leaves any pre-existing wrong rows in place for files it re-parses
 identically.
 
 Rebuilding costs a full `load` and nothing else — the downloaded files are not
-touched — so unless the corpus is already loaded on a machine where 2–3 hours of
+touched — so unless the corpus is already loaded on a machine where a day of
 `load` is cheaper than the disk churn, prefer the rebuild. At a new baseline year
 the question is moot: a fresh database is the recommended path anyway, since
 loading the new year into the old database stores a second version of every PMID

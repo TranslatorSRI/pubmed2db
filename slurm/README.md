@@ -90,15 +90,27 @@ recommended entry point rather than a convenience.
 ## Running `load`: how much memory? (`--mem`)
 
 **Short answer: `03-load.sbatch` asks for a generous allocation and caps DuckDB's
-buffer pool below it. Our own per-file working set is ~1 GiB; everything above
-that is DuckDB's cache, and it will not restrain itself unless told to.**
+buffer pool below it. Measured on two full loads, the process settles at that
+cap plus ~5–6 GiB: everything above our own working set is DuckDB's cache, and
+it fills whatever it is given.**
 
 The loader holds one file at a time (full lxml tree + that file's parsed records
 + the Arrow batch), then inserts it and moves on. *Our* footprint does not grow
 with the number of files or the size of the database.
 
 DuckDB's does. It runs in the same process and caches ever more of a growing
-database, so its buffer pool is what makes a long load's RSS climb run-long.
+database, so its buffer pool is what makes a long load's RSS climb run-long —
+until the pool is full, after which RSS is flat:
+
+| Run | `LOAD_MEMORY_LIMIT` | RSS plateau | Peak RSS | Plateau reached |
+| --- | --- | --- | --- | --- |
+| 2026-08-20 | 32GB | ~35–37 GiB | 38.2 GiB | ~file 1,000 of 1,595 |
+| 2026-09-25 | 48GB (the default) | ~51–53 GiB | 53.3 GiB | ~file 1,200 of 1,636 |
+
+Both under `--mem=64G`, both from an empty database. The 16 GB of extra limit
+bought 15 GiB of extra peak, so the growing half is DuckDB's pool and it is
+bounded by the limit; ours is the ~5–6 GiB on top. The rate did not move
+between the two (46.4 vs 47.3 s/file), so neither limit was low enough to spill.
 
 **DuckDB does see the Slurm cgroup**, so its default is not the node-sized
 disaster it looks like: measured on duckdb 1.5.4, it takes ~76% of `--mem`
@@ -135,42 +147,75 @@ INFO pubmed2db.load: loaded pubmed26n1201.xml.gz: 30000 articles, 0 deletions, 0
 So a run that reaches `peak 42.1 GiB` by file 1201 hit 42 GiB *at some point*;
 whether it is still there is what `RSS` tells you.
 
-If both climb together and `RSS` never comes down, **something is growing, but
-not necessarily DuckDB.** Its buffer pool is the obvious suspect and the easy
-one to test — lower `PUBMED2DB_DUCKDB_MEMORY_LIMIT` and re-run. If `RSS`
-plateaus lower, that was it. If it climbs the same way, the growth is in the
-memory DuckDB's limit does *not* govern (the lxml tree, the parsed records, the
-Arrow batch), and lowering the limit further only buys spilling — visible as a
-collapsed s/file rate — without touching the cause.
+What a healthy full load looks like, from the 2026-09-25 run: `RSS` climbs
+steadily from 2.6 GiB, reaches the limit-plus-~5 GiB plateau around file 1,200,
+and holds there (51–53 GiB) for the remaining 400 files, while `peak` sits a
+GiB or two above it. That climb is DuckDB filling its buffer pool, and the
+plateau is the cap binding. Two things would be worth a look:
 
-That distinction is not academic: the 42.1 GiB reading above has **never been
-explained.** It predates the discovery that DuckDB reads the cgroup, so it was
-originally blamed on a node-sized buffer-pool default that turned out not to
-exist. Which half is growing is one of the questions the next full load answers
-(#37), and #25 — the loader holding a whole lxml DOM per file — is the leading
-candidate for the other half.
+- **`RSS` still climbing after the plateau should have arrived**, or above
+  `LOAD_MEMORY_LIMIT` + ~8 GiB: the growth is in the memory DuckDB's limit does
+  *not* govern (the lxml tree, the parsed records, the Arrow batch — #25 is
+  the loader holding a whole DOM per file). Lowering the limit will not touch
+  it; it only buys spilling.
+- **`s/file` collapsing** at the point `RSS` plateaus: the limit is low enough
+  that DuckDB is spilling to `--temp-dir`. Neither 32GB nor 48GB did.
+
+(The 42.1 GiB reading above was the first full load's, taken before DuckDB was
+known to read the cgroup and blamed on a node-sized default that did not exist.
+The two measured runs explain it: a 64G allocation gives DuckDB a ~48 GiB
+default, and 42 GiB by file 1,201 is that pool still filling.)
 
 (`RSS` reads `/proc`, so it shows `n/a` on macOS. That only affects local
 development; on the cluster it is always available.)
 
 ## Running `load`: how long? (`--time`)
 
-After the Arrow bulk-insert change the load is ~5–6 s/file (≈2 s parse + ≈4 s
-insert) on a warm run, so ~1,500 files is **2–3 hours** single-threaded. A full
-baseline year from cold has run considerably slower, which is why
-`03-load.sbatch` asks for far more `--time` than the warm figure needs:
-over-requesting time is free, and being killed at hour six of a re-parse is not.
+**Short answer: a from-scratch load of the whole corpus is a day, and it gets
+slower as the database grows — not because anything is wrong.**
 
+**Measured on full loads from an empty database, `--mem=64G`, one core:**
+
+| Run | Files | Wall time | Average | `LOAD_MEMORY_LIMIT` | Peak RSS |
+| --- | --- | --- | --- | --- | --- |
+| 2026-08-20 | 1,595 (1,334 baseline + 261 update) | 20h 32m | 46.4 s/file | 32GB | 38.2 GiB |
+| 2026-09-25 | 1,636 (1,334 baseline + 302 update) | 21h 29m | 47.3 s/file | 48GB | 53.3 GiB |
+
+The average hides the shape. By stretch of the 2026-09-25 run (baseline files
+are a full 30,000 articles each; update files average ~20,000):
+
+| Files | s/file | Articles/s |
+| --- | --- | --- |
+| 1–200 | 30 | ~1,000 |
+| 200–600 | 35 | ~860 |
+| 600–800 | 47 | ~640 |
+| 800–1,000 | 56 | ~540 |
+| 1,000–1,334 (rest of the baseline) | ~65 | ~460 |
+| 1,335–1,636 (update files) | 41–57 | ~380 |
+
+The rate follows the size of the database, not the memory limit: it was already
+falling before `RSS` reached its plateau and did not change when it got there,
+and the two runs — with different limits — landed within 2% of each other. The
+"~5–6 s/file" figure that used to be quoted here came from
+`scripts/benchmark_load.py` on a handful of files against a small database,
+which is the one regime a corpus load never sees. Overlapping parse with insert
+(#26) is where the remaining per-file time is.
+
+The 24h limit that ran the 2026-09-25 load was 90% used, and each month's
+update files add ~50 files to the count, so `03-load.sbatch` now asks for 36h.
 Don't guess the next run's limit — the progress line reports the rate and the
 elapsed time to date, which is exactly what scales:
 
 ```
-INFO pubmed2db.load: progress: 4/360 files this run, 356 remaining · 89.7 s/file · elapsed 5m 59s · ~8h 52m to go
+INFO pubmed2db.load: progress: 1000/1636 files this run, 636 remaining · 40.4 s/file · elapsed 11h 13m · ~7h 08m to go
 ```
 
-Multiply `s/file` by the total file count for the next `--time`, and compare
-`elapsed` against what you asked for. If the rate is far off ~5–6 s/file, suspect
-DuckDB spilling (see `--temp-dir`) or a memory limit set so low that it thrashes.
+Multiply the *late-run* `s/file` (~65 for a baseline file) by the total file
+count for the next `--time`, and compare `elapsed` against what you asked for.
+A rate far above that, or one that collapses at a fixed point, means DuckDB is
+spilling (see `--temp-dir`) or the memory limit is so low that it thrashes. A
+killed load resumes from the last completed file, so running over costs a
+resubmit, not the work.
 
 ## Monitoring memory and runtime
 
@@ -505,8 +550,8 @@ headroom), not to stop an oversubscription that does not happen.
 lxml, the parsed records and the Arrow batch — all of which count against the
 same `--mem`. Set it a comfortable margin below the allocation to widen that
 headroom; `LOAD_MEMORY_LIMIT` and `EXPORT_MEMORY_LIMIT` in `slurm/config.sh`
-carry the current values. Both are starting points chosen to leave headroom
-rather than measured optima (#37). Setting it *too* low is not free
+carry the current values, both measured on full runs (see "Running `load`: how
+much memory?" and "Running `export`"). Setting it *too* low is not free
 either — DuckDB will spill to `--temp-dir` instead of caching, which shows up as
 a collapsed s/file rate.
 

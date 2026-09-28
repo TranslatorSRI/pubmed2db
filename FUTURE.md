@@ -152,14 +152,18 @@ still has a populated `reference_citation` table, which nothing will clear.
 - **Loader throughput — done (serial).** `load.load_parsed` now inserts each
   file's rows columnar via Arrow `INSERT ... SELECT` (~200k rows/s) instead of
   row-by-row `executemany` (~2.5k rows/s), cutting per-file load from ~20 min to
-  ~5–6 s. Peak RSS is logged per file (~0.8 GiB for a 5k-article file); see
-  `slurm/README.md` and `scripts/benchmark_load.py`.
-- **Loader parallelism — deferred.** Serial load of a full baseline is now ~2–3 h,
-  likely fine. To go faster, parallelize across files: since DuckDB is
-  single-writer, have parallel Slurm tasks each parse one XML → write per-file
-  **Parquet shards** (no shared writer), then a single step does
+  ~5–6 s against a small database. At corpus scale it is 30 s/file on an empty
+  database rising to ~65 s/file by the end of the baseline — 21h 29m for 1,636
+  files on 2026-09-25 — because insert cost grows with the database, not
+  because of memory (two runs with different limits matched within 2%). Both
+  RSS figures are logged per file; see `slurm/README.md` and
+  `scripts/benchmark_load.py`.
+- **Loader parallelism — deferred.** A serial full load is a day. To go faster,
+  overlap parse with insert first (#26), then parallelize across files: since
+  DuckDB is single-writer, have parallel Slurm tasks each parse one XML → write
+  per-file **Parquet shards** (no shared writer), then a single step does
   `INSERT INTO t SELECT * FROM read_parquet('shards/*')`. Bigger rearchitecture;
-  do it only if 2–3 h serial becomes a bottleneck.
+  do it only if a day becomes a bottleneck.
 - **`latest_article` view** runs a window over the entire `article` table on every
   read. At full scale, consider an index on `article(pmid, file_order_key)` or
   materializing the latest set into a table before export.
