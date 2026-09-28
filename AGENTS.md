@@ -221,9 +221,17 @@ explains its part; this table is only a map.
 - **The cgroup measurements below were taken on duckdb 1.5.4 and have not been
   re-taken.** The dependency floor is now 1.5.5, and nothing about the readings
   is version-fragile in principle — but they are measurements, and the rule that
-  produced them is *measure it, don't reason about it*. Re-run the one-line
-  probe on the first cluster job rather than assuming they carried over (#42 is
-  the run that will have the chance).
+  produced them is *measure it, don't reason about it*. The 2026sep26 build
+  (v1.1) ran on 1.5.5 without re-taking them; the v1.2 release PR's pre-run
+  checklist carries the probe so the next build does. It is one line, inside
+  the allocation:
+
+  ```bash
+  srun --mem=8G --cpus-per-task=2 uv run python -c "import duckdb; c = duckdb.connect(); print(c.execute(\"SELECT current_setting('memory_limit'), current_setting('threads')\").fetchone())"
+  ```
+
+  Expect ~76% of `--mem` and `--cpus-per-task`; anything else means the
+  paragraph below needs re-measuring, not re-reading.
 - **DuckDB reads the Slurm cgroup. Both of its sized defaults do — we guessed
   otherwise twice and were wrong twice.** Measured on duckdb 1.5.4:
   `memory_limit` is ~76% of `--mem` (6.1 GiB under `--mem=8G`, 47.3 GiB under
