@@ -531,6 +531,39 @@ def test_mismatch_kind_classification(mismatch, expected):
     assert validate._mismatch_kind(mismatch) == expected
 
 
+@pytest.mark.parametrize(
+    "exported_abs,entrez_abs,kind",
+    [
+        ("", "An abstract efetch serves but the baseline XML lacks.", "exported_blank"),
+        ("An abstract we exported that efetch no longer serves.", "", "entrez_blank"),
+        ("The exported abstract, quite unlike the other.", "Totally different text.",
+         "low_similarity"),
+    ],
+)
+def test_blank_abstract_is_missing_data_not_truncation(monkeypatch, exported_abs, entrez_abs, kind):
+    """PMID 4825553 has no <Abstract> in its baseline file; efetch serves one.
+
+    The 2026-09-26 corpus run reported it as "abstract text diverged (possible
+    truncation)" because the abstract mismatch carried only a similarity and
+    `_mismatch_kind` never saw a blank side. It is missing data, and the report
+    should say so -- while the 0.0 still counts as a low-similarity record for
+    the advisory `abstract` check.
+    """
+    report = validate.Report()
+    doc = {**_valid_doc(), "id": "PMID:1", "abstract": exported_abs}
+    fetched = {1: {**doc, "abstract": entrez_abs}}
+    monkeypatch.setattr(validate, "efetch_documents", lambda *a, **k: fetched)
+    validate.check_fields(
+        report, {1: doc}, online=True, api_key=None, email="me@example.com",
+        abstract_threshold=0.9,
+    )
+
+    fv = report.checks["field_validation"]
+    assert fv["core_mismatches"] == 1
+    assert fv["mismatches_by_kind"][kind] == 1
+    assert fv["abstract_similarity"]["min"] < 0.9
+
+
 def test_group_mismatches_tallies_by_field_and_kind():
     grouped = validate.group_mismatches([
         {"field": "pub_year", "exported": "", "entrez": "1978"},
@@ -561,6 +594,27 @@ def test_summary_always_reports_the_incorrect_data_count():
     lines = "\n".join(validate._mismatch_detail(check))
     assert "1 exported blank where Entrez has a value (missing data)" in lines
     assert "0 exported a different value (incorrect data)" in lines
+
+
+def test_summary_shows_a_blank_abstract_as_missing_data():
+    """The example line for a blank-on-one-side abstract shows both values,
+    clipped, under "missing data" -- not `similarity 0.0` under "possible
+    truncation", which is what PMID:4825553 read as before the mismatch
+    carried its values."""
+    grouped = validate.group_mismatches([
+        {"field": "abstract", "exported": "",
+         "entrez": "An abstract efetch serves but the baseline XML lacks."},
+    ])
+    check = {
+        "name": "core-fields", "section": "field accuracy", "status": "warn",
+        "expectation": "x", "observed": "y", "code": "field_mismatches",
+        "count": 1, "see": "checks.field_validation.mismatches", "detail": grouped,
+    }
+    lines = "\n".join(validate._mismatch_detail(check))
+    assert "1 exported blank where Entrez has a value (missing data)" in lines
+    assert 'abstract exported "" vs. Entrez "An abstract efetch serves but the basel…"' in lines
+    assert "similarity" not in lines
+    assert "truncation" not in lines
 
 
 def test_summary_flags_truncated_example_lists():
@@ -655,6 +709,38 @@ def test_medline_date_year_is_not_a_false_mismatch(export_dir, loaded_con, monke
     assert fetched[1003]["pub_month"] == "Spring"
     assert [m for m in report["checks"]["field_validation"]["mismatches"]
             if m["field"] in ("pub_year", "pub_month")] == []
+
+
+@pytest.mark.parametrize(
+    "exported,entrez,same",
+    [
+        # PMID:5684047 -- efetch drops the [ ] marking a translated title.
+        ("[Surgical results in the reconstruction of the lacrimal ducts with out cannula probes].",
+         "Surgical results in the reconstruction of the lacrimal ducts with out cannula probes.",
+         True),
+        # PMID:10205128 -- the archival title has a trailing space and no period.
+        ("Rationing-talk and action in health care ",
+         "Rationing-talk and action in health care.", True),
+        # PMID:33511611 -- an empty <ArticleTitle/> is served as "[Not Available].".
+        ("", "[Not Available].", True),
+        # PMID:36326224 -- no terminal period inside the brackets.
+        ("[An infectious diseases ward dedicated to elderly patients: why and how?]",
+         "[An infectious diseases ward dedicated to elderly patients: why and how?].", True),
+        # A change of wording must still be reported.
+        ("Revised title for article one.", "A completely different title.", False),
+    ],
+)
+def test_title_renderings_converge(exported, entrez, same):
+    """efetch re-renders <ArticleTitle>; the export ships it verbatim.
+
+    The four real pairs are every title mismatch of the 2026-09-26 corpus
+    sample, each checked against its raw baseline file. Only the rendering is
+    folded, only at comparison time, and through `_compare_value` so the hook
+    is pinned as well as the helper.
+    """
+    a = validate._compare_value("article_title", {"article_title": exported})
+    b = validate._compare_value("article_title", {"article_title": entrez})
+    assert (a == b) is same
 
 
 def test_date_renderings_are_compared_normalized(export_dir, loaded_con, monkeypatch):

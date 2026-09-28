@@ -248,7 +248,11 @@ explains its part; this table is only a map.
   loaded from holds a bare `<MedlineDate>1978 Jul-Aug</MedlineDate>` and no
   `<Year>` at all. Diagnosing a field mismatch from efetch alone points at the
   wrong layer — download the baseline file containing the PMID and read the raw
-  element before changing any parsing or export code.
+  element before changing any parsing or export code. The stronger case also
+  exists: efetch serves values the archival XML never had — an `<Issue>` of `1`,
+  a whole `<Abstract>`, a DOI in neither `ArticleIdList` nor `ELocationID` —
+  which was half of the 2026sep26 sample's core mismatches (#59). A blank on
+  our side against a value on efetch's is therefore not evidence we dropped it.
 - **`validate.py` is one 1,400-line module on purpose.** Splitting it by check
   would add import edges without reducing what you must read: every check needs
   `Report.record` and the example accumulators, most need `efetch_documents`, and
