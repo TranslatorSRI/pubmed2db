@@ -603,7 +603,8 @@ def test_every_step_logs_the_settings_it_runs_with(sandbox: Path, script: Path) 
 
     The v1.1 build's memory limits had to be confirmed from memory after the
     run, because nothing in its logs said what they were. An override must show
-    up as the value used, and the NCBI credentials must never show up at all.
+    up as the value used. The API key must never show up at all; the email is
+    kept out of the block (validate still passes it to the CLI as a flag).
     """
     result = subprocess.run(
         ["bash", f"slurm/{script.name}"],
