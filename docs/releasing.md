@@ -1,7 +1,7 @@
 # Releasing pubmed2db
 
 Every release pairs a **code version** (`v1.1`) with the **data build** it
-produced (`2026sep27`). The release branch is where the two meet: the cluster
+produced (`2026sep26`). The release branch is where the two meet: the cluster
 runs from it, the bugs that run turns up are fixed on it or in the PRs feeding
 it, and both tags are cut from it.
 
@@ -40,11 +40,14 @@ it, and both tags are cut from it.
 4. **Tag the data build** on the exact commit the cluster ran, and record that commit in the release PR:
 
    ```bash
-   git tag -a 2026sep27 <sha> -m "pubmed2db used to create 2026sep27"
-   git push origin 2026sep27
+   git tag -a 2026sep26 <sha> -m "pubmed2db used to create 2026sep26"
+   git push origin 2026sep26
    ```
 
-   Use the date the outputs were produced, which need not be the milestone's date.
+   Use the day the export finished, which need not be the milestone's date
+   (`2026aug21` was a run that started on the 20th). The better name is the
+   date of the last update file the build loaded, since that is the cutoff —
+   the next file belongs to the next build — but nothing reports it yet (#57).
 
 5. **Merge the feature PRs into `main`**, in stack order, with **merge commits** (see below). The repository deletes a merged branch, and GitHub then retargets the next PR in the stack onto `main`.
 
