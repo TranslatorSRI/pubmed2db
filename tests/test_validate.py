@@ -596,6 +596,27 @@ def test_summary_always_reports_the_incorrect_data_count():
     assert "0 exported a different value (incorrect data)" in lines
 
 
+def test_summary_shows_a_blank_abstract_as_missing_data():
+    """The example line for a blank-on-one-side abstract shows both values,
+    clipped, under "missing data" -- not `similarity 0.0` under "possible
+    truncation", which is what PMID:4825553 read as before the mismatch
+    carried its values."""
+    grouped = validate.group_mismatches([
+        {"field": "abstract", "exported": "",
+         "entrez": "An abstract efetch serves but the baseline XML lacks."},
+    ])
+    check = {
+        "name": "core-fields", "section": "field accuracy", "status": "warn",
+        "expectation": "x", "observed": "y", "code": "field_mismatches",
+        "count": 1, "see": "checks.field_validation.mismatches", "detail": grouped,
+    }
+    lines = "\n".join(validate._mismatch_detail(check))
+    assert "1 exported blank where Entrez has a value (missing data)" in lines
+    assert 'abstract exported "" vs. Entrez "An abstract efetch serves but the basel…"' in lines
+    assert "similarity" not in lines
+    assert "truncation" not in lines
+
+
 def test_summary_flags_truncated_example_lists():
     """A capped example list must say so rather than implying it is complete."""
     grouped = validate.group_mismatches(
