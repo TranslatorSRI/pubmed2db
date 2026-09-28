@@ -27,6 +27,7 @@
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 source slurm/config.sh
+log_run_settings
 
 # Passed per-invocation rather than exported: a shell-wide
 # PUBMED2DB_DUCKDB_MEMORY_LIMIT would silently cap the 256G export at this

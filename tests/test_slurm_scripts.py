@@ -595,3 +595,40 @@ def test_no_sample_size_is_passed_when_the_export_is_empty(sandbox: Path) -> Non
     result = run_validate(sandbox, NCBI_EMAIL="me@example.org")
     assert result.returncode == 0, result.stderr
     assert "--sample-size" not in result.stdout
+
+
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_every_step_logs_the_settings_it_runs_with(sandbox: Path, script: Path) -> None:
+    """The top of each step's log records its commit, allocation and settings.
+
+    The v1.1 build's memory limits had to be confirmed from memory after the
+    run, because nothing in its logs said what they were. An override must show
+    up as the value used, and the NCBI credentials must never show up at all.
+    """
+    result = subprocess.run(
+        ["bash", f"slurm/{script.name}"],
+        cwd=sandbox, capture_output=True, text=True,
+        env={
+            "PATH": f"{sandbox / 'bin'}:/usr/bin:/bin",
+            "HOME": str(sandbox),
+            "SLURM_SUBMIT_DIR": str(sandbox),
+            "SLURM_JOB_ID": "138348",
+            "SLURM_MEM_PER_NODE": "65536",
+            "LOAD_MEMORY_LIMIT": "32GB",
+            "NCBI_EMAIL": "someone@example.org",
+            "NCBI_API_KEY": "not-a-real-key",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    # Not a git checkout here; on the cluster this is `git describe`'s output.
+    assert lines[0] == "pubmed2db (not a git checkout)", lines[0]
+    assert "  SLURM_JOB_ID=138348" in lines
+    assert "  SLURM_MEM_PER_NODE=65536" in lines
+    assert "  LOAD_MEMORY_LIMIT=32GB" in lines
+    # Defaults print as the value used; an empty spill dir prints empty.
+    assert "  EXPORT_MEMORY_LIMIT=160GB" in lines
+    assert "  DUCKDB_TEMP_DIR=" in lines
+    output = result.stdout + result.stderr
+    assert "not-a-real-key" not in output
+    assert "someone@example.org" not in output.split("UV_ARGS")[0]
