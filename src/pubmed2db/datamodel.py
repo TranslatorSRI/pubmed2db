@@ -275,6 +275,57 @@ def only_adds(old: dict, new: dict) -> list[str]:
     return problems
 
 
+#: The markers around the generated half of `docs/data-model.md`.
+REFERENCE_BEGIN = "<!-- BEGIN GENERATED REFERENCE: python -m pubmed2db.datamodel --docs docs/data-model.md -->"
+REFERENCE_END = "<!-- END GENERATED REFERENCE -->"
+
+
+def _cell(text: str) -> str:
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
+def render_reference(relations: list[dict]) -> str:
+    """The column reference of `docs/data-model.md`, rendered from :func:`describe`.
+
+    Generated rather than written so that the document and the comments shipped
+    in the database cannot say different things: a test regenerates it and
+    compares. Tables first in tier order, then the views in one list, since
+    every ``latest_*`` view has its table's columns.
+    """
+    lines = [REFERENCE_BEGIN, ""]
+    tables = [r for r in relations if r["kind"] == "table"]
+    for tier in TIERS:
+        for relation in (r for r in tables if r["tier"] == tier):
+            lines += [
+                f"### `{relation['name']}`",
+                "",
+                relation["comment"],
+                "",
+            ]
+            if tier == "internal":
+                continue
+            lines += ["| Column | Type | Meaning |", "| --- | --- | --- |"]
+            lines += [
+                f"| `{c['name']}` | {c['type']} | {_cell(c['comment'])} |"
+                for c in relation["columns"]
+            ]
+            lines.append("")
+    lines += ["### Views", "", "| View | Meaning |", "| --- | --- |"]
+    lines += [
+        f"| `{r['name']}` | {_cell(r['comment'])} |"
+        for r in relations if r["kind"] == "view"
+    ]
+    lines += ["", REFERENCE_END]
+    return "\n".join(lines)
+
+
+def replace_reference(document: str, reference: str) -> str:
+    """``document`` with the text between the reference markers replaced."""
+    start = document.index(REFERENCE_BEGIN)
+    end = document.index(REFERENCE_END) + len(REFERENCE_END)
+    return document[:start] + reference + document[end:]
+
+
 def _fresh_database() -> duckdb.DuckDBPyConnection:
     """An empty in-memory database at this code's data model."""
     from .db import connect
@@ -288,17 +339,25 @@ def main(argv: list[str] | None = None) -> None:
     ``--golden PATH`` writes this version's :func:`shape`, which
     `tests/test_data_model.py` compares every fresh database against; run it as
     part of a deliberate version bump, never to make a failing test pass.
+    ``--docs PATH`` rewrites the generated column reference in
+    `docs/data-model.md` after a comment in ``schema.sql`` changes.
     """
     import argparse
     import json
 
     parser = argparse.ArgumentParser(prog="python -m pubmed2db.datamodel", description=main.__doc__)
     parser.add_argument("--golden", type=Path, help="write the shape JSON for this version here")
+    parser.add_argument(
+        "--docs", type=Path, help="regenerate the column reference in this Markdown file"
+    )
     args = parser.parse_args(argv)
     con = _fresh_database()
     try:
         if args.golden:
             args.golden.write_text(json.dumps(shape(con), indent=2) + "\n")
+        if args.docs:
+            reference = render_reference(describe(con))
+            args.docs.write_text(replace_reference(args.docs.read_text(), reference))
     finally:
         con.close()
 

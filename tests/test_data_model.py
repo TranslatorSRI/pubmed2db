@@ -389,3 +389,81 @@ def test_closed_vocabularies_hold(edge_con, table, column, domain):
     values = {r[0] for r in _rows(edge_con, f"SELECT DISTINCT {column} FROM {table}")}
     assert values and values <= domain
     assert _rows(edge_con, f"SELECT count(*) FROM {table} WHERE {column} IS NULL") == [(0,)]
+
+
+# --- docs/data-model.md ------------------------------------------------------------
+
+DOC = Path(__file__).parent.parent / "docs" / "data-model.md"
+
+
+def _doc_section(heading: str) -> str:
+    text = DOC.read_text()
+    start = text.index(f"\n## {heading}\n")
+    end = text.find("\n## ", start + 1)
+    return text[start:end if end != -1 else None]
+
+
+def test_the_docs_column_reference_is_generated_from_the_database(con):
+    """The reference half of the doc is the database's own comments, rendered.
+    Hand-editing it, or changing a comment without regenerating, fails here."""
+    expected = datamodel.render_reference(datamodel.describe(con))
+    assert expected in DOC.read_text(), (
+        "docs/data-model.md is stale: run "
+        "`uv run python -m pubmed2db.datamodel --docs docs/data-model.md`"
+    )
+
+
+def test_the_doc_names_only_columns_that_exist(con):
+    """Prose like `author.position` must name a real column. The section on
+    pre-1.0 builds is exempt: naming what no longer exists is its job."""
+    import re
+
+    columns = {
+        (r["name"], c["name"]) for r in datamodel.describe(con) for c in r["columns"]
+    }
+    relations = {r["name"] for r in datamodel.describe(con)}
+    text = DOC.read_text()
+    prose = text[: text.index("\n## Changes from the pre-1.0 builds\n")]
+    named = set(re.findall(r"`([a-z_]+)\.([a-z_]+)`", prose))
+    unknown = {pair for pair in named if pair[0] in relations and pair not in columns}
+    assert not unknown
+
+
+def test_the_doc_describes_every_ndjson_field_in_order():
+    import re
+
+    from pubmed2db.export import JSON_FIELDS
+
+    rows = [
+        line for line in _doc_section("The NDJSON record").splitlines()
+        if line.startswith("| `")
+    ]
+    documented = [
+        name for row in rows for name in re.findall(r"`([a-z_]+)`", row.split("|")[1])
+    ]
+    assert documented == list(JSON_FIELDS)
+
+
+def test_every_recipe_in_the_doc_runs(edge_con, tmp_path, monkeypatch):
+    """The recipes are written for someone holding only a build's files, so run
+    them that way: attach the database read-only, with the Parquet export beside
+    it, from an empty session."""
+    import re
+
+    from pubmed2db.export import export_parquet
+
+    export_parquet(edge_con, tmp_path / "parquet")
+    db_path = Path(edge_con.execute("SELECT path FROM duckdb_databases() WHERE NOT internal").fetchone()[0])
+    edge_con.close()
+    (tmp_path / "pubmed.duckdb").write_bytes(db_path.read_bytes())
+    monkeypatch.chdir(tmp_path)
+
+    blocks = re.findall(r"```sql\n(.*?)```", _doc_section("Recipes"), re.S)
+    assert len(blocks) >= 8
+    session = duckdb.connect()
+    try:
+        for block in blocks:
+            for statement in filter(str.strip, block.split(";")):
+                session.execute(statement)
+    finally:
+        session.close()
