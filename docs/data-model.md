@@ -65,6 +65,38 @@ and `2026sep26`, were named for the day their export finished. The directory hol
 database, the NDJSON shards and a `manifests/` directory with the validation
 report and a sorted list of the build's PMIDs.
 
+### Getting a build, and checking it
+
+**Download, don't query in place.** DuckDB can `ATTACH` a database over HTTPS
+read-only, but against this server even listing the tables of the 76 GB
+`2026sep26` database had not finished after five minutes (tried 2026-10-19).
+Download the files first.
+
+**Use HTTP/1.1, and resume.** The same day, an HTTP/2 transfer of that database
+dropped after 6 MB with `HTTP/2 stream 1 was not closed cleanly: INTERNAL_ERROR`.
+HTTP/1.1 with resume was reliable:
+
+```bash
+BUILD=https://stars.renci.org/var/babel_outputs/pubmed2db/<build>
+curl --http1.1 --retry 5 -C - -O "$BUILD/pubmed.duckdb"
+```
+
+**Check the shards against the build's own list.** A consumer that takes only
+the NDJSON, as Babel does, should download `metadata.json` and `SHA256SUMS`
+with the shards, then:
+
+1. Check `metadata.json`'s `data_model_version` against the major version the
+   consumer was written for.
+2. Run `sha256sum -c SHA256SUMS` (`shasum -a 256 -c` on macOS) in the download
+   directory. This fails for a shard that is missing, or that is intact but
+   comes from another build, such as one left over from the previous download.
+3. Optionally, compare the records read against `metadata.json`'s `records`.
+
+A truncated or corrupted shard needs none of this. DuckDB writes each shard as
+one gzip stream, so damage fails decompression, either as a premature end of
+stream or as a CRC error. Checksums cover the export's files only, not
+`pubmed.duckdb`.
+
 ## Versioning and stability
 
 The data model has its own version, `MAJOR.MINOR.PATCH` in the standard
