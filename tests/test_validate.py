@@ -116,7 +116,7 @@ def test_structure_reports_identifier_coverage(export_dir):
     report = validate.run_validation(export_dir, online=False)
     coverage = report["checks"]["structure"]["identifier_coverage"]
     assert coverage["doi"] == {"records": 1, "pct": 50.0}
-    assert coverage["PMCID"] == {"records": 1, "pct": 50.0}
+    assert coverage["PMC"] == {"records": 1, "pct": 50.0}
     assert "50.0% doi" in validate.format_summary(report)
 
 
@@ -244,7 +244,7 @@ def test_coverage_warns_outside_default_band(export_dir, loaded_con, monkeypatch
 
 def test_field_validation_matches(export_dir, loaded_con, monkeypatch):
     """Also guards that identifiers compare as a *set*: the export sorts them
-    (`PMCID:` before `doi:`) while `_EFETCH` lists them in document order
+    (`PMC:` before `doi:`) while `_EFETCH` lists them in document order
     (doi first), so an order-sensitive comparison fails here."""
     monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
     report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
@@ -354,7 +354,7 @@ def test_efetch_identifiers_exclude_cited_references(monkeypatch):
     monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory({1001: with_refs}))
     docs = validate.efetch_documents([1001], api_key=None, email="me@example.com")
     assert docs[1001]["identifiers"] == [
-        "PMID:1001", "doi:10.1038/example1001", "PMCID:PMC7654321",
+        "PMID:1001", "doi:10.1038/example1001", "PMC:PMC7654321",
     ]
 
 

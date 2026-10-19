@@ -201,15 +201,22 @@ Still open:
   NCBI's own answer for an unparseable range is to fall back to January of the
   leading year (`"1998 Dec-1999 Jan"` → `1998/01/01`), i.e. it drops precision
   rather than guessing.
-- **The PMCID CURIE prefix is not settled** ([#33](https://github.com/TranslatorSRI/pubmed2db/issues/33)).
-  We emit `PMCID:PMC1234567`. Babel's `src/prefixes.py` says `PMC`, and neither
+- **The PMCID CURIE prefix is interim** ([#33](https://github.com/TranslatorSRI/pubmed2db/issues/33)).
+  We emit `PMC:PMC1234567`, following Babel: `src/prefixes.py` says `PMC`, and
+  Babel's published compendia use `PMC:` throughout. Translator has not decided.
+  Biolink registers `PMC` on `biolink:Publication` and `PMCID` on
+  `biolink:JournalArticle`
+  ([biolink-model#1366](https://github.com/biolink/biolink-model/issues/1366)),
+  Babel's own choice is open in
+  [Babel#1044](https://github.com/NCATSTranslator/Babel/issues/1044), and neither
   the Core Components specification
   ([CCWG#15](https://github.com/NCATSTranslator/Core-Components-Working-Group/issues/15))
-  nor the DocumentMetadataAPI README carries a PMC example to arbitrate; the
-  production endpoint resolves PMCIDs under neither form. To be settled
-  alongside [Babel#1044](https://github.com/NCATSTranslator/Babel/issues/1044) —
-  a change is a one-line edit to `export.ID_PREFIXES` plus a re-export, since
-  `identifiers` is derived at export and never stored.
+  nor the DocumentMetadataAPI README carries a PMC example. The production
+  endpoint resolves PMCIDs under neither form. When they rule, the change is
+  one value in `export.ID_PREFIXES` plus a re-export, since `identifiers` is
+  derived at export and never stored. `test_docs_spell_pmc_ids_with_the_exported_prefix`
+  then lists every doc example left to update. After data model 1.0, that is a
+  major bump affecting only the NDJSON.
 - **`ELocationID` DOIs are not read** (#35). The exported `identifiers` come from
   `PubmedData/ArticleIdList` only — the same place Babel reads, and the
   authoritative one. A DOI can also appear as

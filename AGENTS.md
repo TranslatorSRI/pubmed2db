@@ -121,7 +121,8 @@ explains its part; this table is only a map.
   land in the normalized `article_id` table on every load, so the JSON export
   aggregates them there (`export._LATEST_METADATA_SQL`'s `ids` CTE says how, and
   `export.ID_PREFIXES` is the single place the Babel-compatible CURIE casing is
-  written down, including the unsettled `PMCID` casing that issue #33 tracks).
+  written down, including the interim `PMC` prefix for PMCIDs, which follows
+  Babel until biolink-model#1366 and Babel#1044 rule; issue #33 tracks it).
   A denormalized `article.identifiers` column would have duplicated the data
   *and* forced a full corpus reload to backfill it, which is the reason not to,
   and the reason is not visible from the query. `validate`'s `EXPECTED_FIELDS`
