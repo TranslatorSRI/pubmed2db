@@ -1015,3 +1015,34 @@ def test_progress_lines_and_peak_rss_are_logged(export_dir, monkeypatch, caplog)
     assert progress and "remaining" in progress[0]
     assert any(m.startswith("validation finished in") and "peak RSS" in m
                for m in caplog.messages)
+
+
+def test_export_metadata_catches_a_changed_or_missing_shard(loaded_con, tmp_path):
+    """metadata.json lists every shard with its SHA-256: the one guard against a
+    shard truncated or replaced after the export wrote it."""
+    import gzip
+
+    from pubmed2db.export import export_json
+
+    out = tmp_path / "json"
+    shards = export_json(loaded_con, out, shards=1)
+    report = validate.run_validation(out, online=False)
+    check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
+    assert check["status"] == "pass", check
+    assert report["data_model_version"] == "1.0"
+
+    # Rewritten with one record fewer: still a valid gzip of valid NDJSON, so
+    # only the checksum and the record count can tell.
+    lines = gzip.decompress(shards[0].read_bytes()).splitlines(keepends=True)
+    shards[0].write_bytes(gzip.compress(b"".join(lines[:-1])))
+    report = validate.run_validation(out, online=False)
+    assert report["status"] == "fail"
+    check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
+    assert "checksum differs" in check["observed"]
+    assert "1 record(s) read, 2 exported" in check["observed"]
+
+    (out / "metadata.json").unlink()
+    report = validate.run_validation(out, online=False)
+    check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
+    assert check["status"] == "skip"
+    assert report["data_model_version"] is None

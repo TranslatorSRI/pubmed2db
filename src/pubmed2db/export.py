@@ -7,18 +7,26 @@ nulls, for absent values. Parquet export keeps PubMed's own field names.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
 
+from . import datamodel
 from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
 
 #: Shard filename stem; DuckDB appends the writer-thread index and the extension.
 _SHARD_STEM = "pubmed_metadata_"
+
+#: Written beside every export: what it is, what it was built from, and a
+#: checksum per file. See :func:`write_export_metadata`.
+METADATA_FILE = "metadata.json"
 
 logger = logging.getLogger(__name__)
 
@@ -698,11 +706,51 @@ def export_json(
             con.execute(f"SET threads = {int(previous_threads)}")
 
     paths = _shard_paths(out_dir)
+    write_export_metadata(con, out_dir, paths, fmt="ndjson", records=total)
     logger.info(
         "exported %d documents to %d shard(s) in %s in %s (peak RSS %.1f GiB)",
         total, len(paths), out_dir, fmt_duration(time.monotonic() - start), peak_rss_gib(),
     )
     return paths
+
+
+def file_sha256(path: Path) -> str:
+    """SHA-256 of a file, as hex."""
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def write_export_metadata(
+    con: duckdb.DuckDBPyConnection, out_dir: Path, files: list[Path], *, fmt: str, records: int,
+) -> Path:
+    """Write ``metadata.json``: the export's data model version, provenance and checksums.
+
+    An export travels without its database, so this is where a consumer learns
+    which data model it follows (``data_model_version``; check the major), what
+    corpus it holds (``corpus``: the cutoff file and when NCBI posted it, #57),
+    how many records to expect, and a SHA-256 per file — the one way to tell a
+    complete download from a truncated shard, which gzip alone does not reveal
+    until the truncated stream is read to its end. ``validate`` checks the
+    directory against it. Written last, after every file it describes.
+    """
+    from .status import corpus_provenance
+
+    content = {
+        "data_model_version": datamodel.DATA_MODEL_VERSION,
+        "format": fmt,
+        "records": records,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_by": datamodel.code_version(),
+        "database": datamodel.metadata(con),
+        "corpus": corpus_provenance(con),
+        "files": [
+            {"name": path.name, "bytes": path.stat().st_size, "sha256": file_sha256(path)}
+            for path in sorted(files)
+        ],
+    }
+    path = out_dir / METADATA_FILE
+    path.write_text(json.dumps(content, indent=2) + "\n")
+    return path
 
 
 def _copy_parquet(con: duckdb.DuckDBPyConnection, query: str, path: Path) -> None:
@@ -789,6 +837,12 @@ def export_parquet(
         written.append(path)
         _progress(len(written))
 
+    records = con.execute(
+        "SELECT count(*) FROM _latest_snapshot" if latest else "SELECT count(*) FROM article"
+    ).fetchone()[0]
+    write_export_metadata(
+        con, out_dir, written, fmt="parquet-latest" if latest else "parquet-all", records=records,
+    )
     logger.info(
         "exported %d Parquet file(s) to %s (peak RSS %.1f GiB)",
         len(written), out_dir, peak_rss_gib(),

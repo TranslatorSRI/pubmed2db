@@ -48,11 +48,14 @@ import duckdb
 import requests
 from lxml import etree
 
+from .datamodel import stored_version
 from .export import (
     ID_PREFIXES,
     JSON_FIELDS,
+    METADATA_FILE,
     MESH_PREFIX,
     _MONTH_ABBR,
+    file_sha256,
     normalize_day,
     normalize_month,
     _year_from_medline_date,
@@ -331,6 +334,57 @@ def find_shards(export_dir: Path) -> list[Path]:
     return sorted(
         p for p in export_dir.iterdir() if p.name.endswith((".ndjson", ".ndjson.gz"))
     )
+
+
+def check_export_metadata(
+    export_dir: Path, shards: list[Path], records_total: int, report: Report
+) -> dict | None:
+    """Hold the directory to the ``metadata.json`` its export wrote; return that metadata.
+
+    The export records each shard's SHA-256 and the record count, so a shard
+    that is missing, extra, truncated or rewritten since is caught here rather
+    than by whoever downloads it. An export without the file (one from before
+    data model 1.0) is a ``skip``: nothing to check against, not a failure.
+    """
+    path = export_dir / METADATA_FILE
+    if not path.is_file():
+        report.record(
+            "export-metadata", "structure", f"{METADATA_FILE} matches the shards", SKIP,
+            f"no {METADATA_FILE} (an export from before data model 1.0)",
+        )
+        return None
+    try:
+        metadata = json.loads(path.read_text())
+        listed = {f["name"]: f for f in metadata["files"]}
+        expected_records = metadata["records"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        report.record(
+            "export-metadata", "structure", f"{METADATA_FILE} matches the shards", FAIL,
+            f"unreadable: {exc}", code="export_metadata_unreadable",
+            message=f"{METADATA_FILE} could not be read.", count=1, see="inputs",
+        )
+        return None
+
+    problems = []
+    found = {p.name for p in shards}
+    problems += [f"{name}: listed but missing" for name in sorted(set(listed) - found)]
+    problems += [f"{name}: present but not listed" for name in sorted(found - set(listed))]
+    for shard in shards:
+        entry = listed.get(shard.name)
+        if entry is not None and file_sha256(shard) != entry.get("sha256"):
+            problems.append(f"{shard.name}: checksum differs from {METADATA_FILE}")
+    if records_total != expected_records:
+        problems.append(f"{records_total:,} record(s) read, {expected_records:,} exported")
+    report.record(
+        "export-metadata", "structure", f"{METADATA_FILE} matches the shards",
+        FAIL if problems else PASS,
+        "; ".join(problems) or f"{len(listed)} file(s) and {expected_records:,} record(s) as listed",
+        code="export_metadata_mismatch",
+        message=f"The shards differ from what {METADATA_FILE} says the export wrote.",
+        count=len(problems), see="checks_run",
+        detail={"problems": _capped(problems)},
+    )
+    return metadata
 
 
 def _shard_sizes(shards: list[Path]) -> dict[Path, int]:
@@ -1551,6 +1605,10 @@ def run_validation(
         peak_rss_gib(),
     )
 
+    export_metadata = check_export_metadata(
+        export_dir, shards, structure.records_total, report
+    )
+
     logger.info("checking coverage...")
     check_coverage(
         report, exported_count=structure.records_total, con=con, online=online,
@@ -1614,6 +1672,13 @@ def run_validation(
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "duration": fmt_duration(time.monotonic() - start),
         "peak_rss_gib": round(peak_rss_gib(), 3),
+        # The data model the export follows, from its metadata.json, else from
+        # the database it was validated alongside. A consumer checks the major.
+        "data_model_version": (
+            export_metadata["data_model_version"] if export_metadata
+            else stored_version(con) if con is not None
+            else None
+        ),
         "inputs": {
             "export_dir": str(export_dir),
             "shards": [p.name for p in shards],

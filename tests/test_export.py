@@ -256,7 +256,7 @@ def test_reexport_removes_stale_shards(loaded_con, tmp_path):
     # The COPY writer names shards from FILENAME_PATTERN '{i}', so the exact
     # stem is DuckDB's business -- what matters is that exactly one shard is
     # left and it is the gzipped one this run wrote.
-    survivors = sorted(path.name for path in out.iterdir())
+    survivors = sorted(path.name for path in out.iterdir() if path.name != "metadata.json")
     assert len(survivors) == 1, survivors
     assert survivors[0].endswith(".ndjson.gz")
 
@@ -367,6 +367,39 @@ def test_parquet_exports_every_table(loaded_con, tmp_path):
         ).fetchall()
     }
     assert {path.stem for path in written} == tables
+
+    # Parquet is the same data model as the database, column for column: a
+    # consumer can switch between the two without rewriting a query.
+    for path in written:
+        exported = loaded_con.execute(
+            f"SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM '{path.as_posix()}')"
+        ).fetchall()
+        assert exported == loaded_con.execute(
+            f"SELECT column_name, column_type FROM (DESCRIBE {path.stem})"
+        ).fetchall(), path.stem
+
+
+def test_exports_describe_themselves_in_metadata_json(loaded_con, tmp_path):
+    """An export travels without its database: metadata.json carries the data
+    model version, the corpus cutoff, the record count and a checksum per file."""
+    from pubmed2db.datamodel import DATA_MODEL_VERSION
+    from pubmed2db.export import export_json, export_parquet, file_sha256
+
+    for fmt, export in (
+        ("ndjson", lambda out: export_json(loaded_con, out)),
+        ("parquet-latest", lambda out: export_parquet(loaded_con, out)),
+    ):
+        out = tmp_path / fmt
+        files = export(out)
+        meta = json.loads((out / "metadata.json").read_text())
+        assert meta["data_model_version"] == DATA_MODEL_VERSION
+        assert meta["format"] == fmt
+        assert meta["records"] == 2  # PMIDs 1001 and 1003; 1002 was deleted
+        assert meta["corpus"]["cutoff_file"] == "pubmed25n0002.xml.gz"
+        assert meta["database"]["data_model_version"] == DATA_MODEL_VERSION
+        assert [(f["name"], f["sha256"]) for f in meta["files"]] == [
+            (path.name, file_sha256(path)) for path in sorted(files)
+        ]
 
 
 def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog):

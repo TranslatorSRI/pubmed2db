@@ -312,6 +312,13 @@ def test_cli_export_then_validate_needs_no_flags(staged_download):
     assert validate.returncode == 0, validate.stdout + validate.stderr
     assert "Validation PASS" in validate.stdout
     assert "2 record(s)" in validate.stdout
+    # The export's metadata.json was found and checked, and the report says
+    # which data model the export follows.
+    report = json.loads((out_dir / "validation_report.json").read_text())
+    assert report["data_model_version"] == "1.0"
+    assert any(
+        c["name"] == "export-metadata" and c["status"] == "pass" for c in report["checks_run"]
+    )
 
 
 def test_cli_rejects_a_non_positive_shard_count(tmp_path):
