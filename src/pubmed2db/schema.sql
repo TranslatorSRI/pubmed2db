@@ -147,9 +147,9 @@ CREATE TABLE IF NOT EXISTS mesh_qualifier (
 CREATE TABLE IF NOT EXISTS publication_type (
     pmid        BIGINT NOT NULL,
     source_file TEXT   NOT NULL,
+    position    INTEGER NOT NULL,              -- 0-based, PubMed's order
     type_ui     TEXT,                           -- MeSH UI of the publication type
-    type_name   TEXT,
-    position    INTEGER                         -- 0-based
+    type_name   TEXT
 );
 
 -- Grants listed on the article (<GrantList>). Named `article_grant`, not
