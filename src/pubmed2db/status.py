@@ -10,7 +10,7 @@ tables were wiped). The CLI turns these into actionable errors/warnings.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import duckdb
 
@@ -140,4 +140,68 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         "latest_documents": latest_documents,
         "journals": journals,
         "journals_refreshed": last_run(con, "journals"),
+    }
+
+
+def build_name(cutoff_published_at: datetime | None) -> str | None:
+    """A data build's name: the UTC date NCBI posted its cutoff file, as ``2026sep24``.
+
+    `docs/releasing.md` tags builds with this. The cutoff fixes what a build
+    contains, whereas the day its export happened to finish depends on how long
+    the cluster queue took. Builds before data model 1.0 (``2026aug21``,
+    ``2026sep26``) were named the old way. ``None`` when the posting time is
+    unknown, for a cutoff file that was never synced by `download`.
+    """
+    from .export import _MONTH_ABBR  # locale-independent, unlike strftime("%b")
+
+    if cutoff_published_at is None:
+        return None
+    day = cutoff_published_at.astimezone(timezone.utc)
+    return f"{day.year}{_MONTH_ABBR[day.month - 1].lower()}{day.day:02d}"
+
+
+def corpus_provenance(con: duckdb.DuckDBPyConnection) -> dict:
+    """What a build contains, derived from the ``source_file`` registry (#57).
+
+    Its **cutoff** is the last file it loaded: the next file in PubMed's
+    sequence belongs to the next build. ``cutoff_published_at`` is when NCBI
+    posted that file (``None`` for a file that was never synced by `download`,
+    e.g. one copied in by rsync), which is a better date to name a build by than
+    the day its export happened to finish: ``build_name`` is that date, as the
+    build's tag.
+
+    Derived on demand rather than stored, like the rest of this module, so it
+    cannot disagree with what was actually loaded. `status` prints it and
+    `export` writes it into ``metadata.json`` beside the shards.
+    """
+    first, last, published, files, baseline_year, articles, deletions, failed, books = con.execute(
+        """
+        SELECT
+            arg_min(file_name, file_order_key),
+            arg_max(file_name, file_order_key),
+            arg_max(published_at, file_order_key),
+            count(*),
+            max(year_yy) FILTER (WHERE kind = 'baseline'),
+            sum(n_articles),
+            sum(n_deletions),
+            sum(n_failed),
+            sum(n_book_records)
+        FROM source_file
+        WHERE processed_at IS NOT NULL
+        """
+    ).fetchone()
+    return {
+        "build_name": build_name(published),
+        "baseline_year": None if baseline_year is None else 2000 + baseline_year,
+        "first_file": first,
+        "cutoff_file": last,
+        # In UTC, not the session's zone: this lands in a file other people read.
+        "cutoff_published_at": (
+            None if published is None else published.astimezone(timezone.utc).isoformat()
+        ),
+        "files_loaded": files,
+        "article_versions_loaded": articles or 0,
+        "deletions_loaded": deletions or 0,
+        "records_failed": failed or 0,
+        "book_records_skipped": books or 0,
     }

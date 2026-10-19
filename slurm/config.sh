@@ -40,9 +40,13 @@
 # PUBMED2DB_DUCKDB_MEMORY_LIMIT, and a shell-wide value would silently cap the
 # export at the load's figure. Each script passes its own via `env`.
 #
-# Both are starting points rather than measured optima (#37). They sit below
-# each step's --mem to leave room for the lxml tree, the parsed records and the
-# Arrow batch, which share the same cgroup and are not covered by DuckDB's limit.
+# Both sit below each step's --mem to leave room for the lxml tree, the parsed
+# records and the Arrow batch, which share the same cgroup and are not covered
+# by DuckDB's limit. The load figure is measured: RSS settles at the cap plus
+# ~5-6 GiB at both 32GB and 48GB, with no change in rate, so 48GB under 64G
+# leaves ~11 GiB spare (slurm/README.md -> "Running `load`: how much memory?").
+# The export figure too: DuckDB fills whatever it is given (peak 153.3 GiB at
+# 160GB, 191.9 GiB at 200GB, same wall time), so 160GB is the measured one.
 #
 # `=` rather than `:=`, so `LOAD_MEMORY_LIMIT= ./slurm/submit.sh load` really
 # does leave DuckDB's own cgroup-derived default in place. With `:=` an empty
@@ -51,13 +55,14 @@
 # these two were not. An empty value is safe all the way down: the CLI's option
 # is falsy, so `db.connect` never issues a SET.
 : "${LOAD_MEMORY_LIMIT=48GB}"
-: "${EXPORT_MEMORY_LIMIT=200GB}"
+: "${EXPORT_MEMORY_LIMIT=160GB}"
 
-# Fast local scratch for DuckDB to spill into. Only the export is likely to need
-# it; the loader inserts file-by-file. Set it to empty (DUCKDB_TEMP_DIR=) to
-# leave DuckDB's default -- note the `=` rather than `:=` here, which is what
-# makes an explicit empty value stick instead of falling back to the default.
-: "${DUCKDB_TEMP_DIR=/local/scratch/duckdb_tmp}"
+# Fast local scratch for DuckDB to spill into, e.g. /local/scratch/duckdb_tmp
+# on a node that has one. Empty leaves DuckDB's default (next to the database
+# file), which is what every ht1 run has actually used: the old default path
+# does not exist there, so 04-export.sbatch warned and fell back on every run,
+# and neither export spilled anyway -- RSS stayed under the buffer-pool limit.
+: "${DUCKDB_TEMP_DIR=}"
 
 # uv's package cache. ~/.cache/uv is not always writable on the cluster.
 : "${UV_CACHE_DIR:=$PWD/../uv-cache}"
@@ -68,3 +73,24 @@ export UV_CACHE_DIR
 # raises the rate limit from 3 to 10 requests/second. Neither is ever logged.
 : "${NCBI_EMAIL:=}"
 : "${NCBI_API_KEY:=}"
+
+# What this step runs with, printed at the top of its log: the commit, the
+# allocation Slurm granted, and every setting above. A run's logs are the only
+# record it leaves, and the v1.1 build's memory limits had to be confirmed from
+# memory after the fact. NCBI_EMAIL and NCBI_API_KEY are left out: see above.
+# Each sbatch script calls this right after sourcing the file, so the values
+# printed are the ones the step then uses, overrides included.
+run_commit() {
+    git describe --always --dirty --match 'v*' 2>/dev/null || echo '(not a git checkout)'
+}
+
+log_run_settings() {
+    local name
+    echo "pubmed2db $(run_commit)"
+    for name in SLURM_JOB_ID SLURM_JOB_NAME SLURMD_NODENAME SLURM_MEM_PER_NODE \
+                SLURM_CPUS_PER_TASK DATA_DIR EXPORT_DIR MANIFEST_DIR SHARDS \
+                VALIDATE_SAMPLE_TOTAL LOAD_MEMORY_LIMIT EXPORT_MEMORY_LIMIT \
+                DUCKDB_TEMP_DIR UV_CACHE_DIR; do
+        echo "  $name=${!name-}"
+    done
+}

@@ -12,6 +12,13 @@ plus four fields of our own: `id`, [`identifiers`](#identifiers-in-the-json-expo
 [`publication_types`](#publication-types-in-the-json-export). The database itself
 uses PubMed's own field names.
 
+All three outputs — the database, the Parquet export and the NDJSON export —
+follow one versioned **data model**, currently 1.0.0, documented for consumers in
+[`docs/data-model.md`](./docs/data-model.md): what every table and field means,
+what PubMed data is left out, and how the design was decided. Each output carries
+its version, and the database documents its own columns
+(`SELECT table_name, column_name, comment FROM duckdb_columns()`).
+
 ## How it works
 
 Downloading and XML parsing reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
@@ -96,6 +103,13 @@ uv run pubmed2db --data-dir data validate data/json --email you@example.com
 
 `--data-dir data` is the default, so omitting it gives the same result.
 The DuckDB database is stored as `<data-dir>/pubmed.duckdb`; override with `--db`.
+
+Both exports finish by writing `metadata.json` into the output directory: the
+data model version, the record count, the corpus cutoff (the last file loaded,
+and when NCBI posted it), and a SHA-256 per file. The same hashes go into
+`SHA256SUMS`, so `sha256sum -c SHA256SUMS` checks a download with no JSON parser.
+`validate` checks the shards against `metadata.json`, and `status` prints the
+same cutoff.
 
 ### How the JSON export is written
 
@@ -186,12 +200,6 @@ JOIN publication_type pt USING (pmid, source_file)
 WHERE pt.type_name = 'Review';
 ```
 
-> **Names need a reload.** They are parsed at load time, and a database loaded
-> before this field existed stored only the MeSH ids. There, `export` writes
-> `"name": ""` for every type and logs a warning with the count until the corpus
-> is re-parsed. See [`load --force` or a fresh database?](#load---force-or-a-fresh-database);
-> `load --force` is enough, since the new columns are added automatically.
-
 ### Identifiers in the JSON export
 
 Alongside the DocumentMetadataAPI fields, each JSON record carries an
@@ -228,24 +236,6 @@ array is never empty and never null.
 Only DOIs and PMCIDs are promoted into this field. Any other `ArticleId` type
 PubMed supplies (`pii`, `mid`, …) is still loaded and is available in the
 `article_id` table and the Parquet export.
-
-> **Databases loaded before 2026-08-04 need rebuilding before this field is
-> trustworthy.** `identifiers` reads the `article_id` table, and until
-> "Extract cited PMIDs and article IDs ourselves" that table was populated by an
-> upstream parser that also swept up every *cited reference's* DOI and PMCID (see
-> `CLAUDE.md`). A database loaded after that is unaffected — this feature changed
-> nothing about how `article_id` is written. Nothing detects the stale rows
-> automatically, because the source files have not changed. `load --force`
-> re-parses the whole corpus and does replace those rows, but it cannot undo a
-> table that left the schema — a database that old still carries a populated
-> `reference_citation`, which no reload clears (see
-> [`load --force` or a fresh database?](#load---force-or-a-fresh-database)).
-> Load into a fresh one:
->
-> ```bash
-> rm data/pubmed.duckdb
-> uv run pubmed2db --data-dir data load
-> ```
 
 Three more group-level options tune DuckDB itself, which matters on a cluster:
 
@@ -329,6 +319,7 @@ FIELD ACCURACY  (240 records sampled: 15/shard x 16 shards, seed 0)
 
 NOT CHECKED
   - compared strictly against Entrez: article_title, volume, issue, pub_year, ...
+  - article_title compared after folding efetch's rendering (terminal period, [ ] around a translated title, [Not Available] for an empty title)
   - compared but never fails the run (assigned upstream after our last update file): identifiers
   - MeSH terms, authors, affiliations and grants are stored in the DB, never exported
 ```
@@ -398,22 +389,30 @@ A normal incremental run only re-parses files whose published checksum moved, so
 neither a parser fix nor a schema change reaches data that is already loaded.
 Two ways to apply one, and they are not interchangeable:
 
+> **A database from before data model 1.0 must be rebuilt.** Every command
+> refuses one, naming the problem and leaving the file untouched: 1.0 renamed and
+> dropped columns (see
+> [`docs/data-model.md`](./docs/data-model.md#changelog)),
+> which no migration can do in place. The same holds for a database from another
+> major version. An older *minor* version is upgraded on open, since it only
+> lacks columns.
+
 - **`load --force`** re-parses every local file and replaces its rows, so it
-  applies a *parsing* change to the whole corpus: roughly a baseline's worth of
-  time (~2–3 h), no re-download, and the database keeps its history.
+  applies a *parsing* change to the whole corpus: roughly a full load's worth of
+  time (about a day at corpus scale — see [`slurm/README.md`](./slurm/README.md#running-load-how-long---time)),
+  no re-download, and the database keeps its history.
 - **A fresh database** (delete `<data-dir>/pubmed.duckdb`, then `load`) is the
   answer whenever the *schema* changed, and the safer default if you are unsure.
 
-The asymmetry is that `schema.sql` only ever adds: `CREATE TABLE IF NOT EXISTS`
-plus explicit `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations. Nothing
-drops a table or a column, so a forced reload refreshes the rows of tables that
-still exist while a table removed from the schema keeps its rows forever —
-`reference_citation`, dropped during development, is exactly that case. A forced
-reload also leaves any pre-existing wrong rows in place for files it re-parses
-identically.
+The asymmetry is that within a major version `schema.sql` only ever adds:
+`CREATE TABLE IF NOT EXISTS` plus explicit `ALTER TABLE ... ADD COLUMN IF NOT
+EXISTS` migrations. A forced reload refreshes the rows a parser change affects,
+but it leaves any pre-existing wrong rows in place for files it re-parses
+identically, and only a rebuild is guaranteed to leave exactly the shape and
+rows the current code would write.
 
 Rebuilding costs a full `load` and nothing else — the downloaded files are not
-touched — so unless the corpus is already loaded on a machine where 2–3 hours of
+touched — so unless the corpus is already loaded on a machine where a day of
 `load` is cheaper than the disk churn, prefer the rebuild. At a new baseline year
 the question is moot: a fresh database is the recommended path anyway, since
 loading the new year into the old database stores a second version of every PMID
@@ -486,8 +485,9 @@ dimension reads from two NLM sources rather than one.
   file into a separate DuckDB file, then use a query that spans multiple files to either load everything into one
   file or to simply export it from the multiple files (using PMIDs to group related queries might not take very long?).
   Running it with 64G of memory seems sufficient.
-- `uv run pubmed2db export --format json` is fast but memory-hungry: 40,901,984 documents in ~23 minutes
-  (≈30k documents/s) at a peak RSS of 201.1 GiB, run with `--mem 256G` (an earlier run peaked at 199.6 GiB).
+- `uv run pubmed2db export --format json` is fast but memory-hungry: 41,153,516 documents in 13m 14s
+  (≈52k documents/s) at a peak RSS of 191.9 GiB, run with `--mem 256G` and a 200GB DuckDB memory limit
+  (153.3 GiB and 12m 03s under a 160GB limit — the peak follows the limit, not the query).
   Unlike `load`, its memory scales with the whole database rather than the largest input file — see
   [`slurm/README.md`](./slurm/README.md#running-export) for why, and for what to request on a cluster.
 - **`export` publishes in place, not atomically.** Both formats write straight into `--out`:

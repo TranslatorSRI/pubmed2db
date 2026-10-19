@@ -312,6 +312,13 @@ def test_cli_export_then_validate_needs_no_flags(staged_download):
     assert validate.returncode == 0, validate.stdout + validate.stderr
     assert "Validation PASS" in validate.stdout
     assert "2 record(s)" in validate.stdout
+    # The export's metadata.json was found and checked, and the report says
+    # which data model the export follows.
+    report = json.loads((out_dir / "validation_report.json").read_text())
+    assert report["data_model_version"] == "1.0.0"
+    assert any(
+        c["name"] == "export-metadata" and c["status"] == "pass" for c in report["checks_run"]
+    )
 
 
 def test_cli_rejects_a_non_positive_shard_count(tmp_path):
@@ -395,3 +402,36 @@ def test_env_var_names_are_written_down_once():
             f"{envvar} appears more than once in --help; the click marker "
             "should be its only mention"
         )
+
+
+def test_every_command_logs_the_duckdb_settings_it_runs_with(tmp_path, caplog):
+    """What DuckDB actually runs with, not what was asked for.
+
+    With no limit passed these are what it derived from the Slurm cgroup, so a
+    cluster log records the probe AGENTS.md asks to keep re-taking; with one
+    passed, they confirm it took.
+    """
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="pubmed2db.cli"):
+        result = CliRunner().invoke(
+            main, ["--db", str(tmp_path / "x.duckdb"), "--memory-limit", "1GB", "status"],
+        )
+    assert result.exit_code == 0, result.output
+    [line] = [r.getMessage() for r in caplog.records if r.getMessage().startswith("DuckDB ")]
+    # DuckDB reports its limit in binary units: 1GB is 953.6 MiB.
+    assert "memory_limit=953.6 MiB" in line
+    assert "threads=" in line
+    assert f"temp_directory={tmp_path / 'x.duckdb'}.tmp" in line
+
+
+def test_version_is_pyprojects():
+    """`__version__` is read from the installed metadata, so it is pyproject's;
+    it sat at a hand-copied 0.1.0 through two releases before that."""
+    import tomllib
+    from pathlib import Path
+
+    from pubmed2db import __version__
+
+    pyproject = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())
+    assert __version__ == pyproject["project"]["version"]

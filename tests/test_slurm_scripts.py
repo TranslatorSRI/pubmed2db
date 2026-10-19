@@ -10,6 +10,7 @@ Nothing runs ``sbatch``: ``submit.sh --dry-run`` prints what it would submit.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -506,18 +507,34 @@ def test_shards_tracks_the_export_allocation() -> None:
 #: default" is to pass it empty. Each must use `=` rather than `:=`, or the
 #: default is silently restored and the operator gets the opposite of what they
 #: asked for.
-CLEARABLE_SETTINGS = ["LOAD_MEMORY_LIMIT", "EXPORT_MEMORY_LIMIT", "DUCKDB_TEMP_DIR",
-                      "VALIDATE_SAMPLE_TOTAL"]
+CLEARABLE_SETTINGS = ["LOAD_MEMORY_LIMIT", "EXPORT_MEMORY_LIMIT", "VALIDATE_SAMPLE_TOTAL"]
+
+
+def test_spill_dir_is_opt_in() -> None:
+    """DUCKDB_TEMP_DIR defaults to empty -- DuckDB's own spill location.
+
+    It used to default to /local/scratch/duckdb_tmp, which does not exist on
+    ht1, so every export there warned and fell back to the default anyway. A
+    path here is for a node that has local scratch, and is passed explicitly.
+    """
+    result = subprocess.run(
+        ["bash", "-c", 'source slurm/config.sh; printf "%s" "$DUCKDB_TEMP_DIR"'],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
 
 
 @pytest.mark.parametrize("name", CLEARABLE_SETTINGS)
 def test_an_empty_value_stays_empty(name: str) -> None:
     """`:=` restores the default on an empty value; `=` keeps it empty.
 
-    This has bitten once already: DUCKDB_TEMP_DIR documented "set it empty to
-    use DuckDB's default" while using `:=`, so it did the opposite. The two
-    memory limits were written the same way and missed, so the rule is pinned
-    for all three rather than for the instance that was noticed.
+    This has bitten once already: DUCKDB_TEMP_DIR (since made opt-in, so no
+    longer in this list) documented "set it empty to use DuckDB's default"
+    while using `:=`, so it did the opposite. The two memory limits were
+    written the same way and missed, so the rule is pinned for every setting
+    of that shape rather than for the instance that was noticed.
     """
     result = subprocess.run(
         ["bash", "-c", f'source slurm/config.sh; printf "%s" "${name}"'],
@@ -579,3 +596,84 @@ def test_no_sample_size_is_passed_when_the_export_is_empty(sandbox: Path) -> Non
     result = run_validate(sandbox, NCBI_EMAIL="me@example.org")
     assert result.returncode == 0, result.stderr
     assert "--sample-size" not in result.stdout
+
+
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_every_step_logs_the_settings_it_runs_with(sandbox: Path, script: Path) -> None:
+    """The top of each step's log records its commit, allocation and settings.
+
+    The v1.1 build's memory limits had to be confirmed from memory after the
+    run, because nothing in its logs said what they were. An override must show
+    up as the value used. The API key must never show up at all; the email is
+    kept out of the block (validate still passes it to the CLI as a flag).
+    """
+    result = subprocess.run(
+        ["bash", f"slurm/{script.name}"],
+        cwd=sandbox, capture_output=True, text=True,
+        env={
+            "PATH": f"{sandbox / 'bin'}:/usr/bin:/bin",
+            "HOME": str(sandbox),
+            "SLURM_SUBMIT_DIR": str(sandbox),
+            "SLURM_JOB_ID": "138348",
+            "SLURM_MEM_PER_NODE": "65536",
+            "LOAD_MEMORY_LIMIT": "32GB",
+            "NCBI_EMAIL": "someone@example.org",
+            "NCBI_API_KEY": "not-a-real-key",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    # Not a git checkout here; on the cluster this is `git describe`'s output.
+    assert lines[0] == "pubmed2db (not a git checkout)", lines[0]
+    assert "  SLURM_JOB_ID=138348" in lines
+    assert "  SLURM_MEM_PER_NODE=65536" in lines
+    assert "  LOAD_MEMORY_LIMIT=32GB" in lines
+    # Defaults print as the value used; an empty spill dir prints empty.
+    assert "  EXPORT_MEMORY_LIMIT=160GB" in lines
+    assert "  DUCKDB_TEMP_DIR=" in lines
+    output = result.stdout + result.stderr
+    assert "not-a-real-key" not in output
+    assert "someone@example.org" not in output.split("UV_ARGS")[0]
+
+
+def _submit_with_stub_sbatch(tmp: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    sbatch = tmp / "sbatch"
+    sbatch.write_text('#!/bin/sh\necho "12345;ht1"\n')
+    sbatch.chmod(0o755)
+    return subprocess.run(
+        ["bash", str(SUBMIT), *args],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+        env={
+            "PATH": f"{tmp}:/usr/bin:/bin",
+            "HOME": str(REPO_ROOT),
+            "NCBI_EMAIL": "someone@example.org",
+            "DATA_DIR": str(tmp / "data"),
+        },
+    )
+
+
+def test_submit_appends_each_job_and_its_command_to_a_submit_log(tmp_path: Path) -> None:
+    """The command a run was submitted with is the one thing no step log sees.
+
+    One line per job, appended as each is submitted, so a chain that fails to
+    submit partway still records what did go in, and a second submission adds
+    to the history rather than replacing it.
+    """
+    for _ in range(2):
+        result = _submit_with_stub_sbatch(tmp_path, "export", "validate")
+        assert result.returncode == 0, result.stderr
+
+    lines = (tmp_path / "data" / "logs" / "submit.log").read_text().splitlines()
+    assert len(lines) == 4, lines
+    assert all("./slurm/submit.sh export validate: " in line for line in lines)
+    assert lines[0].endswith(": export    job 12345")
+    assert lines[1].endswith(": validate  job 12345 (after 12345)")
+    # A timestamp, then the commit: this test runs in the repo, so a real one.
+    assert re.match(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \S+ \./slurm", lines[0]), lines[0]
+    assert "(not a git checkout)" not in lines[0]
+
+
+def test_a_dry_run_writes_no_submit_log(tmp_path: Path) -> None:
+    result = _submit_with_stub_sbatch(tmp_path, "--dry-run", "all")
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "data" / "logs" / "submit.log").exists()

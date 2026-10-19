@@ -23,6 +23,7 @@
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 source slurm/config.sh
+log_run_settings
 
 : "${VALIDATE_OFFLINE:=0}"
 : "${VALIDATE_FAIL_ON_WARN:=0}"

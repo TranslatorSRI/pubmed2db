@@ -7,18 +7,30 @@ nulls, for absent values. Parquet export keeps PubMed's own field names.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
 
+from . import datamodel
 from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
 
 #: Shard filename stem; DuckDB appends the writer-thread index and the extension.
 _SHARD_STEM = "pubmed_metadata_"
+
+#: Written beside every export: what it is, what it was built from, and a
+#: checksum per file. See :func:`write_export_metadata`.
+METADATA_FILE = "metadata.json"
+
+#: The same checksums in ``sha256sum``'s own format, so a consumer can verify a
+#: download with ``sha256sum -c SHA256SUMS`` and no JSON parser.
+CHECKSUMS_FILE = "SHA256SUMS"
 
 logger = logging.getLogger(__name__)
 
@@ -35,13 +47,17 @@ _VERSIONED_CHILDREN = (
     "mesh_heading",
     "mesh_qualifier",
     "publication_type",
-    "grant_",
+    "article_grant",
     "article_id",
     "history",
 )
 
-#: Dimension/bookkeeping tables exported as-is.
-_OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid", "pipeline_run")
+#: Dimension/bookkeeping tables exported as-is. ``pubmed2db_metadata`` goes with
+#: them so a Parquet export carries its data model version, like the database.
+_OTHER_TABLES = (
+    "journal", "journal_issn", "source_file", "deleted_pmid", "pipeline_run",
+    "pubmed2db_metadata",
+)
 
 #: PubMed ``ArticleId/@IdType`` -> CURIE prefix for the JSON ``identifiers``
 #: field. ``doi`` is lowercase to match Babel's ``src/prefixes.py``, so those
@@ -439,7 +455,9 @@ _JSON_FIELDS: tuple[tuple[str, str], ...] = (
     # DOI nor a PMCID; such a record still gets its own PMID CURIE.
     ("identifiers", "list_prepend('PMID:' || la.pmid, COALESCE(ids.identifiers, []::VARCHAR[]))"),
     ("journal_name", "COALESCE(j.title, '')"),
-    ("journal_abbrev", "COALESCE(j.abbreviation_iso, j.abbreviation_medline, '')"),
+    # J_Entrez.txt's IsoAbbr equalled MedAbbr in 42,056 of 42,056 journals, so
+    # data model 1.0 keeps only the one column (#48).
+    ("journal_abbrev", "COALESCE(j.abbreviation_medline, '')"),
     ("article_title", "COALESCE(la.article_title, '')"),
     ("volume", "COALESCE(la.volume, '')"),
     ("issue", "COALESCE(la.issue, '')"),
@@ -482,7 +500,7 @@ JSON_FIELDS = tuple(name for name, _ in _JSON_FIELDS)
 #: bulk load, and `validate` sorts its own PMID manifest.
 _LATEST_METADATA_SQL = f"""
 WITH abs AS (
-    SELECT pmid, source_file, string_agg(text, ' ' ORDER BY seq) AS abstract
+    SELECT pmid, source_file, string_agg(text, ' ' ORDER BY position) AS abstract
     FROM abstract_text a
     -- Restrict to the latest versions *before* aggregating: without this the
     -- group-by spans the entire version history and throws the superseded
@@ -508,12 +526,9 @@ ids AS (
     GROUP BY pmid, source_file
 ),
 pts AS (
-    -- A NULL name or position is a row loaded before either was parsed (see
-    -- schema.sql); `export_json` warns about those. Ordering on the UI as well
-    -- keeps such a record's list deterministic until it is reloaded.
     SELECT pmid, source_file, list(
         {{'id': '{MESH_PREFIX}:' || type_ui, 'name': COALESCE(type_name, '')}}
-        ORDER BY position NULLS LAST, type_ui
+        ORDER BY position
     ) AS publication_types
     FROM publication_type pt
     WHERE EXISTS (
@@ -533,32 +548,6 @@ LEFT JOIN pts ON pts.pmid = la.pmid AND pts.source_file = la.source_file
     "PROJECTION",
     ",\n    ".join(f'{expr} AS "{name}"' for name, expr in _JSON_FIELDS),
 )
-
-
-def _warn_unnamed_publication_types(con: duckdb.DuckDBPyConnection) -> int:
-    """Warn if latest-version publication types predate the name column.
-
-    Names are parsed at load time, so a database loaded before they were ships
-    ``"name": ""`` for every type until it is reloaded — valid JSON, and silent
-    without this. Returns the count, for tests.
-    """
-    unnamed = con.execute(
-        """
-        SELECT count(*) FROM publication_type pt
-        WHERE pt.type_name IS NULL AND EXISTS (
-            SELECT 1 FROM _latest_snapshot la
-            WHERE la.pmid = pt.pmid AND la.source_file = pt.source_file
-        )
-        """
-    ).fetchone()[0]
-    if unnamed:
-        logger.warning(
-            "%d publication type(s) have no name because their files were loaded "
-            "before names were parsed; they export as \"name\": \"\". Run "
-            "`load --force` or rebuild the database to fill them.",
-            unnamed,
-        )
-    return unnamed
 
 
 def _shard_paths(out_dir: Path) -> list[Path]:
@@ -673,7 +662,6 @@ def export_json(
         total, f"at most {shards} shard(s)" if shards else "one shard per thread",
         out_dir, " (gzip)" if gzip_output else "",
     )
-    _warn_unnamed_publication_types(con)
 
     # DuckDB appends to a per-thread output directory rather than clearing it,
     # so a previous run's shards would survive this one and be read back as if
@@ -722,11 +710,64 @@ def export_json(
             con.execute(f"SET threads = {int(previous_threads)}")
 
     paths = _shard_paths(out_dir)
+    write_export_metadata(con, out_dir, paths, fmt="ndjson", records=total)
     logger.info(
         "exported %d documents to %d shard(s) in %s in %s (peak RSS %.1f GiB)",
         total, len(paths), out_dir, fmt_duration(time.monotonic() - start), peak_rss_gib(),
     )
     return paths
+
+
+def file_sha256(path: Path) -> str:
+    """SHA-256 of a file, as hex."""
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def write_export_metadata(
+    con: duckdb.DuckDBPyConnection, out_dir: Path, files: list[Path], *, fmt: str, records: int,
+) -> Path:
+    """Write ``metadata.json`` and ``SHA256SUMS``: the export's version, provenance and checksums.
+
+    An export travels without its database, so this is where a consumer learns
+    which data model it follows (``data_model_version``; check the major), what
+    corpus it holds (``corpus``: the cutoff file and when NCBI posted it, #57),
+    how many records to expect, and each file's size and SHA-256. ``validate``
+    checks the directory against it. ``SHA256SUMS`` repeats the hashes for
+    ``sha256sum -c``. Both are written last, after every file they describe,
+    and ``metadata.json`` after ``SHA256SUMS``, so its presence means the export
+    finished.
+
+    The hashes are for *identity*, not damage. A gzip shard that is truncated or
+    corrupted already fails to decompress: DuckDB writes each shard as one gzip
+    member, so a cut-off file raises ``EOFError`` and a flipped bit fails the
+    CRC (measured, 2026-10-19). What only a hash catches is a shard that is
+    intact but is not the one this export wrote, such as a leftover from an
+    earlier build, which Babel's docs warn about. A hash also guards a
+    ``--no-gzip`` export, which has no CRC at all.
+    """
+    from .status import corpus_provenance
+
+    hashes = {path.name: file_sha256(path) for path in sorted(files)}
+    (out_dir / CHECKSUMS_FILE).write_text(
+        "".join(f"{digest}  {name}\n" for name, digest in hashes.items())
+    )
+    content = {
+        "data_model_version": datamodel.DATA_MODEL_VERSION,
+        "format": fmt,
+        "records": records,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_by": datamodel.code_version(),
+        "database": datamodel.metadata(con),
+        "corpus": corpus_provenance(con),
+        "files": [
+            {"name": path.name, "bytes": path.stat().st_size, "sha256": hashes[path.name]}
+            for path in sorted(files)
+        ],
+    }
+    path = out_dir / METADATA_FILE
+    path.write_text(json.dumps(content, indent=2) + "\n")
+    return path
 
 
 def _copy_parquet(con: duckdb.DuckDBPyConnection, query: str, path: Path) -> None:
@@ -813,6 +854,12 @@ def export_parquet(
         written.append(path)
         _progress(len(written))
 
+    records = con.execute(
+        "SELECT count(*) FROM _latest_snapshot" if latest else "SELECT count(*) FROM article"
+    ).fetchone()[0]
+    write_export_metadata(
+        con, out_dir, written, fmt="parquet-latest" if latest else "parquet-all", records=records,
+    )
     logger.info(
         "exported %d Parquet file(s) to %s (peak RSS %.1f GiB)",
         len(written), out_dir, peak_rss_gib(),

@@ -205,36 +205,6 @@ def test_json_export_empty_string_not_null(loaded_con, tmp_path):
     assert all(value is not None for value in three.values())
 
 
-def test_publication_types_loaded_before_names_export_blank_and_warn(
-    loaded_con, tmp_path, caplog
-):
-    """A database loaded before names were parsed has NULL names. It must still
-    export valid records -- and say loudly that a reload is needed, because
-    `"name": ""` on every type is otherwise indistinguishable from success."""
-    from pubmed2db.export import export_json
-
-    loaded_con.execute("UPDATE publication_type SET type_name = NULL, position = NULL")
-    with caplog.at_level("WARNING", logger="pubmed2db.export"):
-        docs = _read_ndjson(export_json(loaded_con, tmp_path / "json"))
-
-    # Ordered by UI when no position is known, so the output stays stable.
-    assert docs["PMID:1001"]["publication_types"] == [
-        {"id": "MESH:D013485", "name": ""},
-        {"id": "MESH:D016420", "name": ""},
-        {"id": "MESH:D016422", "name": ""},
-    ]
-    assert "3 publication type(s) have no name" in caplog.text
-    assert "load --force" in caplog.text
-
-
-def test_publication_types_with_names_do_not_warn(loaded_con, tmp_path, caplog):
-    from pubmed2db.export import export_json
-
-    with caplog.at_level("WARNING", logger="pubmed2db.export"):
-        export_json(loaded_con, tmp_path / "json")
-    assert "publication type(s) have no name" not in caplog.text
-
-
 def test_json_sharding(loaded_con, tmp_path):
     """`shards` is a cap on writer threads, so it is a maximum, not a promise.
 
@@ -286,7 +256,9 @@ def test_reexport_removes_stale_shards(loaded_con, tmp_path):
     # The COPY writer names shards from FILENAME_PATTERN '{i}', so the exact
     # stem is DuckDB's business -- what matters is that exactly one shard is
     # left and it is the gzipped one this run wrote.
-    survivors = sorted(path.name for path in out.iterdir())
+    survivors = sorted(
+        path.name for path in out.iterdir() if path.name not in ("metadata.json", "SHA256SUMS")
+    )
     assert len(survivors) == 1, survivors
     assert survivors[0].endswith(".ndjson.gz")
 
@@ -397,6 +369,43 @@ def test_parquet_exports_every_table(loaded_con, tmp_path):
         ).fetchall()
     }
     assert {path.stem for path in written} == tables
+
+    # Parquet is the same data model as the database, column for column: a
+    # consumer can switch between the two without rewriting a query.
+    for path in written:
+        exported = loaded_con.execute(
+            f"SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM '{path.as_posix()}')"
+        ).fetchall()
+        assert exported == loaded_con.execute(
+            f"SELECT column_name, column_type FROM (DESCRIBE {path.stem})"
+        ).fetchall(), path.stem
+
+
+def test_exports_describe_themselves_in_metadata_json(loaded_con, tmp_path):
+    """An export travels without its database: metadata.json carries the data
+    model version, the corpus cutoff, the record count and a checksum per file."""
+    from pubmed2db.datamodel import DATA_MODEL_VERSION
+    from pubmed2db.export import export_json, export_parquet, file_sha256
+
+    for fmt, export in (
+        ("ndjson", lambda out: export_json(loaded_con, out)),
+        ("parquet-latest", lambda out: export_parquet(loaded_con, out)),
+    ):
+        out = tmp_path / fmt
+        files = export(out)
+        meta = json.loads((out / "metadata.json").read_text())
+        assert meta["data_model_version"] == DATA_MODEL_VERSION
+        assert meta["format"] == fmt
+        assert meta["records"] == 2  # PMIDs 1001 and 1003; 1002 was deleted
+        assert meta["corpus"]["cutoff_file"] == "pubmed25n0002.xml.gz"
+        assert meta["database"]["data_model_version"] == DATA_MODEL_VERSION
+        assert [(f["name"], f["sha256"]) for f in meta["files"]] == [
+            (path.name, file_sha256(path)) for path in sorted(files)
+        ]
+        # The same hashes, as `sha256sum -c` reads them: "<hex>  <name>".
+        assert (out / "SHA256SUMS").read_text().splitlines() == [
+            f"{f['sha256']}  {f['name']}" for f in meta["files"]
+        ]
 
 
 def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog):
@@ -682,3 +691,50 @@ def test_the_heartbeat_thread_never_dies_on_an_error(tmp_path, caplog, monkeypat
     assert still_running, "the heartbeat died on the first error"
     assert not thread.is_alive()
     assert any("could not log export progress" in r.getMessage() for r in caplog.records)
+
+
+def test_a_damaged_gzip_shard_fails_to_decompress(loaded_con, tmp_path):
+    """Why metadata.json's hashes are documented as identity, not integrity:
+    gzip already catches damage. That holds only while DuckDB writes each shard
+    as a single gzip member. A multi-member file truncated at a member boundary
+    is still valid gzip, just shorter, and only the record count would notice."""
+    import gzip
+    import zlib
+
+    from pubmed2db.export import export_json
+
+    (shard,) = export_json(loaded_con, tmp_path / "json", shards=1)
+    data = shard.read_bytes()
+
+    members, rest = 0, data
+    while rest:
+        decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        decompressor.decompress(rest)
+        rest = decompressor.unused_data
+        members += 1
+    assert members == 1
+
+    with pytest.raises(EOFError):
+        gzip.decompress(data[:-1])
+    flipped = bytearray(data)
+    flipped[len(data) // 2] ^= 0x01
+    with pytest.raises((gzip.BadGzipFile, zlib.error)):
+        gzip.decompress(bytes(flipped))
+
+
+def test_sha256sums_verifies_with_the_standard_tool(loaded_con, tmp_path):
+    """The file exists for consumers without a JSON parser, so check it with the
+    tool they would use: `sha256sum` (GNU) or `shasum -a 256` (macOS)."""
+    import shutil
+    import subprocess
+
+    from pubmed2db.export import export_json
+
+    out = tmp_path / "json"
+    export_json(loaded_con, out)
+    tool = (["sha256sum"] if shutil.which("sha256sum")
+            else ["shasum", "-a", "256"] if shutil.which("shasum") else None)
+    if tool is None:
+        pytest.skip("no sha256sum or shasum on this machine")
+    checked = subprocess.run([*tool, "-c", "SHA256SUMS"], cwd=out, capture_output=True, text=True)
+    assert checked.returncode == 0, checked.stdout + checked.stderr

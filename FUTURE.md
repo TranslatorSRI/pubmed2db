@@ -93,8 +93,6 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
   would have been the largest table in the database, and no consumer wants it.
   `parse._cited_pmids` is parked (uncalled) with re-enabling instructions in its
   docstring, and `test_no_reference_citation_table` keeps it from creeping back.
-  A database built before the removal keeps a stale, populated table; `DROP TABLE
-  reference_citation` clears it.
 
 ### TODO: investigate the two reference bugs before reporting them upstream (#34)
 
@@ -132,34 +130,23 @@ Still open:
   the above. Also worth deciding at that point whether our other additions (raw
   `PubDate` components, `DeleteCitation` handling) are worth contributing.
 
-### TODO: existing databases carry the bad rows
-
-`article_id` rows written before the fix are still wrong in any database loaded
-with the previous code, and that is not corrected by a normal incremental run —
-`needs_load` only re-parses files whose checksum moved. Such a database also
-still has a populated `reference_citation` table, which nothing will clear.
-
-- [x] **Rebuild from scratch, don't `load --force`.** Decided and written into
-  the README's "Re-running after a gap". `load --force` applies a parsing change
-  to the whole corpus, but `schema.sql` only ever adds — `CREATE TABLE IF NOT
-  EXISTS` plus `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` — so a table dropped
-  from the schema keeps its rows through any number of forced reloads, and
-  `reference_citation` is exactly that case. Both cost one full `load`; only the
-  rebuild is guaranteed to leave the shape the schema describes.
-
 ## Scale & performance (full PubMed is ~38M articles, ~1500+ files)
 
 - **Loader throughput — done (serial).** `load.load_parsed` now inserts each
   file's rows columnar via Arrow `INSERT ... SELECT` (~200k rows/s) instead of
   row-by-row `executemany` (~2.5k rows/s), cutting per-file load from ~20 min to
-  ~5–6 s. Peak RSS is logged per file (~0.8 GiB for a 5k-article file); see
-  `slurm/README.md` and `scripts/benchmark_load.py`.
-- **Loader parallelism — deferred.** Serial load of a full baseline is now ~2–3 h,
-  likely fine. To go faster, parallelize across files: since DuckDB is
-  single-writer, have parallel Slurm tasks each parse one XML → write per-file
-  **Parquet shards** (no shared writer), then a single step does
+  ~5–6 s against a small database. At corpus scale it is 30 s/file on an empty
+  database rising to ~65 s/file by the end of the baseline — 21h 29m for 1,636
+  files on 2026-09-25 — because insert cost grows with the database, not
+  because of memory (two runs with different limits matched within 2%). Both
+  RSS figures are logged per file; see `slurm/README.md` and
+  `scripts/benchmark_load.py`.
+- **Loader parallelism — deferred.** A serial full load is a day. To go faster,
+  overlap parse with insert first (#26), then parallelize across files: since
+  DuckDB is single-writer, have parallel Slurm tasks each parse one XML → write
+  per-file **Parquet shards** (no shared writer), then a single step does
   `INSERT INTO t SELECT * FROM read_parquet('shards/*')`. Bigger rearchitecture;
-  do it only if 2–3 h serial becomes a bottleneck.
+  do it only if a day becomes a bottleneck.
 - **`latest_article` view** runs a window over the entire `article` table on every
   read. At full scale, consider an index on `article(pmid, file_order_key)` or
   materializing the latest set into a table before export.
@@ -170,8 +157,10 @@ still has a populated `reference_citation` table, which nothing will clear.
   while the other seven idled. DuckDB now writes the NDJSON itself
   (`COPY ... FORMAT JSON`, one file per writer thread) with no sort: 3x faster
   end-to-end on a 2M-document benchmark (112.9s → 35.5s), byte-identical record
-  sets. Closes issue #8. **Still to record from a cluster run:** the new peak
-  RSS, which decides whether `--mem=256G` can come down.
+  sets. Closes issue #8. At corpus scale: 12–13 minutes against 18–23 before,
+  and the peak now follows the DuckDB memory limit (153.3 GiB at 160GB, 191.9
+  at 200GB) rather than sitting at ~201 GiB; whether `--mem=256G` itself can
+  come down is #42.
 - **No indexes** are created on the big per-version tables yet (kept lean for bulk
   load). Add them if interactive querying of the DB becomes a use case.
 
@@ -226,10 +215,13 @@ still has a populated `reference_citation` table, which nothing will clear.
   authoritative one. A DOI can also appear as
   `Article/ELocationID[@EIdType="doi"]`, normally as a duplicate; parse it as a
   fallback if records ever turn up with the latter but not the former.
-- **Grounding is off.** We call `pubmed_downloader`'s parser with `ground=False`
-  (no MeSH/ROR/ORCID lookups), so `author_affiliation.ror` etc. are unpopulated.
-  The library's `[process]` extra (pyobo/orcid-downloader) could enable grounding
-  if needed — at significant dependency + runtime cost.
+- **Grounding is off.** We call `pubmed_downloader`'s parser with every grounder
+  `None` (no MeSH/ROR/ORCID lookups). Data model 1.0 dropped the always-NULL
+  `author_affiliation.ror` column rather than ship it empty, so grounding would
+  return as new columns (a minor version bump). The library's `[process]` extra
+  (pyobo/orcid-downloader) could enable it if needed — at significant dependency
+  + runtime cost. Note that PubMed's own `AffiliationInfo/Identifier` (ROR, GRID,
+  ISNI) is not read either; that needs no grounding at all.
 
 ## Misc
 

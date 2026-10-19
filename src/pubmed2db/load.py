@@ -21,6 +21,7 @@ import requests
 from lxml import etree
 from pubmed_downloader.utils import Collective
 
+from .datamodel import record_load
 from .db import NEEDS_LOAD_SQL, parse_file_name, record_run
 from .parse import ParsedArticle, ParsedFile, parse_file
 from .util import current_rss_gib, download_file, eta_str, fmt_duration, peak_rss_gib
@@ -36,7 +37,7 @@ _VERSIONED_TABLES = (
     "mesh_heading",
     "mesh_qualifier",
     "publication_type",
-    "grant_",
+    "article_grant",
     "article_id",
     "history",
     "deleted_pmid",
@@ -70,18 +71,22 @@ def _article_rows(parsed: ParsedArticle, source_file: str, order_key: int) -> di
         )
     )
 
-    for seq, text in enumerate(a.abstract):
+    for position, text in enumerate(a.abstract):
         rows["abstract_text"].append(
-            (pmid, source_file, seq, text.label, text.category, text.text)
+            (pmid, source_file, position, text.label, text.category, text.text)
         )
 
     for author in a.authors:
         is_collective = isinstance(author, Collective)
+        # Upstream numbers every <Author> from 1 and then drops the ones it
+        # cannot name, so this is the XML index made 0-based like every other
+        # ordering column: a gap is an author upstream dropped, not a bug here.
+        position = author.position - 1
         rows["author"].append(
             (
                 pmid,
                 source_file,
-                author.position,
+                position,
                 "collective" if is_collective else "author",
                 author.name,
                 None if is_collective else author.orcid,
@@ -89,26 +94,28 @@ def _article_rows(parsed: ParsedArticle, source_file: str, order_key: int) -> di
             )
         )
         if not is_collective:
-            for aff in author.affiliations:
-                ror = aff.reference.curie if aff.reference else None
+            for aff_position, aff in enumerate(author.affiliations):
                 rows["author_affiliation"].append(
-                    (pmid, source_file, author.position, aff.name, ror)
+                    (pmid, source_file, position, aff_position, aff.name)
                 )
 
-    for heading in a.headings:
+    # A descriptor can repeat within one record, so a qualifier is tied to its
+    # heading by position; the descriptor UI alone was ambiguous.
+    for heading_position, heading in enumerate(a.headings):
         rows["mesh_heading"].append(
-            (pmid, source_file, heading.mesh_id, heading.name, heading.major)
+            (pmid, source_file, heading_position, heading.mesh_id, heading.name, heading.major)
         )
         for qualifier in heading.qualifiers or []:
             rows["mesh_qualifier"].append(
-                (pmid, source_file, heading.mesh_id, qualifier.mesh_id, qualifier.name, qualifier.major)
+                (pmid, source_file, heading_position, heading.mesh_id,
+                 qualifier.mesh_id, qualifier.name, qualifier.major)
             )
 
     for position, (type_ui, type_name) in enumerate(parsed.publication_types):
-        rows["publication_type"].append((pmid, source_file, type_ui, type_name, position))
+        rows["publication_type"].append((pmid, source_file, position, type_ui, type_name))
 
     for g in a.grants:
-        rows["grant_"].append((pmid, source_file, g.id, g.acronym, g.agency, g.country))
+        rows["article_grant"].append((pmid, source_file, g.id, g.acronym, g.agency, g.country))
 
     for id_type, id_value in parsed.article_ids:
         rows["article_id"].append((pmid, source_file, id_type, id_value))
@@ -330,15 +337,18 @@ def load_files(
             "%d of %d file(s) failed to load and were skipped: %s",
             len(failed), total, ", ".join(failed),
         )
+    if loaded:
+        record_load(con)
 
     return loaded, failed
 
 
 #: Maps keys in NLM's J_Entrez/J_Medline overview file to our journal columns.
+#: ``IsoAbbr`` is not read: it equalled ``MedAbbr`` in 42,056 of 42,056 journals,
+#: so data model 1.0 dropped the column that held it (#48).
 _JOURNAL_KEYS = {
     "JournalTitle": "title",
     "MedAbbr": "abbreviation_medline",
-    "IsoAbbr": "abbreviation_iso",
     "NlmId": "nlm_catalog_id",
 }
 
@@ -628,13 +638,12 @@ def load_journals(con: duckdb.DuckDBPyConnection) -> int:
         con.execute("DELETE FROM journal")
         con.execute("DELETE FROM journal_issn")
         con.executemany(
-            "INSERT INTO journal VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO journal VALUES (?,?,?,?,?,?)",
             [
                 (
                     nlm_id,
                     rec.get("title"),
                     rec.get("abbreviation_medline"),
-                    rec.get("abbreviation_iso"),
                     # The overview file has no publication years; the serial
                     # catalog does. A journal the catalog does not cover (~2% of
                     # them, mostly proceedings volumes) keeps NULLs rather than

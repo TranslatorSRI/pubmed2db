@@ -8,10 +8,14 @@ from contextlib import closing
 from pathlib import Path
 
 import click
+import duckdb
 from click.core import ParameterSource
 
 from . import __version__
+from .datamodel import IncompatibleDatabase
 from .db import connect
+
+log = logging.getLogger(__name__)
 
 def _load_local(con, *, force: bool, require_files: bool) -> None:
     """Load every downloaded file, reporting the counts the CLI prints.
@@ -128,13 +132,31 @@ def main(
 
 
 def _connect(ctx: click.Context):
-    """Open the database with the group-level DuckDB tuning options applied."""
-    return connect(
-        ctx.obj["db"],
-        threads=ctx.obj["threads"],
-        temp_directory=ctx.obj["temp_dir"],
-        memory_limit=ctx.obj["memory_limit"],
+    """Open the database with the group-level DuckDB tuning options applied.
+
+    Logs what DuckDB actually runs with, which is not always what was asked
+    for: with no limit passed, ``memory_limit`` and ``threads`` are what it
+    derived from the Slurm cgroup, so every step that sets none (download,
+    journals, validate) records the cgroup probe AGENTS.md asks to re-take.
+    """
+    try:
+        con = connect(
+            ctx.obj["db"],
+            threads=ctx.obj["threads"],
+            temp_directory=ctx.obj["temp_dir"],
+            memory_limit=ctx.obj["memory_limit"],
+        )
+    except IncompatibleDatabase as exc:
+        raise click.ClickException(f"{ctx.obj['db']}: {exc}") from exc
+    memory_limit, threads, temp_directory = con.execute(
+        "SELECT current_setting('memory_limit'), current_setting('threads'), "
+        "current_setting('temp_directory')"
+    ).fetchone()
+    log.info(
+        "DuckDB %s: memory_limit=%s, threads=%s, temp_directory=%s",
+        duckdb.__version__, memory_limit, threads, temp_directory,
     )
+    return con
 
 
 @main.command()
@@ -325,11 +347,18 @@ def validate(
     con = None
     db_path = Path(ctx.obj["db"])
     if db_path.exists():
-        candidate = _connect(ctx)
-        if articles_loaded(candidate):
-            con = candidate
+        try:
+            candidate = _connect(ctx)
+        except click.ClickException as exc:
+            # The checks that need it are optional, and the export can be
+            # validated without them: a database from another data model is a
+            # reason to skip those, not to refuse the whole run.
+            click.echo(f"Warning: not using the database: {exc.message}", err=True)
         else:
-            candidate.close()
+            if articles_loaded(candidate):
+                con = candidate
+            else:
+                candidate.close()
 
     try:
         if online and not email:
@@ -370,14 +399,15 @@ def validate(
 
 def _fmt_ts(ts: object) -> str:
     """Render a timestamp for the status report, or 'never' if missing."""
-    return ts.strftime("%Y-%m-%d %H:%M") if ts is not None else "never"
+    # Timestamps are TIMESTAMPTZ, read back in DuckDB's session zone; name it.
+    return ts.strftime("%Y-%m-%d %H:%M %Z").rstrip() if ts is not None else "never"
 
 
 @main.command()
 @click.pass_context
 def status(ctx: click.Context) -> None:
     """Report what's been downloaded, loaded, and is ready to export."""
-    from .status import export_readiness, summarize
+    from .status import corpus_provenance, export_readiness, summarize
 
     with closing(_connect(ctx)) as con:
         s = summarize(con)
@@ -417,6 +447,14 @@ def status(ctx: click.Context) -> None:
                 "→ run `pubmed2db load`"
             )
         click.echo(f"           last load: {_fmt_ts(s['last_load'])}")
+        provenance = corpus_provenance(con)
+        if provenance["cutoff_file"]:
+            posted = provenance["cutoff_published_at"]
+            click.echo(
+                f"           cutoff: {provenance['cutoff_file']}"
+                + (f", posted by NCBI {posted} (build name {provenance['build_name']})"
+                   if posted else " (posting time unknown)")
+            )
         if s["skipped_records"]:
             # Records the loader could not store: extractor rejections plus book
             # citations. Kept visible because they are otherwise invisible —

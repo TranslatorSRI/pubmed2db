@@ -9,6 +9,8 @@ from pathlib import Path
 
 import duckdb
 
+from .datamodel import check_compatible, stamp
+
 #: Filenames look like ``pubmed25n1274.xml.gz`` -> (year_yy=25, file_number=1274).
 _FILENAME_RE = re.compile(r"^pubmed(\d{2})n(\d+)\.xml\.gz$")
 
@@ -40,6 +42,10 @@ def connect(
 ) -> duckdb.DuckDBPyConnection:
     """Open (creating if needed) the DuckDB database and ensure the schema.
 
+    Raises :class:`pubmed2db.datamodel.IncompatibleDatabase` for a database
+    written under a data model this code cannot use — including any built
+    before data model 1.0 — and leaves that file untouched.
+
     ``threads`` caps DuckDB's thread pool. It is rarely needed: DuckDB reads the
     Slurm cgroup's CPU quota and already sizes the pool from ``--cpus-per-task``
     (measured on duckdb 1.5.4 — 2 threads under ``--cpus-per-task=2`` on a
@@ -65,7 +71,14 @@ def connect(
     if memory_limit is not None:
         config["memory_limit"] = memory_limit
     con = duckdb.connect(str(path), config=config)
-    init_schema(con)
+    try:
+        # Before schema.sql, so a database we refuse is left untouched.
+        check_compatible(con)
+        init_schema(con)
+        stamp(con)
+    except BaseException:
+        con.close()
+        raise
     return con
 
 
@@ -92,12 +105,15 @@ def register_source_file(
     *,
     kind: str,
     published_md5: str | None = None,
+    published_at: datetime | None = None,
     mark_downloaded: bool = True,
 ) -> None:
     """Insert or update a row in the ``source_file`` registry.
 
     Updates ``published_md5`` (and ``downloaded_at``) without disturbing
-    ``processed_at``/``n_articles`` from any prior load.
+    ``processed_at``/``n_articles`` from any prior load. A ``published_at`` of
+    ``None`` keeps the one already recorded: an unreadable header says nothing
+    about when the file was posted.
     """
     year_yy, file_number, order_key = parse_file_name(file_name)
     ts = datetime.now(timezone.utc) if mark_downloaded else None
@@ -105,13 +121,14 @@ def register_source_file(
         """
         INSERT INTO source_file
             (file_name, kind, year_yy, file_number, file_order_key,
-             published_md5, downloaded_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+             published_md5, published_at, downloaded_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (file_name) DO UPDATE SET
             published_md5 = excluded.published_md5,
+            published_at = COALESCE(excluded.published_at, source_file.published_at),
             downloaded_at = COALESCE(excluded.downloaded_at, source_file.downloaded_at)
         """,
-        [file_name, kind, year_yy, file_number, order_key, published_md5, ts],
+        [file_name, kind, year_yy, file_number, order_key, published_md5, published_at, ts],
     )
 
 

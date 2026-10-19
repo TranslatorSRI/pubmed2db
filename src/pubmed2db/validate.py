@@ -48,11 +48,14 @@ import duckdb
 import requests
 from lxml import etree
 
+from .datamodel import stored_version
 from .export import (
     ID_PREFIXES,
     JSON_FIELDS,
+    METADATA_FILE,
     MESH_PREFIX,
     _MONTH_ABBR,
+    file_sha256,
     normalize_day,
     normalize_month,
     _year_from_medline_date,
@@ -75,6 +78,8 @@ EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 EXPECTED_FIELDS = frozenset(JSON_FIELDS)
 
 #: Fields compared strictly against Entrez; a high mismatch rate here is an error.
+#: (``article_title`` is compared through :func:`_normalize_title`, which folds
+#: efetch's rendering of the title, not its wording.)
 CORE_FIELDS = ("article_title", "volume", "issue",
                "pub_year", "pub_month", "pub_day")
 
@@ -331,6 +336,59 @@ def find_shards(export_dir: Path) -> list[Path]:
     )
 
 
+def check_export_metadata(
+    export_dir: Path, shards: list[Path], records_total: int, report: Report
+) -> dict | None:
+    """Hold the directory to the ``metadata.json`` its export wrote; return that metadata.
+
+    The export records each shard's SHA-256 and the record count, so a shard
+    that is missing, extra, or replaced since — even by an intact one with the
+    same record count — is caught here rather than by whoever downloads it.
+    Damage is caught earlier and without this: a truncated or corrupted gzip
+    shard fails ``shard-readable``. An export without the file (one from before
+    data model 1.0) is a ``skip``: nothing to check against, not a failure.
+    """
+    path = export_dir / METADATA_FILE
+    if not path.is_file():
+        report.record(
+            "export-metadata", "structure", f"{METADATA_FILE} matches the shards", SKIP,
+            f"no {METADATA_FILE} (an export from before data model 1.0)",
+        )
+        return None
+    try:
+        metadata = json.loads(path.read_text())
+        listed = {f["name"]: f for f in metadata["files"]}
+        expected_records = metadata["records"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        report.record(
+            "export-metadata", "structure", f"{METADATA_FILE} matches the shards", FAIL,
+            f"unreadable: {exc}", code="export_metadata_unreadable",
+            message=f"{METADATA_FILE} could not be read.", count=1, see="inputs",
+        )
+        return None
+
+    problems = []
+    found = {p.name for p in shards}
+    problems += [f"{name}: listed but missing" for name in sorted(set(listed) - found)]
+    problems += [f"{name}: present but not listed" for name in sorted(found - set(listed))]
+    for shard in shards:
+        entry = listed.get(shard.name)
+        if entry is not None and file_sha256(shard) != entry.get("sha256"):
+            problems.append(f"{shard.name}: checksum differs from {METADATA_FILE}")
+    if records_total != expected_records:
+        problems.append(f"{records_total:,} record(s) read, {expected_records:,} exported")
+    report.record(
+        "export-metadata", "structure", f"{METADATA_FILE} matches the shards",
+        FAIL if problems else PASS,
+        "; ".join(problems) or f"{len(listed)} file(s) and {expected_records:,} record(s) as listed",
+        code="export_metadata_mismatch",
+        message=f"The shards differ from what {METADATA_FILE} says the export wrote.",
+        count=len(problems), see="checks_run",
+        detail={"problems": _capped(problems)},
+    )
+    return metadata
+
+
 def _shard_sizes(shards: list[Path]) -> dict[Path, int]:
     """Byte size of each shard, ``0`` for one that cannot be stat'd.
 
@@ -362,6 +420,7 @@ def _normalize(value: str) -> str:
 
 #: Fields whose two sides can be *written* differently while describing the same
 #: value, so they are compared through :func:`_normalize_date`.
+#: ``article_title`` is the same idea through :func:`_normalize_title`.
 _DATE_RENDERED_FIELDS = frozenset({"pub_date"})
 
 
@@ -374,7 +433,11 @@ def _compare_value(field: str, record: dict) -> str:
         # of `publication_types`, which ships PubMed's own.
         return json.dumps(raw, sort_keys=True, ensure_ascii=False)
     value = _normalize(str(raw))
-    return _normalize_date(value) if field in _DATE_RENDERED_FIELDS else value
+    if field in _DATE_RENDERED_FIELDS:
+        return _normalize_date(value)
+    if field == "article_title":
+        return _normalize_title(value)
+    return value
 
 
 def _normalize_date(value: str) -> str:
@@ -402,6 +465,31 @@ def _normalize_date(value: str) -> str:
         else [parts[0], normalize_month(parts[1])] if len(parts) == 2
         else [parts[0], normalize_month(parts[1]), normalize_day(parts[2])] + parts[3:]
     )
+
+
+def _normalize_title(value: str) -> str:
+    """Collapse efetch's *renderings* of an article title, for comparison only.
+
+    The export ships the archival ``<ArticleTitle>`` verbatim; efetch re-renders
+    it. All four title mismatches in the 2026-09-26 corpus sample were this,
+    checked against the raw baseline files:
+
+    - a terminal period added where the archival title has none
+      (PMID:10205128 ``"…in health care "`` vs. ``"…in health care."``,
+      PMID:36326224 ``"[…how?]"`` vs. ``"[…how?]."``);
+    - the ``[…]`` marking a translated title dropped
+      (PMID:5684047 ``"[Surgical results…]."`` vs. ``"Surgical results…."``);
+    - an empty ``<ArticleTitle/>`` served as ``"[Not Available]."``
+      (PMID:33511611).
+
+    Fold all three on both sides; a change of wording still differs. The period
+    comes off before the brackets because efetch writes ``[…].``. As with
+    :func:`_normalize_date`, nothing here reaches the export.
+    """
+    value = _normalize(value).removesuffix(".")
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+    return "" if value == "Not Available" else value
 
 
 # --------------------------------------------------------------------------- #
@@ -1150,9 +1238,20 @@ def check_fields(
             core_comparisons += 1
             if ratio < abstract_threshold:
                 core_mismatch += 1
-                mismatches.append(
-                    {"pmid": pmid, "field": "abstract", "similarity": round(ratio, 3)}
-                )
+                if exp_abs and ent_abs:
+                    mismatches.append(
+                        {"pmid": pmid, "field": "abstract", "similarity": round(ratio, 3)}
+                    )
+                else:
+                    # One side is blank: that is missing or extra data, not
+                    # text that diverged. Carry the two values, as CORE_FIELDS
+                    # do, so `_mismatch_kind` reads it as exported_blank /
+                    # entrez_blank rather than "possible truncation". (PMID
+                    # 4825553: no <Abstract> in the baseline XML, efetch has one.)
+                    mismatches.append({
+                        "pmid": pmid, "field": "abstract",
+                        "exported": exported.get("abstract"), "entrez": ent_abs,
+                    })
 
         for f in SOFT_FIELDS:
             if _compare_value(f, exported) != _compare_value(f, entrez):
@@ -1508,6 +1607,10 @@ def run_validation(
         peak_rss_gib(),
     )
 
+    export_metadata = check_export_metadata(
+        export_dir, shards, structure.records_total, report
+    )
+
     logger.info("checking coverage...")
     check_coverage(
         report, exported_count=structure.records_total, con=con, online=online,
@@ -1571,6 +1674,13 @@ def run_validation(
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "duration": fmt_duration(time.monotonic() - start),
         "peak_rss_gib": round(peak_rss_gib(), 3),
+        # The data model the export follows, from its metadata.json, else from
+        # the database it was validated alongside. A consumer checks the major.
+        "data_model_version": (
+            export_metadata["data_model_version"] if export_metadata
+            else stored_version(con) if con is not None
+            else None
+        ),
         "inputs": {
             "export_dir": str(export_dir),
             "shards": [p.name for p in shards],
@@ -1680,6 +1790,8 @@ def _not_checked(report: dict) -> list[str]:
     threshold = report["inputs"].get("abstract_threshold")
     derived = [
         f"compared strictly against Entrez: {', '.join(CORE_FIELDS)}",
+        "article_title compared after folding efetch's rendering (terminal "
+        "period, [ ] around a translated title, [Not Available] for an empty title)",
         *(
             f"compared but never fails the run ({reason}): {', '.join(fields)}"
             for reason, fields in SOFT_FIELD_REASONS.items()

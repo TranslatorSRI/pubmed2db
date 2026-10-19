@@ -42,6 +42,8 @@ step_file() {
 
 dry_run=0
 requested=()
+# Kept before the loop below shifts it away, for the submit log.
+invocation="$*"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -148,16 +150,22 @@ for step in "${requested[@]}"; do
     # chain on exactly the sites where it is hardest to debug.
     job_id="${job_id%%;*}"
     if [[ -n "$previous_job" ]]; then
-        printf 'submitted %-9s job %s (after %s)\n' "$step" "$job_id" "$previous_job"
+        line=$(printf '%-9s job %s (after %s)' "$step" "$job_id" "$previous_job")
     else
-        printf 'submitted %-9s job %s\n' "$step" "$job_id"
+        line=$(printf '%-9s job %s' "$step" "$job_id")
     fi
+    echo "submitted $line"
+    # Appended one job at a time, so a chain that fails to submit partway still
+    # records what did go in. The step logs record everything else a run used
+    # (config.sh's log_run_settings); this is the one thing none of them sees.
+    printf '%s %s ./slurm/submit.sh %s: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" \
+        "$(run_commit)" "$invocation" "$line" >> "$log_dir/submit.log"
     previous_job="$job_id"
 done
 
 if [[ "$dry_run" == "0" ]]; then
     echo
-    echo "Logs:    $log_dir/pubmed2db-<step>-<jobid>.out"
+    echo "Logs:    $log_dir/pubmed2db-<step>-<jobid>.out (submissions in $log_dir/submit.log)"
     echo "Watch:   squeue -u \"\$USER\""
     echo "Cancel:  scancel <jobid>   (afterok dependents are cancelled with it)"
 fi
