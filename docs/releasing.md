@@ -20,11 +20,14 @@ it, and both tags are cut from it.
 - Raise the **major** version when an existing JSON field or Parquet column is renamed, removed or changes meaning.
 - Add a third component (`v1.1.1`) for a re-release that only fixes something.
 
+**The data model has its own version** (`datamodel.DATA_MODEL_VERSION`, 1.0 since the build after `2026sep26`), and it is what consumers pin. It follows the same minor/major rule, but it moves only when the shape of the outputs does, not with every code release. [`docs/data-model.md`](./data-model.md#versioning-and-stability) defines it. A release that changes it says so in its release PR and its GitHub release notes, with the new version and what changed. A major bump also says that existing databases must be rebuilt, since pubmed2db refuses to open them.
+
 ## Steps
 
 1. **Plan.**
    - Open a milestone named for the version, with the planned build date as its due date. It is named for the version, not the date, so a build that slips does not leave it misnamed; the data-build tag records the actual date.
    - Put the build's issues and PRs on it. An item the run only has to *observe*, such as a measurement read from its logs, goes on the next milestone, with a line in the release PR's post-run checklist to record what the run showed.
+   - Decide whether the release changes the data model. `tests/test_data_model.py` fails on any shape change that was not bumped, so the question has to be answered before the release branch is green.
    - Feature PRs may be stacked on each other, and each is reviewed on its own.
 
 2. **Cut the release branch.**
@@ -52,7 +55,9 @@ it, and both tags are cut from it.
    Use the day the export finished, which need not be the milestone's date
    (`2026aug21` was a run that started on the 20th). The better name is the
    date of the last update file the build loaded, since that is the cutoff —
-   the next file belongs to the next build — but nothing reports it yet (#57).
+   the next file belongs to the next build. `status` and the export's
+   `metadata.json` (`corpus.cutoff_file`, `corpus.cutoff_published_at`) now
+   report it. Switching the tag convention to it is a separate decision (#57).
 
    Once the tag exists, a bare `git describe` names the *build*, not the version: `2026sep26` on the tagged commit, `2026sep26-7-gaa2b666` seven commits later. Before it exists, it names the nearest version tag instead (`v1.0-26-gfca8601`), which reads like a version and is not one. Ask for the one you mean:
 

@@ -93,8 +93,6 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
   would have been the largest table in the database, and no consumer wants it.
   `parse._cited_pmids` is parked (uncalled) with re-enabling instructions in its
   docstring, and `test_no_reference_citation_table` keeps it from creeping back.
-  A database built before the removal keeps a stale, populated table; `DROP TABLE
-  reference_citation` clears it.
 
 ### TODO: investigate the two reference bugs before reporting them upstream (#34)
 
@@ -131,21 +129,6 @@ Still open:
 - [ ] **Then decide: report upstream, or keep the workaround local.** Only after
   the above. Also worth deciding at that point whether our other additions (raw
   `PubDate` components, `DeleteCitation` handling) are worth contributing.
-
-### TODO: existing databases carry the bad rows
-
-`article_id` rows written before the fix are still wrong in any database loaded
-with the previous code, and that is not corrected by a normal incremental run —
-`needs_load` only re-parses files whose checksum moved. Such a database also
-still has a populated `reference_citation` table, which nothing will clear.
-
-- [x] **Rebuild from scratch, don't `load --force`.** Decided and written into
-  the README's "Re-running after a gap". `load --force` applies a parsing change
-  to the whole corpus, but `schema.sql` only ever adds — `CREATE TABLE IF NOT
-  EXISTS` plus `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` — so a table dropped
-  from the schema keeps its rows through any number of forced reloads, and
-  `reference_citation` is exactly that case. Both cost one full `load`; only the
-  rebuild is guaranteed to leave the shape the schema describes.
 
 ## Scale & performance (full PubMed is ~38M articles, ~1500+ files)
 
@@ -232,10 +215,13 @@ still has a populated `reference_citation` table, which nothing will clear.
   authoritative one. A DOI can also appear as
   `Article/ELocationID[@EIdType="doi"]`, normally as a duplicate; parse it as a
   fallback if records ever turn up with the latter but not the former.
-- **Grounding is off.** We call `pubmed_downloader`'s parser with `ground=False`
-  (no MeSH/ROR/ORCID lookups), so `author_affiliation.ror` etc. are unpopulated.
-  The library's `[process]` extra (pyobo/orcid-downloader) could enable grounding
-  if needed — at significant dependency + runtime cost.
+- **Grounding is off.** We call `pubmed_downloader`'s parser with every grounder
+  `None` (no MeSH/ROR/ORCID lookups). Data model 1.0 dropped the always-NULL
+  `author_affiliation.ror` column rather than ship it empty, so grounding would
+  return as new columns (a minor version bump). The library's `[process]` extra
+  (pyobo/orcid-downloader) could enable it if needed — at significant dependency
+  + runtime cost. Note that PubMed's own `AffiliationInfo/Identifier` (ROR, GRID,
+  ISNI) is not read either; that needs no grounding at all.
 
 ## Misc
 
