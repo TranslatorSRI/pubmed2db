@@ -59,7 +59,9 @@ Every export directory also holds `metadata.json`. It records:
 
 Builds made by the Translator team are published at
 `https://stars.renci.org/var/babel_outputs/pubmed2db/<build>/`. A build is named
-for the day its export finished, for example `2026sep26`. The directory holds the
+for its cutoff: the UTC date NCBI posted the last file it loaded
+(`metadata.json`'s `corpus.build_name`). The two pre-1.0 builds, `2026aug21`
+and `2026sep26`, were named for the day their export finished. The directory holds the
 database, the NDJSON shards and a `manifests/` directory with the validation
 report and a sorted list of the build's PMIDs.
 

@@ -452,7 +452,8 @@ def status(ctx: click.Context) -> None:
             posted = provenance["cutoff_published_at"]
             click.echo(
                 f"           cutoff: {provenance['cutoff_file']}"
-                + (f", posted by NCBI {posted}" if posted else " (posting time unknown)")
+                + (f", posted by NCBI {posted} (build name {provenance['build_name']})"
+                   if posted else " (posting time unknown)")
             )
         if s["skipped_records"]:
             # Records the loader could not store: extractor rejections plus book

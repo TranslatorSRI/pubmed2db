@@ -143,6 +143,23 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
     }
 
 
+def build_name(cutoff_published_at: datetime | None) -> str | None:
+    """A data build's name: the UTC date NCBI posted its cutoff file, as ``2026sep24``.
+
+    `docs/releasing.md` tags builds with this. The cutoff fixes what a build
+    contains, whereas the day its export happened to finish depends on how long
+    the cluster queue took. Builds before data model 1.0 (``2026aug21``,
+    ``2026sep26``) were named the old way. ``None`` when the posting time is
+    unknown, for a cutoff file that was never synced by `download`.
+    """
+    from .export import _MONTH_ABBR  # locale-independent, unlike strftime("%b")
+
+    if cutoff_published_at is None:
+        return None
+    day = cutoff_published_at.astimezone(timezone.utc)
+    return f"{day.year}{_MONTH_ABBR[day.month - 1].lower()}{day.day:02d}"
+
+
 def corpus_provenance(con: duckdb.DuckDBPyConnection) -> dict:
     """What a build contains, derived from the ``source_file`` registry (#57).
 
@@ -150,7 +167,8 @@ def corpus_provenance(con: duckdb.DuckDBPyConnection) -> dict:
     sequence belongs to the next build. ``cutoff_published_at`` is when NCBI
     posted that file (``None`` for a file that was never synced by `download`,
     e.g. one copied in by rsync), which is a better date to name a build by than
-    the day its export happened to finish.
+    the day its export happened to finish: ``build_name`` is that date, as the
+    build's tag.
 
     Derived on demand rather than stored, like the rest of this module, so it
     cannot disagree with what was actually loaded. `status` prints it and
@@ -173,6 +191,7 @@ def corpus_provenance(con: duckdb.DuckDBPyConnection) -> dict:
         """
     ).fetchone()
     return {
+        "build_name": build_name(published),
         "baseline_year": None if baseline_year is None else 2000 + baseline_year,
         "first_file": first,
         "cutoff_file": last,

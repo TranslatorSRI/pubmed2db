@@ -278,6 +278,7 @@ def test_corpus_provenance_names_the_cutoff(loaded_con):
 
     provenance = corpus_provenance(loaded_con)
     assert provenance == {
+        "build_name": "2025jun01",
         "baseline_year": 2025,
         "first_file": "pubmed25n0001.xml.gz",
         "cutoff_file": "pubmed25n0002.xml.gz",
@@ -288,3 +289,16 @@ def test_corpus_provenance_names_the_cutoff(loaded_con):
         "records_failed": 0,
         "book_records_skipped": 0,
     }
+
+
+def test_build_name_is_the_utc_posting_date_of_the_cutoff():
+    from datetime import datetime, timedelta, timezone
+
+    from pubmed2db.status import build_name
+
+    # pubmed26n1636 was posted at 14:05 US Eastern: the 24th, in UTC too.
+    eastern = timezone(timedelta(hours=-4))
+    assert build_name(datetime(2026, 9, 24, 14, 5, tzinfo=eastern)) == "2026sep24"
+    # Late enough in the US evening to be the next day in UTC: UTC decides.
+    assert build_name(datetime(2026, 9, 24, 21, 0, tzinfo=eastern)) == "2026sep25"
+    assert build_name(None) is None

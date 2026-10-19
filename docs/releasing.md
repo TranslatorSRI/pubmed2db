@@ -12,7 +12,7 @@ it, and both tags are cut from it.
 | Milestone | `pubmed2db v<version>`, due on the planned build date | "pubmed2db v1.1" |
 | Release branch | `pubmed2db-v<version>` | `pubmed2db-v1.1` |
 | Release PR | `pubmed2db v<version>`, stacked on the last feature PR | "pubmed2db v1.1" |
-| Data-build tag | the day the export finished (step 4) — unknown until then, so write `2026sepNN` in anything drafted before the run | `2026sep26` |
+| Data-build tag | the UTC date NCBI posted the last file the build loaded, its cutoff (step 4); unknown until the download, so write `2026sepNN` in anything drafted before the run | `2026sep24` |
 | Version tag and GitHub release | `v<version>` / "pubmed2db v<version>" | `v1.0` |
 
 **Two version numbers, for two audiences.** The code version says how the *code* changed; the data model version says how *consumers* are affected. They move independently: a big code release can leave the data model alone, and a one-line fix can bump it.
@@ -56,16 +56,14 @@ A major bump is often breaking for one output and harmless for another (1.0.0 re
 4. **Tag the data build** on the exact commit the cluster ran, and record that commit in the release PR:
 
    ```bash
-   git tag -a 2026sep26 <sha> -m "pubmed2db used to create 2026sep26"
-   git push origin 2026sep26
+   jq -r .corpus.build_name data/json/metadata.json      # e.g. 2026sep24
+   git tag -a 2026sep24 <sha> -m "pubmed2db used to create 2026sep24"
+   git push origin 2026sep24
    ```
 
-   Use the day the export finished, which need not be the milestone's date
-   (`2026aug21` was a run that started on the 20th). The better name is the
-   date of the last update file the build loaded, since that is the cutoff —
-   the next file belongs to the next build. `status` and the export's
-   `metadata.json` (`corpus.cutoff_file`, `corpus.cutoff_published_at`) now
-   report it. Switching the tag convention to it is a separate decision (#57).
+   The name is the build's **cutoff**: the UTC date NCBI posted the last file the build loaded. Every update file before it is in the build and every one after belongs to the next, so the name says what the build contains. `status` prints the same name, and `metadata.json` carries the file and the exact time (`corpus.cutoff_file`, `corpus.cutoff_published_at`).
+
+   The builds before data model 1.0 were named for the day their export finished (`2026aug21`, `2026sep26`), which depended on how long the run took: `2026sep26`'s cutoff was `pubmed26n1636`, posted on 2026-09-24. Those tags keep their names.
 
    Once the tag exists, a bare `git describe` names the *build*, not the version: `2026sep26` on the tagged commit, `2026sep26-7-gaa2b666` seven commits later. Before it exists, it names the nearest version tag instead (`v1.0-26-gfca8601`), which reads like a version and is not one. Ask for the one you mean:
 
