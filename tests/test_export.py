@@ -144,8 +144,8 @@ def test_json_export_uses_spec_fields(loaded_con, tmp_path):
     assert one == {
         "id": "PMID:1001",
         # v2's PMCID (PMC7654321), not v1's PMC1234567, and no `pii`. Sorted,
-        # so uppercase "PMCID:" precedes lowercase "doi:", with the PMID first.
-        "identifiers": ["PMID:1001", "PMCID:PMC7654321", "doi:10.1038/example1001"],
+        # so uppercase "PMC:" precedes lowercase "doi:", with the PMID first.
+        "identifiers": ["PMID:1001", "PMC:PMC7654321", "doi:10.1038/example1001"],
         "journal_name": "Nature",
         "journal_abbrev": "Nature",
         "article_title": "Revised title for article one.",
@@ -180,6 +180,29 @@ def test_curie_sql_is_derived_from_id_prefixes():
         assert f"'{id_type}'" in _LATEST_METADATA_SQL
         assert f"'{prefix}:'" in _LATEST_METADATA_SQL
     assert f"'{MESH_PREFIX}:'" in _LATEST_METADATA_SQL
+
+
+def test_docs_spell_pmc_ids_with_the_exported_prefix():
+    """Every PMC ID example in the docs uses ID_PREFIXES' current prefix.
+
+    The prefix waits on Translator (issue #33; biolink-model#1366, Babel#1044).
+    When it is decided, the change is one value in ID_PREFIXES, and this test
+    is what finds every doc example still written the old way.
+    """
+    import re
+    from pathlib import Path
+
+    from pubmed2db.export import ID_PREFIXES
+
+    root = Path(__file__).resolve().parent.parent
+    expected = f"{ID_PREFIXES['pmc']}:PMC"
+    stale = [
+        f"{name}: {m.group(0)}"
+        for name in ("README.md", "AGENTS.md", "FUTURE.md", "docs/data-model.md")
+        for m in re.finditer(r"\bPMC(?:ID)?:PMC", (root / name).read_text())
+        if m.group(0) != expected
+    ]
+    assert not stale, f"PMC IDs are exported as {expected}…, but the docs say: {stale}"
 
 
 def test_json_export_empty_string_not_null(loaded_con, tmp_path):

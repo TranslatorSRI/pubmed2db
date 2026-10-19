@@ -332,7 +332,7 @@ are not in PMID order.
 | Field | From | Notes |
 | --- | --- | --- |
 | `id` | `article.pmid` | `"PMID:<pmid>"` |
-| `identifiers` | `article_id` (`doi`, `pmc`) | `PMID:` first, then the DOI and PMC ID as CURIEs (`doi:10…`, `PMCID:PMC…`), sorted. Values verbatim; match case-insensitively. Whether PMC IDs should be `PMC:` or `PMCID:` is [still open](https://github.com/TranslatorSRI/pubmed2db/issues/33). |
+| `identifiers` | `article_id` (`doi`, `pmc`) | `PMID:` first, then the DOI and PMC ID as CURIEs (`doi:10…`, `PMC:PMC…`), sorted. Values verbatim; match case-insensitively. `PMC:` follows Babel until Translator settles the prefix ([see below](#known-limitations)). |
 | `journal_name` | `journal.title` | `""` when the journal dimension has no row. |
 | `journal_abbrev` | `journal.abbreviation_medline` | |
 | `article_title` | `article.article_title` | |
@@ -579,9 +579,13 @@ CREATE TEMP TABLE current AS SELECT * FROM latest_article;
 - **`pub_month` can carry a year** for a cross-year range (`Dec-1999 Jan`),
   because that is what PubMed wrote. Whether consumers accept it is
   [#43](https://github.com/TranslatorSRI/pubmed2db/issues/43).
-- **The PMC ID prefix in `identifiers`** (`PMCID:` vs `PMC:`) is
-  [#33](https://github.com/TranslatorSRI/pubmed2db/issues/33). It affects only
-  the NDJSON; the database stores PubMed's value.
+- **The PMC ID prefix in `identifiers` is interim.** `PMC:` follows Babel
+  until Translator picks between it and `PMCID:`, in
+  [biolink-model#1366](https://github.com/biolink/biolink-model/issues/1366) and
+  [Babel#1044](https://github.com/NCATSTranslator/Babel/issues/1044). This
+  export follows that decision
+  ([#33](https://github.com/TranslatorSRI/pubmed2db/issues/33)), as a major
+  version. It affects only the NDJSON; the database stores PubMed's value.
 - **The Parquet export has not yet been run on the full corpus**
   ([#29](https://github.com/TranslatorSRI/pubmed2db/issues/29)).
 
@@ -596,7 +600,7 @@ The first versioned data model, first built after `2026sep26`. The
 
 | Output | What a consumer must do |
 | --- | --- |
-| NDJSON | Nothing: the same fields with the same values. `metadata.json` is new beside the shards, and worth checking downloads against. |
+| NDJSON | Match PMC IDs in `identifiers` as `PMC:PMC…`, the prefix Babel uses, where earlier builds used `PMCID:`. Every other field is unchanged. `metadata.json` is new beside the shards, and worth checking downloads against. |
 | Parquet | Update table and column names as below. `pubmed2db_metadata.parquet` and `metadata.json` are new. |
 | DuckDB | Rebuild: pubmed2db refuses a pre-1.0 database. Update queries as below. |
 

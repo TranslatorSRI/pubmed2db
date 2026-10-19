@@ -58,21 +58,21 @@ on, and a copy left here rots into a contradiction of the code.
 The dependency is pinned `<0.1` because we call private APIs (`_extract_article`,
 `_ensure_urls`); re-test before raising the ceiling.
 
-- **Drop `load._parse_journal_overview` if
+- **Drop `load._parse_journal_overview` when the ceiling is raised to admit
+  0.1.0** (#65; ~35 lines, with `_JOURNAL_KEYS`).
   [pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16)
-  lands** (~35 lines, with `_JOURNAL_KEYS`). `process_journal_overview()` cannot
+  was merged and released in 0.1.0 (2026-10-08), so the fix exists upstream but
+  not in any version we allow. `process_journal_overview()` cannot
   return a single record in ≤ 0.0.14: `Journal.start_year`/`end_year` are
   annotated `int | None` but given no default, so pydantic makes them required,
   and `J_Entrez.txt` has no such key. Every *other* field the overview file
   cannot supply already defaults (`abbreviation_medline`, `synonyms`, `active`),
   which is what marks these two as an oversight rather than a design statement.
-  Upstream's answer to the PR was that the package reads the serfiles instead;
-  our measurement says that is half right — the catalog does carry the years, but
-  `J_Entrez.txt` is the only place `fulljournalname` and `IsoAbbr` exist at all,
-  so a `Journal` built from it can never have years and the fields must be
-  optional. That makes the PR worth pursuing, not moot: it is the same
-  load-then-enrich shape this pipeline uses.
-  **If it lands, keep setting `active` ourselves** — the model defaults it to
+  Upstream's first answer to the PR was that the package reads the serfiles
+  instead; it was merged once the measurements showed `J_Entrez.txt` is the only
+  place `fulljournalname` and `IsoAbbr` exist at all, so a `Journal` built from
+  it can never have years and the fields must be optional.
+  **When we adopt it, keep setting `active` ourselves** — the model defaults it to
   `True`, which is wrong for the ~13,000 ceased journals serfile identifies. See
   [`docs/journal-catalog.md`](./docs/journal-catalog.md).
 - **`cites_pubmed_ids` never matches, but we no longer care.** `_extract_article`
@@ -98,7 +98,9 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
 
 Nothing has been filed against `cthoyt/pubmed-downloader` for either, and nothing
 should be until the open items below are answered. (The journal-model fix is the
-exception: already filed as https://github.com/cthoyt/pubmed-downloader/pull/16.)
+exception: filed and merged as https://github.com/cthoyt/pubmed-downloader/pull/16.
+Its maintainer will not consider a pull request or issue whose text or code is
+AI-generated, so whatever we report must be written by hand.)
 
 Real-data evidence gathered on the `add-doi-and-pmcids` branch, which found the
 `article_id` bug independently:
@@ -201,15 +203,22 @@ Still open:
   NCBI's own answer for an unparseable range is to fall back to January of the
   leading year (`"1998 Dec-1999 Jan"` → `1998/01/01`), i.e. it drops precision
   rather than guessing.
-- **The PMCID CURIE prefix is not settled** ([#33](https://github.com/TranslatorSRI/pubmed2db/issues/33)).
-  We emit `PMCID:PMC1234567`. Babel's `src/prefixes.py` says `PMC`, and neither
+- **The PMCID CURIE prefix is interim** ([#33](https://github.com/TranslatorSRI/pubmed2db/issues/33)).
+  We emit `PMC:PMC1234567`, following Babel: `src/prefixes.py` says `PMC`, and
+  Babel's published compendia use `PMC:` throughout. Translator has not decided.
+  Biolink registers `PMC` on `biolink:Publication` and `PMCID` on
+  `biolink:JournalArticle`
+  ([biolink-model#1366](https://github.com/biolink/biolink-model/issues/1366)),
+  Babel's own choice is open in
+  [Babel#1044](https://github.com/NCATSTranslator/Babel/issues/1044), and neither
   the Core Components specification
   ([CCWG#15](https://github.com/NCATSTranslator/Core-Components-Working-Group/issues/15))
-  nor the DocumentMetadataAPI README carries a PMC example to arbitrate; the
-  production endpoint resolves PMCIDs under neither form. To be settled
-  alongside [Babel#1044](https://github.com/NCATSTranslator/Babel/issues/1044) —
-  a change is a one-line edit to `export.ID_PREFIXES` plus a re-export, since
-  `identifiers` is derived at export and never stored.
+  nor the DocumentMetadataAPI README carries a PMC example. The production
+  endpoint resolves PMCIDs under neither form. When they rule, the change is
+  one value in `export.ID_PREFIXES` plus a re-export, since `identifiers` is
+  derived at export and never stored. `test_docs_spell_pmc_ids_with_the_exported_prefix`
+  then lists every doc example left to update. After data model 1.0, that is a
+  major bump affecting only the NDJSON.
 - **`ELocationID` DOIs are not read** (#35). The exported `identifiers` come from
   `PubmedData/ArticleIdList` only — the same place Babel reads, and the
   authoritative one. A DOI can also appear as

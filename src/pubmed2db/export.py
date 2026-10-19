@@ -63,17 +63,23 @@ _OTHER_TABLES = (
 #: field. ``doi`` is lowercase to match Babel's ``src/prefixes.py``, so those
 #: CURIEs join against the Babel publication compendium; ``DOI:`` would not.
 #: PubMed's ``pmc`` values already start with ``PMC``, hence the doubled
-#: ``PMCID:PMC1234567``. Values are emitted verbatim, so consumers must match
+#: ``PMC:PMC1234567``. Values are emitted verbatim, so consumers must match
 #: case-insensitively (DOIs are case-insensitive per spec and PubMed is not
 #: consistent).
 #:
-#: **The PMCID prefix is not settled.** Babel's ``prefixes.py`` says ``PMC``,
-#: this export says ``PMCID``, and neither the Core Components spec nor the
-#: DocumentMetadataAPI README carries a PMC example to arbitrate — the
-#: production endpoint does not resolve PMCIDs in either form. ``PMCID`` is our
-#: bet on where that lands. Tracked in issue #33, to be settled alongside
-#: NCATSTranslator/Babel#1044.
-ID_PREFIXES = {"doi": "doi", "pmc": "PMCID"}
+#: **``PMC`` is interim: we follow Babel until Translator decides** (issue #33).
+#: Babel's ``prefixes.py`` says ``PMC``, and its published compendia spell every
+#: PMC ID ``PMC:PMC…`` (2026jul22's ``Publication.txt.00``: 134 ``PMC:``, no
+#: ``PMCID:``), so following it is what makes these CURIEs join. Biolink
+#: registers ``PMC`` on ``biolink:Publication`` but ``PMCID`` on
+#: ``biolink:JournalArticle``; the ruling belongs to
+#: https://github.com/biolink/biolink-model/issues/1366 and
+#: https://github.com/NCATSTranslator/Babel/issues/1044. If they settle on
+#: ``PMCID``, change this one value and re-export -- ``identifiers`` is never
+#: stored, so no reload -- and ``tests/test_export.py`` names every doc example
+#: still spelled the old way. After data model 1.0 ships, that is a major bump
+#: affecting only the NDJSON.
+ID_PREFIXES = {"doi": "doi", "pmc": "PMC"}
 
 #: CURIE prefix for a publication type's MeSH UI (``MESH:D016454``), Biolink's
 #: casing. One place, for the same reason as :data:`ID_PREFIXES`: `validate`

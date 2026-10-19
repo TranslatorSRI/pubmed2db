@@ -215,10 +215,9 @@ not-invented-here:
 `_parse_catalog` cache was unreachable in 0.0.14 — `catalog.py:661` read
 `if cache_path.is_file() and not force_process and False:` — and is already fixed
 on `main` (`catalog.py:660`), so reporting it would be reporting a solved problem.
-The `Journal` year fields go the other way: still `int | None` with no default on
-`main` (`catalog.py:72-73`), so
+The `Journal` year fields are fixed too, though only from 0.1.0:
 [pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16)
-remains live.
+gave them a `None` default and was merged and released on 2026-10-08.
 
 `CatalogRecord` also has no ISO abbreviation field, which is moot for us for a
 separate measured reason: in `J_Entrez.txt`, `IsoAbbr` equals `MedAbbr` in
@@ -228,7 +227,7 @@ without a difference. Data model 1.0 dropped `journal.abbreviation_iso` for
 that reason (#48); the export reads `abbreviation_medline`, with the same
 values.
 
-### Why `process_journal_overview()` is still worth fixing upstream
+### Why `process_journal_overview()` was worth fixing upstream
 
 It cannot return a single record in ≤ 0.0.14: `Journal.start_year` and
 `end_year` are annotated `int | None` but given no default, so pydantic makes
@@ -245,11 +244,11 @@ in `CatalogRecord`, and no reconstruction from the catalog reaches them (Finding
 catalog cannot supply; it can *never* supply publication years, because its input
 has none; and therefore those years must be optional. That is precisely the
 load-then-enrich shape this pipeline uses —
-[pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16) is
-what would let a library user build a `Journal` from the overview file and fill
-the years from the catalog afterwards.
+[pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16),
+merged into 0.1.0, is what lets a library user build a `Journal` from the
+overview file and fill the years from the catalog afterwards.
 
-One caveat if it lands and we adopt it: `Journal.active` defaults to `True`,
+One caveat when we adopt it: `Journal.active` defaults to `True`,
 which is wrong for the ~13,000 journals serfile marks ceased, so `active` would
 still have to be set from the catalog rather than taken from the model.
 
@@ -294,9 +293,25 @@ Two properties of NLM's files that this strategy has to live with:
   a dedupe pass.
 - **NLM publishes zero-byte files.** `serfile.20240903.xml` is served with
   `Content-Length: 0`, and `iterparse` raises `XMLSyntaxError` on it even with
-  `recover=True`. `_parse_serfile` therefore skips a file it cannot parse and
-  carries on, because `_journal_years` catches broadly — an exception escaping the
-  per-file loop would cost *every* journal its years, not just that file's.
+  `recover=True`. `_parse_serfile` therefore skips a monthly update it cannot
+  parse and carries on, because `_journal_years` catches broadly — an exception
+  escaping the per-file loop would cost *every* journal its years, not just that
+  file's. The **baseline** is the exception, and the asymmetry is deliberate:
+  skipping it would leave the updates' few thousand records, a non-empty result
+  `load_journals` cannot tell from a real catalog, so ~150k journals would load
+  NULL years. A baseline that will not parse, or parses to no records, raises
+  instead, and `load_journals` keeps the years already loaded.
+
+Two cached-copy rules follow from the same "an enrichment must not destroy what
+it has" posture. A *re*-fetch that fails keeps the cached copy, since a
+republished file is usually a corrected one rather than proof ours is unusable.
+And the HEAD's `Content-Length` is compared with the cached file's size: the
+ETag describes the server's copy, not ours, so a truncated cached file with a
+matching sidecar would otherwise be trusted indefinitely, and `recover=True`
+would parse whatever records it held without complaint. That copy *is* unusable,
+so it is not kept if its re-fetch fails. Files the listing no longer names — the
+previous baseline year's, once a new one has downloaded — are deleted from the
+cache.
 
 ## Verifying a real run
 

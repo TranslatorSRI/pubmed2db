@@ -55,8 +55,9 @@ def test_current_rss_is_optional_but_plausible():
 class _StreamedResponse:
     """Enough of `requests.Response` for `download_file`."""
 
-    def __init__(self, status, chunks):
+    def __init__(self, status, chunks, headers=None):
         self.status, self.chunks = status, chunks
+        self.headers = headers or {}
 
     def __enter__(self):
         return self
@@ -86,13 +87,14 @@ def test_download_file_sets_a_timeout(monkeypatch, tmp_path):
 
     def fake_get(url, **kwargs):
         calls.append(kwargs)
-        return _StreamedResponse(200, [b"<NLMCatalog", b"RecordSet/>"])
+        return _StreamedResponse(200, [b"<NLMCatalog", b"RecordSet/>"], {"ETag": '"g"'})
 
     monkeypatch.setattr(util_mod.requests, "get", fake_get)
-    util_mod.download_file("https://x/serfile.20260901.xml", tmp_path / "f.xml")
+    headers = util_mod.download_file("https://x/serfile.20260901.xml", tmp_path / "f.xml")
 
     assert (tmp_path / "f.xml").read_bytes() == b"<NLMCatalogRecordSet/>"
     assert calls[0]["timeout"] and calls[0]["stream"]
+    assert headers["ETag"] == '"g"'  # for the serfile sidecar, even when the HEAD failed
 
 
 def test_download_file_never_leaves_a_partial_file(monkeypatch, tmp_path):

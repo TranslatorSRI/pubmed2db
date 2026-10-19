@@ -6,6 +6,7 @@ import logging
 import os
 import resource
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import requests
@@ -66,7 +67,7 @@ def eta_str(elapsed: float, done: int, remaining: int) -> str:
     return fmt_duration(elapsed / done * remaining)
 
 
-def download_file(url: str, path: Path) -> None:
+def download_file(url: str, path: Path) -> Mapping[str, str]:
     """Stream ``url`` to ``path``, replacing it only once the transfer completes.
 
     Use this rather than pystow's ``ensure()`` for anything large. Its default
@@ -78,6 +79,9 @@ def download_file(url: str, path: Path) -> None:
     the gap between chunks, not the whole transfer. Writing to a ``.part`` and
     renaming means a killed job never leaves a truncated file under the real
     name for the next run to trust.
+
+    Returns the response's headers, so a caller can record a validator (an
+    ETag) that describes exactly the bytes written.
     """
     logger.info("downloading %s", url)
     part = path.with_name(path.name + ".part")
@@ -87,6 +91,8 @@ def download_file(url: str, path: Path) -> None:
             with part.open("wb") as out:
                 for chunk in response.iter_content(chunk_size=1 << 20):
                     out.write(chunk)
+            headers = response.headers
         os.replace(part, path)
     finally:
         part.unlink(missing_ok=True)
+    return headers
