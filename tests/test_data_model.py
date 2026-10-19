@@ -130,3 +130,60 @@ def test_code_version_ignores_a_repository_it_is_not_in(tmp_path, monkeypatch):
     fake_module.touch()
     monkeypatch.setattr(datamodel, "__file__", str(fake_module))
     assert datamodel.code_version() == __version__
+
+
+# --- documented semantics, on the edge-case fixture ----------------------------
+
+
+@pytest.fixture
+def edge_con(loaded_con, gz_fixture):
+    """`loaded_con` plus pubmed25n0005, whose header lists the cases it covers."""
+    from pubmed2db.load import load_file
+
+    load_file(loaded_con, gz_fixture("pubmed25n0005"), kind="update")
+    return loaded_con
+
+
+def _rows(con, sql):
+    return con.execute(sql).fetchall()
+
+
+def test_author_position_is_the_0_based_xml_index_with_gaps(edge_con):
+    """The second <Author> has no fore name, so upstream drops it. Its slot
+    stays empty rather than the third author moving up, so a position always
+    means the same <Author> element."""
+    assert _rows(edge_con, "SELECT position, name FROM author WHERE pmid = 2001 ORDER BY 1") == [
+        (0, "Ada First"),
+        (2, "Cy Third"),
+    ]
+
+
+def test_affiliations_keep_their_order_and_join_their_author(edge_con):
+    assert _rows(
+        edge_con,
+        "SELECT a.name, af.position, af.affiliation FROM author_affiliation af "
+        "JOIN author a ON a.pmid = af.pmid AND a.source_file = af.source_file "
+        "AND a.position = af.author_position WHERE af.pmid = 2001 ORDER BY af.position",
+    ) == [("Cy Third", 0, "Primary Institute."), ("Cy Third", 1, "Secondary Institute.")]
+
+
+def test_a_repeated_descriptor_keeps_each_heading_its_own_qualifiers(edge_con):
+    """`Humans` heads two headings with different qualifiers. Joined on the
+    descriptor UI, each qualifier would attach to both."""
+    assert _rows(
+        edge_con,
+        "SELECT h.position, h.descriptor_name, q.qualifier_name FROM mesh_heading h "
+        "LEFT JOIN mesh_qualifier q ON q.pmid = h.pmid AND q.source_file = h.source_file "
+        "AND q.heading_position = h.position WHERE h.pmid = 2001 ORDER BY h.position",
+    ) == [(0, "Humans", "genetics"), (1, "Animals", None), (2, "Humans", "metabolism")]
+
+
+def test_an_article_deleted_by_its_own_file_is_not_latest(edge_con):
+    assert _rows(edge_con, "SELECT count(*) FROM article WHERE pmid = 2002") == [(1,)]
+    assert _rows(edge_con, "SELECT count(*) FROM latest_article WHERE pmid = 2002") == [(0,)]
+
+
+def test_a_pmid_reinstated_after_its_deletion_is_latest_again(edge_con):
+    assert _rows(edge_con, "SELECT article_title FROM latest_article WHERE pmid = 1002") == [
+        ("Reinstated after its deletion.",)
+    ]

@@ -71,18 +71,22 @@ def _article_rows(parsed: ParsedArticle, source_file: str, order_key: int) -> di
         )
     )
 
-    for seq, text in enumerate(a.abstract):
+    for position, text in enumerate(a.abstract):
         rows["abstract_text"].append(
-            (pmid, source_file, seq, text.label, text.category, text.text)
+            (pmid, source_file, position, text.label, text.category, text.text)
         )
 
     for author in a.authors:
         is_collective = isinstance(author, Collective)
+        # Upstream numbers every <Author> from 1 and then drops the ones it
+        # cannot name, so this is the XML index made 0-based like every other
+        # ordering column: a gap is an author upstream dropped, not a bug here.
+        position = author.position - 1
         rows["author"].append(
             (
                 pmid,
                 source_file,
-                author.position,
+                position,
                 "collective" if is_collective else "author",
                 author.name,
                 None if is_collective else author.orcid,
@@ -90,18 +94,21 @@ def _article_rows(parsed: ParsedArticle, source_file: str, order_key: int) -> di
             )
         )
         if not is_collective:
-            for aff in author.affiliations:
+            for aff_position, aff in enumerate(author.affiliations):
                 rows["author_affiliation"].append(
-                    (pmid, source_file, author.position, aff.name)
+                    (pmid, source_file, position, aff_position, aff.name)
                 )
 
-    for heading in a.headings:
+    # A descriptor can repeat within one record, so a qualifier is tied to its
+    # heading by position; the descriptor UI alone was ambiguous.
+    for heading_position, heading in enumerate(a.headings):
         rows["mesh_heading"].append(
-            (pmid, source_file, heading.mesh_id, heading.name, heading.major)
+            (pmid, source_file, heading_position, heading.mesh_id, heading.name, heading.major)
         )
         for qualifier in heading.qualifiers or []:
             rows["mesh_qualifier"].append(
-                (pmid, source_file, heading.mesh_id, qualifier.mesh_id, qualifier.name, qualifier.major)
+                (pmid, source_file, heading_position, heading.mesh_id,
+                 qualifier.mesh_id, qualifier.name, qualifier.major)
             )
 
     for position, (type_ui, type_name) in enumerate(parsed.publication_types):

@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE PubmedArticleSet PUBLIC "-//NLM//DTD PubMedArticle, 1st January 2024//EN" "https://dtd.nlm.nih.gov/ncbi/pubmed/out/pubmed_240101.dtd">
+<!-- Edge cases for the data model's documented promises, loaded after
+     pubmed25n0001 and pubmed25n0002 (tests/test_data_model.py):
+     - 2001: an author upstream cannot name (a gap in author.position), an
+       author with two affiliations, and a descriptor that repeats with
+       different qualifiers (why mesh_qualifier joins by heading_position).
+     - 2002: an article deleted in the same file that carries it.
+     - 1002: re-added after pubmed25n0002 deleted it. -->
+<PubmedArticleSet>
+  <PubmedArticle>
+    <MedlineCitation Status="MEDLINE" Owner="NLM">
+      <PMID Version="1">2001</PMID>
+      <Article PubModel="Print">
+        <Journal>
+          <JournalIssue CitedMedium="Print">
+            <Volume>1</Volume>
+            <PubDate><Year>2024</Year></PubDate>
+          </JournalIssue>
+          <Title>Nature</Title>
+        </Journal>
+        <ArticleTitle>Edge cases for ordering columns.</ArticleTitle>
+        <AuthorList CompleteYN="Y">
+          <Author ValidYN="Y">
+            <LastName>First</LastName>
+            <ForeName>Ada</ForeName>
+          </Author>
+          <Author ValidYN="Y">
+            <LastName>Unnameable</LastName>
+          </Author>
+          <Author ValidYN="Y">
+            <LastName>Third</LastName>
+            <ForeName>Cy</ForeName>
+            <AffiliationInfo>
+              <Affiliation>Primary Institute.</Affiliation>
+            </AffiliationInfo>
+            <AffiliationInfo>
+              <Affiliation>Secondary Institute.</Affiliation>
+            </AffiliationInfo>
+          </Author>
+        </AuthorList>
+        <PublicationTypeList>
+          <PublicationType UI="D016428">Journal Article</PublicationType>
+        </PublicationTypeList>
+      </Article>
+      <MedlineJournalInfo>
+        <NlmUniqueID>0410462</NlmUniqueID>
+      </MedlineJournalInfo>
+      <MeshHeadingList>
+        <MeshHeading>
+          <DescriptorName UI="D006801" MajorTopicYN="N">Humans</DescriptorName>
+          <QualifierName UI="Q000235" MajorTopicYN="N">genetics</QualifierName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D000818" MajorTopicYN="N">Animals</DescriptorName>
+        </MeshHeading>
+        <MeshHeading>
+          <DescriptorName UI="D006801" MajorTopicYN="N">Humans</DescriptorName>
+          <QualifierName UI="Q000378" MajorTopicYN="Y">metabolism</QualifierName>
+        </MeshHeading>
+      </MeshHeadingList>
+    </MedlineCitation>
+    <PubmedData>
+      <History>
+        <PubMedPubDate PubStatus="pubmed"><Year>2024</Year><Month>1</Month><Day>2</Day></PubMedPubDate>
+      </History>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">2001</ArticleId>
+      </ArticleIdList>
+    </PubmedData>
+  </PubmedArticle>
+
+  <PubmedArticle>
+    <MedlineCitation Status="MEDLINE" Owner="NLM">
+      <PMID Version="1">2002</PMID>
+      <Article PubModel="Print">
+        <Journal>
+          <JournalIssue CitedMedium="Print">
+            <PubDate><Year>2024</Year></PubDate>
+          </JournalIssue>
+          <Title>Nature</Title>
+        </Journal>
+        <ArticleTitle>Deleted by the file that carries it.</ArticleTitle>
+      </Article>
+      <MedlineJournalInfo>
+        <NlmUniqueID>0410462</NlmUniqueID>
+      </MedlineJournalInfo>
+    </MedlineCitation>
+    <PubmedData>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">2002</ArticleId>
+      </ArticleIdList>
+    </PubmedData>
+  </PubmedArticle>
+
+  <PubmedArticle>
+    <MedlineCitation Status="MEDLINE" Owner="NLM">
+      <PMID Version="1">1002</PMID>
+      <Article PubModel="Print">
+        <Journal>
+          <JournalIssue CitedMedium="Print">
+            <PubDate><Year>2019</Year></PubDate>
+          </JournalIssue>
+          <Title>Nature</Title>
+        </Journal>
+        <ArticleTitle>Reinstated after its deletion.</ArticleTitle>
+      </Article>
+      <MedlineJournalInfo>
+        <NlmUniqueID>0410462</NlmUniqueID>
+      </MedlineJournalInfo>
+    </MedlineCitation>
+    <PubmedData>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">1002</ArticleId>
+      </ArticleIdList>
+    </PubmedData>
+  </PubmedArticle>
+
+  <DeleteCitation>
+    <PMID Version="1">2002</PMID>
+  </DeleteCitation>
+</PubmedArticleSet>

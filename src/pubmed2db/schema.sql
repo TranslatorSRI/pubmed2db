@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS journal_issn (
 CREATE TABLE IF NOT EXISTS abstract_text (
     pmid         BIGINT NOT NULL,
     source_file  TEXT   NOT NULL,
-    seq          INTEGER NOT NULL,             -- order of the section within the abstract
+    position     INTEGER NOT NULL,             -- 0-based order of the section
     label        TEXT,
     nlm_category TEXT,
     text         TEXT
@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS abstract_text (
 CREATE TABLE IF NOT EXISTS author (
     pmid        BIGINT NOT NULL,
     source_file TEXT   NOT NULL,
-    position    INTEGER NOT NULL,
+    position    INTEGER NOT NULL,              -- 0-based <Author> index; gaps are dropped authors
     kind        TEXT,                           -- 'author' | 'collective'
     name        TEXT,
     orcid       TEXT,
@@ -118,13 +118,15 @@ CREATE TABLE IF NOT EXISTS author (
 CREATE TABLE IF NOT EXISTS author_affiliation (
     pmid        BIGINT NOT NULL,
     source_file TEXT   NOT NULL,
-    position    INTEGER NOT NULL,              -- author position
+    author_position INTEGER NOT NULL,          -- joins author.position
+    position    INTEGER NOT NULL,              -- 0-based order within the author's affiliations
     affiliation TEXT
 );
 
 CREATE TABLE IF NOT EXISTS mesh_heading (
     pmid          BIGINT NOT NULL,
     source_file   TEXT   NOT NULL,
+    position      INTEGER NOT NULL,            -- 0-based order of the heading
     descriptor_ui TEXT,
     descriptor_name TEXT,
     major_topic   BOOLEAN
@@ -133,6 +135,7 @@ CREATE TABLE IF NOT EXISTS mesh_heading (
 CREATE TABLE IF NOT EXISTS mesh_qualifier (
     pmid          BIGINT NOT NULL,
     source_file   TEXT   NOT NULL,
+    heading_position INTEGER NOT NULL,         -- joins mesh_heading.position
     descriptor_ui TEXT,
     qualifier_ui  TEXT,
     qualifier_name TEXT,

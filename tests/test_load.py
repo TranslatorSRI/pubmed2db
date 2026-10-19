@@ -84,10 +84,10 @@ def test_child_tables_populated(loaded_con):
 
     # Affiliations attach to the named author only, never the collective.
     assert loaded_con.execute(
-        "SELECT position, affiliation FROM author_affiliation WHERE pmid = 1001 "
-        "AND source_file = ?",
+        "SELECT author_position, position, affiliation FROM author_affiliation "
+        "WHERE pmid = 1001 AND source_file = ?",
         [baseline],
-    ).fetchall() == [(1, "Department of Testing, Example University.")]
+    ).fetchall() == [(0, 0, "Department of Testing, Example University.")]
 
 
 def test_no_reference_citation_table(con):

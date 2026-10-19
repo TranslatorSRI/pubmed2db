@@ -488,7 +488,7 @@ JSON_FIELDS = tuple(name for name, _ in _JSON_FIELDS)
 #: bulk load, and `validate` sorts its own PMID manifest.
 _LATEST_METADATA_SQL = f"""
 WITH abs AS (
-    SELECT pmid, source_file, string_agg(text, ' ' ORDER BY seq) AS abstract
+    SELECT pmid, source_file, string_agg(text, ' ' ORDER BY position) AS abstract
     FROM abstract_text a
     -- Restrict to the latest versions *before* aggregating: without this the
     -- group-by spans the entire version history and throws the superseded
