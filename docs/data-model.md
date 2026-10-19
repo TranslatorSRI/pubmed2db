@@ -65,6 +65,35 @@ and `2026sep26`, were named for the day their export finished. The directory hol
 database, the NDJSON shards and a `manifests/` directory with the validation
 report and a sorted list of the build's PMIDs.
 
+### The size of a build
+
+The 2026sep26 build, measured from its published database on 2026-10-19. It
+loaded the 2026 baseline (`pubmed26n0001`–`pubmed26n1334`) and 302
+updatefiles (`pubmed26n1335`–`pubmed26n1636`). Its tables are named as before
+1.0, but they hold the same rows.
+
+| What | Count |
+| --- | --- |
+| `pubmed.duckdb` | 76,216,283,136 bytes (71 GiB) |
+| NDJSON shards (8, gzipped) | 16.9 GB |
+| Current articles (`latest_article`, one NDJSON record each) | 41,153,516 |
+| Article versions (`article`): 39,994,988 from the baseline, 5,840,554 from updates | 45,835,542 |
+| Distinct PMIDs ever loaded | 41,160,893 |
+| Deletions (`deleted_pmid`) | 11,872 |
+| `mesh_heading` / `mesh_qualifier` | 378,757,395 / 206,230,780 |
+| `author` (474,928 of them collective) / `author_affiliation` | 227,185,451 / 175,345,534 |
+| `history` | 181,957,651 |
+| `publication_type` | 75,706,563 |
+| `article_id` | 73,864,609 |
+| `abstract_text` | 63,700,472 |
+| `article_grant` | 20,638,054 |
+| `journal` / `journal_issn` | 42,097 / 51,772 |
+
+The per-version tables count every version, not just the current ones.
+`article_id.id_type` held `doi` (36,875,372), `pii` (21,841,008), `pmc`
+(13,787,614), `mid` (1,360,187), and a few hundred `pmcid`, `medline` and
+`pmpid`.
+
 ### Getting a build, and checking it
 
 **Download, don't query in place.** DuckDB can `ATTACH` a database over HTTPS
@@ -245,9 +274,10 @@ The NDJSON export is where values get normalized.
   - A qualifier joins its heading on `heading_position`, **not** on
     `descriptor_ui`. The DTD lets a descriptor repeat within one record with
     different qualifiers, and a join on the UI would then attach each qualifier
-    to every copy. That case is rare: none of the 46,414 records in two files
-    sampled on 2026-10-19 had a repeat. But a join on position is right
-    whether or not it happens.
+    to every copy. That case does not occur today: not one article version
+    in the whole 2026sep26 build repeats a descriptor, across 378,757,395
+    headings. But a join on position is right whether or not it happens, and
+    it stays right if PubMed starts to.
   - `mesh_heading.major_topic` is the descriptor's own flag. PubMed's "major
     topic" star can also come from a qualifier.
 - **`publication_type`**: in PubMed's order. That order is not alphabetical, and
@@ -360,9 +390,15 @@ whole-record skips are counted in `source_file`.
 
 Each would be a new table or column, which is a minor version bump.
 
-**How often the parser drops something**, measured on 2026-10-19 by parsing
-two real files with pubmed2db's parser and counting the raw elements beside
-it:
+**How often the parser drops something.** Whole-record skips are counted in
+`source_file`, so the corpus figure comes from the 2026sep26 build: across all
+1,636 files (45,835,542 article versions), `n_failed` and `n_book_records`
+are both **0**. Nothing was rejected, and the 2026 files carry no Bookshelf
+records. The same build has at least 76,451 gaps in `author.position`, from
+authors dropped as unnameable: 0.03% of 227,185,451 authors. That is a lower
+bound, since a dropped *last* author leaves no gap. The parts of records that
+`source_file` doesn't count were measured on 2026-10-19, by parsing two real
+files with pubmed2db's parser and counting the raw elements beside it:
 
 | File | Records | Rejected (`n_failed`) | Book records | Unnamed authors dropped | History entries dropped | Records with a repeated descriptor |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -370,8 +406,7 @@ it:
 | `pubmed26n1636` (update) | 16,414 | 0 | 0 | 46 of 121,934 | 0 | 0 |
 
 Every `<Grant>` in both files had the `Agency` and `Country` the parser
-requires. Every `PubStatus` was one of the ten stored. The corpus-wide
-`n_failed` and `n_book_records` are in `source_file`. The DTD also allows other
+requires. Every `PubStatus` was one of the ten stored. The DTD also allows other
 statuses (`epublish`, `ppublish`, `pmc`, `pmcr`, `pubmedr`, `premedline`,
 `medliner`); none occurred.
 
@@ -412,7 +447,8 @@ methods are reusable.
   `fulljournalname` byte for byte, while the serial catalog's title differs for
   20% of journals; but only the catalog has publication years. `J_Entrez.txt`'s
   ISO abbreviation equalled its MEDLINE abbreviation in 42,056 of 42,056
-  journals, which is why 1.0 stores one. The measurements and the recipe to
+  journals when first measured, and in all 42,097 of the 2026sep26 build,
+  which is why 1.0 stores one. The measurements and the recipe to
   repeat them are in the
   [journal catalog note](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/journal-catalog.md).
 - **Check every XPath's scope.** pubmed2db reuses
