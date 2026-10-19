@@ -56,7 +56,7 @@ def test_extracts_rich_fields(gz_fixture):
         ("BACKGROUND", "First section of the abstract."),
         ("RESULTS", "Second section of the abstract."),
     ]
-    assert {(h.mesh_id, h.major) for h in article.headings} == {("D000818", False), ("D006801", True)}
+    assert {(h.reference.identifier, h.major) for h in article.headings} == {("D000818", False), ("D006801", True)}
     assert article.journal.nlm_catalog_id == "0410462"
 
 
