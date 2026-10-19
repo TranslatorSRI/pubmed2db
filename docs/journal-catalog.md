@@ -292,9 +292,25 @@ Two properties of NLM's files that this strategy has to live with:
   a dedupe pass.
 - **NLM publishes zero-byte files.** `serfile.20240903.xml` is served with
   `Content-Length: 0`, and `iterparse` raises `XMLSyntaxError` on it even with
-  `recover=True`. `_parse_serfile` therefore skips a file it cannot parse and
-  carries on, because `_journal_years` catches broadly — an exception escaping the
-  per-file loop would cost *every* journal its years, not just that file's.
+  `recover=True`. `_parse_serfile` therefore skips a monthly update it cannot
+  parse and carries on, because `_journal_years` catches broadly — an exception
+  escaping the per-file loop would cost *every* journal its years, not just that
+  file's. The **baseline** is the exception, and the asymmetry is deliberate:
+  skipping it would leave the updates' few thousand records, a non-empty result
+  `load_journals` cannot tell from a real catalog, so ~150k journals would load
+  NULL years. A baseline that will not parse, or parses to no records, raises
+  instead, and `load_journals` keeps the years already loaded.
+
+Two cached-copy rules follow from the same "an enrichment must not destroy what
+it has" posture. A *re*-fetch that fails keeps the cached copy, since a
+republished file is usually a corrected one rather than proof ours is unusable.
+And the HEAD's `Content-Length` is compared with the cached file's size: the
+ETag describes the server's copy, not ours, so a truncated cached file with a
+matching sidecar would otherwise be trusted indefinitely, and `recover=True`
+would parse whatever records it held without complaint. That copy *is* unusable,
+so it is not kept if its re-fetch fails. Files the listing no longer names — the
+previous baseline year's, once a new one has downloaded — are deleted from the
+cache.
 
 ## Verifying a real run
 

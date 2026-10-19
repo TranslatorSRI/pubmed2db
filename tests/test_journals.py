@@ -299,7 +299,7 @@ def test_ensure_serfile_skips_a_file_whose_validator_has_not_moved(monkeypatch, 
 
     downloads = []
     _fake_serfile_module(monkeypatch, tmp_path, downloads)
-    monkeypatch.setattr(load_mod, "_serfile_validator", lambda url: '"abc123"')
+    monkeypatch.setattr(load_mod, "_serfile_head", lambda url: ('"abc123"', None))
 
     load_mod._ensure_serfile()
     assert downloads == ["serfile.20260901.xml"]  # first run: not cached yet
@@ -319,11 +319,11 @@ def test_ensure_serfile_refetches_a_republished_file(monkeypatch, tmp_path):
     downloads = []
     _fake_serfile_module(monkeypatch, tmp_path, downloads)
 
-    monkeypatch.setattr(load_mod, "_serfile_validator", lambda url: '"old"')
+    monkeypatch.setattr(load_mod, "_serfile_head", lambda url: ('"old"', None))
     load_mod._ensure_serfile()
 
     downloads.clear()
-    monkeypatch.setattr(load_mod, "_serfile_validator", lambda url: '"new"')
+    monkeypatch.setattr(load_mod, "_serfile_head", lambda url: ('"new"', None))
     load_mod._ensure_serfile()
 
     assert downloads == ["serfile.20260901.xml"]  # re-fetched despite the cached copy
@@ -336,11 +336,11 @@ def test_ensure_serfile_keeps_the_cached_copy_when_the_head_fails(monkeypatch, t
 
     downloads = []
     _fake_serfile_module(monkeypatch, tmp_path, downloads)
-    monkeypatch.setattr(load_mod, "_serfile_validator", lambda url: '"abc"')
+    monkeypatch.setattr(load_mod, "_serfile_head", lambda url: ('"abc"', None))
     load_mod._ensure_serfile()
 
     downloads.clear()
-    monkeypatch.setattr(load_mod, "_serfile_validator", lambda url: None)
+    monkeypatch.setattr(load_mod, "_serfile_head", lambda url: (None, None))
     assert load_mod._ensure_serfile() == [tmp_path / "serfile.20260901.xml"]
     assert downloads == []
     # The stale-but-unverifiable sidecar is left alone, so the next successful
@@ -366,7 +366,7 @@ def test_ensure_serfile_skips_an_update_that_fails_to_download(monkeypatch, tmp_
             "https://x/serfile.20260901.xml",
         ],
     )
-    monkeypatch.setattr(load_mod, "_serfile_validator", lambda url: '"v"')
+    monkeypatch.setattr(load_mod, "_serfile_head", lambda url: ('"v"', None))
 
     assert load_mod._ensure_serfile() == [
         tmp_path / "serfilebase.2026.xml",
@@ -389,7 +389,7 @@ def test_ensure_serfile_fails_when_the_baseline_does(monkeypatch, tmp_path):
         "_serfile_urls",
         lambda: ["https://x/serfilebase.2026.xml", "https://x/serfile.20260901.xml"],
     )
-    monkeypatch.setattr(load_mod, "_serfile_validator", lambda url: None)
+    monkeypatch.setattr(load_mod, "_serfile_head", lambda url: (None, None))
 
     with pytest.raises(OSError):
         load_mod._ensure_serfile()
@@ -398,8 +398,9 @@ def test_ensure_serfile_fails_when_the_baseline_does(monkeypatch, tmp_path):
 class _StreamedResponse:
     """Enough of `requests.Response` for `_download_serfile`."""
 
-    def __init__(self, status, chunks):
+    def __init__(self, status, chunks, headers=None):
         self.status, self.chunks = status, chunks
+        self.headers = headers or {}
 
     def __enter__(self):
         return self
@@ -429,13 +430,14 @@ def test_download_serfile_sets_a_timeout(monkeypatch, tmp_path):
 
     def fake_get(url, **kwargs):
         calls.append(kwargs)
-        return _StreamedResponse(200, [b"<NLMCatalog", b"RecordSet/>"])
+        return _StreamedResponse(200, [b"<NLMCatalog", b"RecordSet/>"], {"ETag": '"g"'})
 
     monkeypatch.setattr(load_mod.requests, "get", fake_get)
-    load_mod._download_serfile("https://x/serfile.20260901.xml", tmp_path / "f.xml")
+    validator = load_mod._download_serfile("https://x/serfile.20260901.xml", tmp_path / "f.xml")
 
     assert (tmp_path / "f.xml").read_bytes() == b"<NLMCatalogRecordSet/>"
     assert calls[0]["timeout"] and calls[0]["stream"]
+    assert validator == '"g"'  # for the sidecar, even when the HEAD failed
 
 
 def test_download_serfile_never_leaves_a_partial_file(monkeypatch, tmp_path):
@@ -467,7 +469,7 @@ def test_download_serfile_never_leaves_a_partial_file(monkeypatch, tmp_path):
     assert list(tmp_path.iterdir()) == [target]  # no .part left behind
 
 
-def test_serfile_validator_falls_back_and_survives_network_trouble(monkeypatch):
+def test_serfile_head_falls_back_and_survives_network_trouble(monkeypatch):
     import requests
 
     import pubmed2db.load as load_mod
@@ -479,19 +481,154 @@ def test_serfile_validator_falls_back_and_survives_network_trouble(monkeypatch):
         def raise_for_status(self):
             pass
 
-    monkeypatch.setattr(load_mod.requests, "head", lambda *a, **k: Response({"ETag": '"e"'}))
-    assert load_mod._serfile_validator("https://x") == '"e"'
+    calls = []
+
+    def head(url, **kwargs):
+        calls.append(kwargs)
+        return Response({"ETag": '"e"', "Content-Length": "747697"})
+
+    monkeypatch.setattr(load_mod.requests, "head", head)
+    assert load_mod._serfile_head("https://x") == ('"e"', 747697)
+    # requests.head does not follow redirects by default, and raise_for_status
+    # passes a 3xx: without this the headers would describe the redirect.
+    assert calls[0]["allow_redirects"] is True
 
     monkeypatch.setattr(
         load_mod.requests, "head", lambda *a, **k: Response({"Last-Modified": "Tue, 01 Sep 2026"})
     )
-    assert load_mod._serfile_validator("https://x") == "Tue, 01 Sep 2026"
+    assert load_mod._serfile_head("https://x") == ("Tue, 01 Sep 2026", None)
+
+    # A compressed length is not the size of the decoded file on disk.
+    monkeypatch.setattr(
+        load_mod.requests,
+        "head",
+        lambda *a, **k: Response({"ETag": '"e"', "Content-Length": "90", "Content-Encoding": "gzip"}),
+    )
+    assert load_mod._serfile_head("https://x") == ('"e"', None)
 
     def boom(*a, **k):
         raise requests.ConnectionError("no route to host")
 
     monkeypatch.setattr(load_mod.requests, "head", boom)
-    assert load_mod._serfile_validator("https://x") is None
+    assert load_mod._serfile_head("https://x") == (None, None)
+
+
+def test_ensure_serfile_keeps_the_cached_copy_when_a_refetch_fails(monkeypatch, tmp_path):
+    """A republished baseline whose ~450 MB re-fetch times out must not cost a
+    fresh database every journal's years when a usable copy is on disk."""
+    import pubmed2db.load as load_mod
+
+    downloads = []
+    _fake_serfile_module(monkeypatch, tmp_path, downloads)
+    monkeypatch.setattr(load_mod, "_serfile_head", lambda url: ('"old"', None))
+    load_mod._ensure_serfile()
+
+    _fake_serfile_module(monkeypatch, tmp_path, downloads, fail={"serfile.20260901.xml"})
+    monkeypatch.setattr(load_mod, "_serfile_head", lambda url: ('"new"', None))
+    assert load_mod._ensure_serfile() == [tmp_path / "serfile.20260901.xml"]
+    # The sidecar still holds the old validator, so the next run tries again.
+    assert (tmp_path / "serfile.20260901.xml.etag").read_text() == '"old"'
+
+
+def test_ensure_serfile_refetches_a_cached_file_of_the_wrong_size(monkeypatch, tmp_path):
+    """The ETag describes the server's copy, not ours, so a truncated cached file
+    with a matching sidecar would otherwise be trusted -- and `recover=True`
+    would parse whatever records it holds without complaint."""
+    import pytest
+
+    import pubmed2db.load as load_mod
+
+    downloads = []
+    _fake_serfile_module(monkeypatch, tmp_path, downloads)
+    good = len("<NLMCatalogRecordSet/>")
+    monkeypatch.setattr(load_mod, "_serfile_head", lambda url: ('"v"', good))
+    load_mod._ensure_serfile()
+
+    (tmp_path / "serfile.20260901.xml").write_text("<NLMCatalog")  # truncated
+    downloads.clear()
+    load_mod._ensure_serfile()
+    assert downloads == ["serfile.20260901.xml"]
+    assert (tmp_path / "serfile.20260901.xml").stat().st_size == good
+
+    # Unlike a republished file, a wrong-sized one is not kept if the re-fetch
+    # fails: for the baseline, that hands `load_journals` its keep-the-years path.
+    _fake_serfile_module(monkeypatch, tmp_path, downloads, fail={"serfilebase.2026.xml"})
+    monkeypatch.setattr(load_mod, "_serfile_urls", lambda: ["https://x/serfilebase.2026.xml"])
+    (tmp_path / "serfilebase.2026.xml").write_text("<NLMCatalog")
+    (tmp_path / "serfilebase.2026.xml.etag").write_text('"v"')
+    with pytest.raises(OSError):
+        load_mod._ensure_serfile()
+
+
+def test_ensure_serfile_stamps_a_file_fetched_while_the_head_failed(monkeypatch, tmp_path):
+    """The GET carries the same ETag as the HEAD. Without using it, a file first
+    fetched during a HEAD outage gets no sidecar, and the next run re-fetches it."""
+    import pubmed2db.load as load_mod
+
+    downloads = []
+    _fake_serfile_module(monkeypatch, tmp_path, downloads)
+
+    def download_with_etag(url, path):
+        downloads.append(path.name)
+        path.write_text("<NLMCatalogRecordSet/>")
+        return '"from-get"'
+
+    monkeypatch.setattr(load_mod, "_download_serfile", download_with_etag)
+    monkeypatch.setattr(load_mod, "_serfile_head", lambda url: (None, None))
+    load_mod._ensure_serfile()
+    assert (tmp_path / "serfile.20260901.xml.etag").read_text() == '"from-get"'
+
+    downloads.clear()
+    monkeypatch.setattr(load_mod, "_serfile_head", lambda url: ('"from-get"', None))
+    load_mod._ensure_serfile()
+    assert downloads == []
+
+
+def test_ensure_serfile_prunes_files_the_listing_no_longer_names(monkeypatch, tmp_path):
+    """Only the newest baseline year is read, so a new year would otherwise leave
+    ~890 MB of last year's catalog in the cache forever."""
+    import pubmed2db.load as load_mod
+
+    _fake_serfile_module(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(load_mod, "_serfile_head", lambda url: ('"v"', None))
+    for name in (
+        "serfilebase.2025.xml",
+        "serfilebase.2025.xml.etag",
+        "serfile.20251201.xml",
+        "serfile.20251201.xml.part",
+        "unrelated.txt",
+    ):
+        (tmp_path / name).write_text("x")
+    monkeypatch.setattr(
+        load_mod,
+        "_serfile_urls",
+        lambda: ["https://x/serfilebase.2026.xml", "https://x/serfile.20260901.xml"],
+    )
+
+    load_mod._ensure_serfile()
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "serfile.20260901.xml",
+        "serfile.20260901.xml.etag",
+        "serfilebase.2026.xml",
+        "serfilebase.2026.xml.etag",
+        "unrelated.txt",  # only names the serfile patterns match are touched
+    ]
+
+
+def test_ensure_serfile_prunes_nothing_when_the_new_baseline_fails(monkeypatch, tmp_path):
+    """Last year's files are the only catalog on disk until this year's arrives."""
+    import pytest
+
+    import pubmed2db.load as load_mod
+
+    _fake_serfile_module(monkeypatch, tmp_path, [], fail={"serfilebase.2026.xml"})
+    monkeypatch.setattr(load_mod, "_serfile_head", lambda url: (None, None))
+    monkeypatch.setattr(load_mod, "_serfile_urls", lambda: ["https://x/serfilebase.2026.xml"])
+    (tmp_path / "serfilebase.2025.xml").write_text("x")
+
+    with pytest.raises(OSError):
+        load_mod._ensure_serfile()
+    assert (tmp_path / "serfilebase.2025.xml").exists()
 
 
 def test_parse_serfile_skips_a_file_it_cannot_parse():

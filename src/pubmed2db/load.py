@@ -415,23 +415,38 @@ def _serfile_urls() -> list[str]:
     return [_SERFILE_LISTING + name for name in names]
 
 
-def _serfile_validator(url: str) -> str | None:
-    """The server's ETag for a catalog file, or ``None`` if it cannot be read.
+def _validator(headers) -> str | None:
+    """The ETag from a response's headers, falling back to ``Last-Modified``."""
+    return headers.get("ETag") or headers.get("Last-Modified")
+
+
+def _serfile_head(url: str) -> tuple[str | None, int | None]:
+    """The server's ``(validator, size in bytes)`` for a catalog file.
 
     NLM publishes no ``.md5`` sidecars for these files, unlike the PubMed
     baseline where :mod:`pubmed2db.download` uses them to notice a republished
     file. The ETag is the validator this server does offer, and a HEAD does the
-    same job for a few hundred bytes instead of ~450 MB. Falls back to
-    ``Last-Modified``, and to ``None`` on any network trouble — the caller then
-    keeps whatever is already cached rather than failing.
+    same job for a few hundred bytes instead of ~450 MB. The size is ``None``
+    when the response is compressed, since the file on disk is the decoded
+    bytes (NLM serves these uncompressed today). Both are ``None`` on any
+    network trouble — the caller then keeps whatever is already cached rather
+    than failing.
+
+    Redirects are followed explicitly: ``requests.head`` does not by default,
+    and ``raise_for_status`` passes a 3xx, so a moved file would otherwise be
+    described by the redirect's headers — usually no ETag at all, which would
+    freeze the cached copy forever.
     """
     try:
-        response = requests.head(url, timeout=60)
+        response = requests.head(url, timeout=60, allow_redirects=True)
         response.raise_for_status()
     except requests.RequestException as exc:
         logger.debug("could not read a validator for %s (%s); keeping the cached copy", url, exc)
-        return None
-    return response.headers.get("ETag") or response.headers.get("Last-Modified")
+        return None, None
+    headers = response.headers
+    length = headers.get("Content-Length", "")
+    size = int(length) if length.isdigit() and "Content-Encoding" not in headers else None
+    return _validator(headers), size
 
 
 def _ensure_serfile() -> list[Path]:
@@ -451,45 +466,94 @@ def _ensure_serfile() -> list[Path]:
     updates only amend it — so its failure propagates.
     """
     module = pystow.module("pubmed2db", "serfile")
+    urls = _serfile_urls()
     paths = []
-    for i, url in enumerate(_serfile_urls()):
+    for i, url in enumerate(urls):
         try:
             paths.append(_ensure_serfile_file(module, url))
         except Exception as exc:  # noqa: BLE001 — network or disk; see docstring
             if i == 0:  # _serfile_urls puts the baseline first
                 raise
             logger.warning("%s failed to download (%s); skipping it", url, exc)
+    if paths:
+        _prune_serfile_cache(paths[0].parent, {url.rsplit("/", 1)[1] for url in urls})
     return paths
 
 
 def _ensure_serfile_file(module: pystow.Module, url: str) -> Path:
-    """Fetch one catalog file, re-fetching it if the server's validator moved.
+    """Fetch one catalog file, re-fetching it if the server's copy has moved.
 
     The sidecar is written only after a successful download, and
     `_download_serfile` never leaves a partial file under the real name, so a
-    failed fetch is simply retried on the next run.
+    failed fetch is simply retried on the next run. A failed *re*-fetch keeps
+    the cached copy: a republished file is usually a corrected one, not proof
+    the copy we hold is unusable, and losing a ~450 MB baseline to one timeout
+    would cost a fresh database every journal's years.
     """
     path = module.join(name=url.rsplit("/", 1)[1])
     stamp = path.with_name(path.name + ".etag")
-    validator = _serfile_validator(url)
-    # "Stale" means we have the file and the server's copy has moved -- a
-    # first download is not a forced refetch, and an unreadable validator
-    # leaves whatever is cached alone.
-    stale = (
-        path.is_file()
+    validator, size = _serfile_head(url)
+    cached = path.is_file()
+    # A cached copy whose size disagrees with the server's is not the file the
+    # server serves -- truncated by something other than `_download_serfile`
+    # (which renames into place only when complete), such as an older build
+    # that wrote straight to this name. The ETag alone would not notice: it
+    # describes the server's copy, not ours. This copy is not worth keeping.
+    wrong_size = cached and size is not None and path.stat().st_size != size
+    # A missing sidecar counts as republished: it marks a file of unknown
+    # provenance. An unreadable validator leaves whatever is cached alone.
+    republished = (
+        cached
         and validator is not None
         and (not stamp.is_file() or stamp.read_text().strip() != validator)
     )
-    if stale:
+    if cached and not (wrong_size or republished):
+        return path
+    if wrong_size:
+        logger.warning(
+            "%s is %d bytes but the server's copy is %d; re-fetching it",
+            path.name,
+            path.stat().st_size,
+            size,
+        )
+    elif republished:
         logger.info("%s was republished; re-fetching it", path.name)
-    if stale or not path.is_file():
-        _download_serfile(url, path)
+    try:
+        fetched = _download_serfile(url, path)
+    except Exception as exc:
+        if republished and not wrong_size:
+            # The sidecar is left alone, so the next run tries again.
+            logger.warning("%s could not be re-fetched (%s); keeping the cached copy", path.name, exc)
+            return path
+        raise
+    # The GET's own validator describes exactly the bytes written, and it is
+    # there even when the HEAD failed -- without it, a file first fetched
+    # during a HEAD outage would have no sidecar and be fetched again next run.
+    validator = fetched or validator
     if validator is not None:
         stamp.write_text(validator)
     return path
 
 
-def _download_serfile(url: str, path: Path) -> None:
+def _prune_serfile_cache(directory: Path, keep: set[str]) -> None:
+    """Delete cached catalog files the listing no longer names.
+
+    Only the newest baseline and that year's updates are ever read, so a new
+    baseline year leaves the previous year's ~890 MB unreachable. Unlike the
+    PubMed files `download` keeps (which are the corpus, and the operator's to
+    delete), these are a cache only this module reads, so they are pruned here.
+    Only names the serfile patterns match are touched, sidecars included.
+    """
+    for entry in directory.iterdir():
+        name = entry.name.removesuffix(".etag").removesuffix(".part")
+        if name in keep:
+            continue
+        if _SERFILE_BASELINE_RE.fullmatch(name) or _SERFILE_UPDATE_RE.fullmatch(name):
+            logger.info("removing %s, which the catalog listing no longer names", entry.name)
+            entry.unlink()
+
+
+def _download_serfile(url: str, path: Path) -> str | None:
     """Stream one catalog file to ``path``, replacing it only once complete.
 
     Not pystow's ``ensure()``: its default urllib backend sets no timeout, so a
@@ -500,6 +564,8 @@ def _download_serfile(url: str, path: Path) -> None:
     bounds the gap between chunks, not the whole ~450 MB transfer. Writing to a
     ``.part`` and renaming means a killed job never leaves a truncated file
     under the real name for the next run to trust.
+
+    Returns the response's validator (see `_validator`), for the sidecar.
     """
     logger.info("downloading %s", url)
     part = path.with_name(path.name + ".part")
@@ -509,9 +575,11 @@ def _download_serfile(url: str, path: Path) -> None:
             with part.open("wb") as out:
                 for chunk in response.iter_content(chunk_size=1 << 20):
                     out.write(chunk)
+            validator = _validator(response.headers)
         os.replace(part, path)
     finally:
         part.unlink(missing_ok=True)
+    return validator
 
 
 def _catalog_year(raw: str | None) -> int | None:

@@ -235,11 +235,15 @@ the titles and abbreviations the export ships, and the serial catalog
 cache per year) for `start_year` / `end_year` / `active`. NLM publishes no `.md5`
 sidecars for the catalog, so each cached file gets an `.etag` sidecar holding the
 server's ETag instead, and a HEAD per file per run decides whether to re-fetch —
-a warm run downloads nothing. The catalog is an enrichment: if it is unreachable the
-step logs a warning and refreshes the titles while keeping the years a previous run
-loaded (NULL on a first run) rather than failing. A monthly update that fails to
-download is skipped with a warning and fetched again next run. About 1% of journals (proceedings volumes, mostly) have no catalog
-record and keep NULL years permanently.
+a warm run downloads nothing. The catalog is an enrichment: if it is unreachable, or
+its baseline will not parse, the step logs a warning and refreshes the titles while
+keeping the years a previous run loaded (NULL on a first run) rather than failing.
+A monthly update that fails to download or parse is skipped with a warning and
+fetched again next run, and a republished file whose re-fetch fails keeps its
+cached copy. Unlike the PubMed files, the catalog cache cleans up after itself:
+once a new baseline year has downloaded, the previous year's files are deleted.
+About 1% of journals (proceedings volumes, mostly) have no catalog record and keep
+NULL years permanently.
 
 `uv run pubmed2db validate <dir>` inspects a finished JSON export and writes a
 `validation_report.json` (pretty-printed, archivable) whose leading
