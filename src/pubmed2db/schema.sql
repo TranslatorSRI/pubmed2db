@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS source_file (
     file_number    INTEGER NOT NULL,           -- e.g. 1274
     file_order_key BIGINT  NOT NULL,           -- year_yy * 1000000 + file_number
     published_md5  TEXT,                       -- checksum from the .md5 sidecar
+    published_at   TIMESTAMPTZ,                -- when NCBI posted it (the sidecar's Last-Modified)
     downloaded_at  TIMESTAMPTZ,
     processed_at   TIMESTAMPTZ,                -- NULL until loaded into the tables
     n_articles     INTEGER,

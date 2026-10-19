@@ -261,3 +261,30 @@ def test_load_logs_current_rss_alongside_the_peak(con, gz_fixture, caplog):
 
     line = next(m for m in (r.getMessage() for r in caplog.records) if "loaded " in m)
     assert "RSS " in line and "peak " in line, line
+
+
+def test_corpus_provenance_names_the_cutoff(loaded_con):
+    """The cutoff is the last *loaded* file, and when NCBI posted it (#57)."""
+    from pubmed2db.status import corpus_provenance
+
+    loaded_con.execute(
+        "UPDATE source_file SET published_at = TIMESTAMPTZ '2025-06-01 14:05:00+00' "
+        "WHERE file_name = 'pubmed25n0002.xml.gz'"
+    )
+    # Downloaded but not loaded: not part of this build, so not its cutoff.
+    from pubmed2db.db import register_source_file
+
+    register_source_file(loaded_con, "pubmed25n0003.xml.gz", kind="update")
+
+    provenance = corpus_provenance(loaded_con)
+    assert provenance == {
+        "baseline_year": 2025,
+        "first_file": "pubmed25n0001.xml.gz",
+        "cutoff_file": "pubmed25n0002.xml.gz",
+        "cutoff_published_at": "2025-06-01T14:05:00+00:00",
+        "files_loaded": 2,
+        "article_versions_loaded": 4,
+        "deletions_loaded": 1,
+        "records_failed": 0,
+        "book_records_skipped": 0,
+    }

@@ -56,8 +56,9 @@ _GOOD_MD5 = "0123456789abcdef0123456789abcdef"
 
 
 class _FakeResponse:
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, last_modified: str | None = None) -> None:
         self.text = text
+        self.headers = {"Last-Modified": last_modified} if last_modified else {}
 
     def raise_for_status(self) -> None:
         pass
@@ -85,7 +86,7 @@ class _FakeEnsure:
 
 
 def _sync_kind(con, monkeypatch, tmp_path, *, urls, body, registry=None, limit=None,
-               ensure_module=None, verify=False):
+               ensure_module=None, verify=False, last_modified=None):
     """Run download._sync_kind against a fake listing/server."""
     from pubmed2db import download
 
@@ -95,7 +96,7 @@ def _sync_kind(con, monkeypatch, tmp_path, *, urls, body, registry=None, limit=N
         ensure_module = _FakeEnsure(blob)
     monkeypatch.setattr(download, "_ensure_urls", lambda *a, **k: urls)
     monkeypatch.setattr(download, "download_file", ensure_module.download)
-    session = SimpleNamespace(get=lambda *a, **k: _FakeResponse(body))
+    session = SimpleNamespace(get=lambda *a, **k: _FakeResponse(body, last_modified))
 
     return download._sync_kind(
         con,
@@ -317,3 +318,21 @@ def test_a_missing_local_file_is_verified_when_refetched(con, monkeypatch, tmp_p
 
     assert results == []
     assert not blob.exists()
+
+
+def test_sync_records_when_ncbi_posted_each_file(con, monkeypatch, tmp_path):
+    """The sidecar's Last-Modified is the file's publication time: the last
+    update file's is the build's cutoff (#57)."""
+    from datetime import datetime, timezone
+
+    url = "https://example.invalid/updatefiles/pubmed26n1636.xml.gz"
+    _sync_kind(con, monkeypatch, tmp_path, urls=[url], body=f"MD5(x)= {_GOOD_MD5}",
+               last_modified="Thu, 24 Sep 2026 18:05:18 GMT")
+    posted = con.execute("SELECT published_at FROM source_file").fetchone()[0]
+    assert posted == datetime(2026, 9, 24, 18, 5, 18, tzinfo=timezone.utc)
+
+    # A later sync whose header is missing or garbled keeps what we knew.
+    for header in (None, "not a date"):
+        _sync_kind(con, monkeypatch, tmp_path, urls=[url], body=f"MD5(x)= {_GOOD_MD5}",
+                   registry={"pubmed26n1636.xml.gz": _GOOD_MD5}, last_modified=header)
+        assert con.execute("SELECT published_at FROM source_file").fetchone()[0] == posted

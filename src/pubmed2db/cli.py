@@ -399,14 +399,15 @@ def validate(
 
 def _fmt_ts(ts: object) -> str:
     """Render a timestamp for the status report, or 'never' if missing."""
-    return ts.strftime("%Y-%m-%d %H:%M") if ts is not None else "never"
+    # Timestamps are TIMESTAMPTZ, read back in DuckDB's session zone; name it.
+    return ts.strftime("%Y-%m-%d %H:%M %Z").rstrip() if ts is not None else "never"
 
 
 @main.command()
 @click.pass_context
 def status(ctx: click.Context) -> None:
     """Report what's been downloaded, loaded, and is ready to export."""
-    from .status import export_readiness, summarize
+    from .status import corpus_provenance, export_readiness, summarize
 
     with closing(_connect(ctx)) as con:
         s = summarize(con)
@@ -446,6 +447,13 @@ def status(ctx: click.Context) -> None:
                 "→ run `pubmed2db load`"
             )
         click.echo(f"           last load: {_fmt_ts(s['last_load'])}")
+        provenance = corpus_provenance(con)
+        if provenance["cutoff_file"]:
+            posted = provenance["cutoff_published_at"]
+            click.echo(
+                f"           cutoff: {provenance['cutoff_file']}"
+                + (f", posted by NCBI {posted}" if posted else " (posting time unknown)")
+            )
         if s["skipped_records"]:
             # Records the loader could not store: extractor rejections plus book
             # citations. Kept visible because they are otherwise invisible —

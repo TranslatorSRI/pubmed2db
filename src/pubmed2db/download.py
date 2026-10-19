@@ -18,6 +18,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import duckdb
@@ -51,6 +53,23 @@ def parse_md5_text(text: str) -> str | None:
     return match.group(1).lower() if match else None
 
 
+def published_at(response: requests.Response) -> datetime | None:
+    """When NCBI posted a file, from its ``.md5`` sidecar's ``Last-Modified``.
+
+    The sidecar is fetched on every sync anyway, and NCBI writes it with the
+    data file: ``pubmed26n1636.xml.gz`` and its ``.md5`` both carry
+    ``Thu, 24 Sep 2026 18:05:18 GMT``, and the 2026 baseline's pair differ by
+    seconds. A HEAD on the data file would say the same for another ~2,600
+    requests per sync. The last update file's value is a
+    build's real cutoff (#57) — the next file belongs to the next build.
+    """
+    header = response.headers.get("Last-Modified")
+    try:
+        return parsedate_to_datetime(header) if header else None
+    except (TypeError, ValueError):
+        return None
+
+
 def file_md5(path: Path) -> str:
     """Compute the MD5 hex digest of a local file."""
     with path.open("rb") as fh:
@@ -78,10 +97,12 @@ def _sync_kind(
     for url in tqdm(urls, desc=f"Syncing PubMed {kind}", unit="file"):
         file_name = url.rsplit("/", 1)[-1]
         prior = registry.get(file_name)
+        posted = None
         try:
             response = session.get(url + ".md5", timeout=60)
             response.raise_for_status()
             published_md5 = parse_md5_text(response.text)
+            posted = published_at(response)
             if published_md5 is None:
                 logger.warning("no checksum in the md5 sidecar for %s", file_name)
         except requests.RequestException as exc:
@@ -161,6 +182,7 @@ def _sync_kind(
             file_name,
             kind=kind,
             published_md5=published_md5,
+            published_at=posted,
             mark_downloaded=changed,
         )
         results.append((path, kind))
