@@ -206,3 +206,23 @@ def test_timestamps_are_instants_not_wall_clock_times(con, gz_fixture):
     for value in (downloaded, processed, loaded):
         assert value.tzinfo is not None
         assert abs(now - value) < timedelta(minutes=5)
+
+
+def test_each_child_table_has_a_latest_view_matching_the_export(edge_con):
+    """The views are the consumer's version of the exports' snapshot filter, so
+    they must select exactly the rows the Parquet export ships."""
+    from pubmed2db.export import _VERSIONED_CHILDREN
+
+    for table in _VERSIONED_CHILDREN:
+        assert _rows(
+            edge_con,
+            f"(SELECT * FROM latest_{table} EXCEPT ALL SELECT c.* FROM {table} c "
+            "WHERE EXISTS (SELECT 1 FROM latest_article la "
+            "WHERE la.pmid = c.pmid AND la.source_file = c.source_file)) "
+            f"UNION ALL (SELECT c.* FROM {table} c WHERE EXISTS (SELECT 1 FROM latest_article la "
+            "WHERE la.pmid = c.pmid AND la.source_file = c.source_file) "
+            f"EXCEPT ALL SELECT * FROM latest_{table})",
+        ) == [], table
+    # PMID 1001's superseded baseline authors are excluded; its update's kept.
+    assert _rows(edge_con, "SELECT name FROM latest_author WHERE pmid = 1001") == [("Jane Smith",)]
+    assert _rows(edge_con, "SELECT count(*) FROM latest_author WHERE pmid = 2002") == [(0,)]

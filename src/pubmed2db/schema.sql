@@ -211,3 +211,45 @@ SELECT l.*
 FROM latest l
 LEFT JOIN last_delete d ON l.pmid = d.pmid
 WHERE d.del_order IS NULL OR d.del_order < l.file_order_key;
+
+-- The latest version's rows of each per-version child table: the
+-- (pmid, source_file) join a consumer would otherwise write against
+-- latest_article by hand, and get wrong by joining on pmid alone (which mixes
+-- every version's rows). Each is a semi-join, so it costs a scan of
+-- latest_article; for many queries, materialize latest_article first, as the
+-- exports do.
+CREATE OR REPLACE VIEW latest_abstract_text AS
+SELECT c.* FROM abstract_text c
+SEMI JOIN latest_article la ON la.pmid = c.pmid AND la.source_file = c.source_file;
+
+CREATE OR REPLACE VIEW latest_author AS
+SELECT c.* FROM author c
+SEMI JOIN latest_article la ON la.pmid = c.pmid AND la.source_file = c.source_file;
+
+CREATE OR REPLACE VIEW latest_author_affiliation AS
+SELECT c.* FROM author_affiliation c
+SEMI JOIN latest_article la ON la.pmid = c.pmid AND la.source_file = c.source_file;
+
+CREATE OR REPLACE VIEW latest_mesh_heading AS
+SELECT c.* FROM mesh_heading c
+SEMI JOIN latest_article la ON la.pmid = c.pmid AND la.source_file = c.source_file;
+
+CREATE OR REPLACE VIEW latest_mesh_qualifier AS
+SELECT c.* FROM mesh_qualifier c
+SEMI JOIN latest_article la ON la.pmid = c.pmid AND la.source_file = c.source_file;
+
+CREATE OR REPLACE VIEW latest_publication_type AS
+SELECT c.* FROM publication_type c
+SEMI JOIN latest_article la ON la.pmid = c.pmid AND la.source_file = c.source_file;
+
+CREATE OR REPLACE VIEW latest_article_grant AS
+SELECT c.* FROM article_grant c
+SEMI JOIN latest_article la ON la.pmid = c.pmid AND la.source_file = c.source_file;
+
+CREATE OR REPLACE VIEW latest_article_id AS
+SELECT c.* FROM article_id c
+SEMI JOIN latest_article la ON la.pmid = c.pmid AND la.source_file = c.source_file;
+
+CREATE OR REPLACE VIEW latest_history AS
+SELECT c.* FROM history c
+SEMI JOIN latest_article la ON la.pmid = c.pmid AND la.source_file = c.source_file;
