@@ -666,7 +666,7 @@ def load_journals(con: duckdb.DuckDBPyConnection) -> int:
                     rec.get("abbreviation_medline"),
                     rec.get("abbreviation_iso"),
                     # The overview file has no publication years; the serial
-                    # catalog does. A journal the catalog does not cover (~2% of
+                    # catalog does. A journal the catalog does not cover (~1% of
                     # them, mostly proceedings volumes) keeps NULLs rather than
                     # being dropped — see docs/journal-catalog.md.
                     *years.get(nlm_id, (None, None, None)),

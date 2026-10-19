@@ -207,7 +207,7 @@ def test_load_journals_takes_years_from_the_catalog_and_titles_from_j_entrez(con
 
 
 def test_load_journals_keeps_journals_the_catalog_does_not_cover(con, monkeypatch, tmp_path):
-    """~2% of J_Entrez journals (proceedings volumes, mostly) have no catalog
+    """~1% of J_Entrez journals (proceedings volumes, mostly) have no catalog
     record. They keep NULL years rather than being dropped."""
     from pubmed2db.load import load_journals
 
