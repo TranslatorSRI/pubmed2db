@@ -20,6 +20,9 @@ dependencies = [
     # behaviour (regexp classes, TRY_CAST, PER_THREAD_OUTPUT options), so the
     # floor tracks what the twin tests actually ran against.
     "duckdb>=1.5.5",
+    # DuckDB's Python client needs pytz to return a TIMESTAMPTZ, which every
+    # timestamp in the data model is (an aware instant, not a wall-clock time).
+    "pytz>=2026.5",
     "pyarrow>=25",
     "click>=8.4",
     "requests>=2.34",

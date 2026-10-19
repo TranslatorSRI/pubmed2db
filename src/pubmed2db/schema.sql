@@ -43,8 +43,8 @@ CREATE TABLE IF NOT EXISTS source_file (
     file_number    INTEGER NOT NULL,           -- e.g. 1274
     file_order_key BIGINT  NOT NULL,           -- year_yy * 1000000 + file_number
     published_md5  TEXT,                       -- checksum from the .md5 sidecar
-    downloaded_at  TIMESTAMP,
-    processed_at   TIMESTAMP,                  -- NULL until loaded into the tables
+    downloaded_at  TIMESTAMPTZ,
+    processed_at   TIMESTAMPTZ,                -- NULL until loaded into the tables
     n_articles     INTEGER,
     n_deletions    INTEGER,
     n_failed       INTEGER,                    -- records the extractor rejected
@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS source_file (
 -- derived from source_file instead, so it can never disagree with the data.
 CREATE TABLE IF NOT EXISTS pipeline_run (
     step        TEXT PRIMARY KEY,                 -- e.g. 'journals'
-    last_run_at TIMESTAMP
+    last_run_at TIMESTAMPTZ
 );
 
 -- One row per loaded version of an article. Identity is (pmid, source_file).
@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS article (
     medline_date   TEXT,                        -- raw PubDate/MedlineDate (e.g. '1998 Spring')
     date_completed DATE,
     date_revised   DATE,
-    loaded_at      TIMESTAMP
+    loaded_at      TIMESTAMPTZ
 );
 
 -- Journal dimension, sourced from the NLM Catalog (J_Entrez/J_Medline), not

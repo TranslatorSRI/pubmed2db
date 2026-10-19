@@ -187,3 +187,22 @@ def test_a_pmid_reinstated_after_its_deletion_is_latest_again(edge_con):
     assert _rows(edge_con, "SELECT article_title FROM latest_article WHERE pmid = 1002") == [
         ("Reinstated after its deletion.",)
     ]
+
+
+def test_timestamps_are_instants_not_wall_clock_times(con, gz_fixture):
+    """Before 1.0 these were naive TIMESTAMPs holding the loading machine's
+    local time, mixed with Python's UTC: unreadable without knowing the node's
+    time zone. Now each is an aware instant, comparable from anywhere."""
+    from datetime import datetime, timedelta, timezone
+
+    from pubmed2db.load import load_file
+
+    load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
+    downloaded, processed, loaded = con.execute(
+        "SELECT s.downloaded_at, s.processed_at, max(a.loaded_at) FROM source_file s "
+        "JOIN article a ON a.source_file = s.file_name GROUP BY ALL"
+    ).fetchone()
+    now = datetime.now(timezone.utc)
+    for value in (downloaded, processed, loaded):
+        assert value.tzinfo is not None
+        assert abs(now - value) < timedelta(minutes=5)
