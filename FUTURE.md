@@ -59,7 +59,7 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
 `_ensure_urls`); re-test before raising the ceiling.
 
 - **Drop `load._parse_journal_overview` when the ceiling is raised to admit
-  0.1.0** (~35 lines, with `_JOURNAL_KEYS`).
+  0.1.0** (#65; ~35 lines, with `_JOURNAL_KEYS`).
   [pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16)
   was merged and released in 0.1.0 (2026-10-08), so the fix exists upstream but
   not in any version we allow. `process_journal_overview()` cannot
