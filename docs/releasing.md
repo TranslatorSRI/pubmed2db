@@ -39,6 +39,7 @@ A major bump is often breaking for one output and harmless for another (1.0.0 re
 
 2. **Cut the release branch.**
    - Branch from the tip of the last PR in the stack, or from `main` if there is no stack.
+   - Set `version` in `pyproject.toml` to the release's version (`1.2.0` for v1.2) and run `uv lock`. It is the only place the code version is written: `pubmed2db --version`, and a database built outside a git checkout, read it from there.
    - Open the release PR on the milestone, with that same branch as its base, so its diff shows only what the release branch adds. GitHub retargets it onto `main` once the feature PRs beneath it merge (step 5).
    - Its description lists the PRs it carries, anything the build needs that a routine run does not (a reload, new outbound hosts, new settings), and a checklist to clear before the run.
    - Every item on that checklist is required. Something worth doing only if convenient goes on the next release's checklist instead: v1.1's one "optionally" item, the DuckDB cgroup probe, was the one skipped.

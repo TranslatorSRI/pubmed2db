@@ -423,3 +423,15 @@ def test_every_command_logs_the_duckdb_settings_it_runs_with(tmp_path, caplog):
     assert "memory_limit=953.6 MiB" in line
     assert "threads=" in line
     assert f"temp_directory={tmp_path / 'x.duckdb'}.tmp" in line
+
+
+def test_version_is_pyprojects():
+    """`__version__` is read from the installed metadata, so it is pyproject's;
+    it sat at a hand-copied 0.1.0 through two releases before that."""
+    import tomllib
+    from pathlib import Path
+
+    from pubmed2db import __version__
+
+    pyproject = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())
+    assert __version__ == pyproject["project"]["version"]

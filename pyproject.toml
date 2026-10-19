@@ -1,6 +1,6 @@
 [project]
 name = "pubmed2db"
-version = "0.1.0"
+version = "1.2.0"
 description = "Download PubMed abstracts, load them into DuckDB, and export to JSON and Parquet."
 readme = "README.md"
 requires-python = ">=3.11"   # hashlib.file_digest (download.file_md5)
