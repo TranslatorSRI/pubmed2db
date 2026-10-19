@@ -167,3 +167,141 @@ def record_load(con: duckdb.DuckDBPyConnection) -> None:
 def metadata(con: duckdb.DuckDBPyConnection) -> dict[str, str]:
     """Every key in ``pubmed2db_metadata``, as a dict."""
     return dict(con.execute(f"SELECT key, value FROM {METADATA_TABLE}").fetchall())
+
+
+# --- the data model's shape, read back from a database --------------------------
+
+#: The stability tiers a table or view's comment starts with, as ``"Stable."``.
+#: `docs/data-model.md` defines them; only ``internal`` is outside the contract.
+TIERS = ("stable", "provenance", "internal")
+
+
+def describe(con: duckdb.DuckDBPyConnection) -> list[dict]:
+    """Every table and view, with its tier, comment and columns, from the database itself.
+
+    The comments are ``schema.sql``'s ``COMMENT ON`` statements, so this is the
+    data dictionary as shipped. It is what `tests/test_data_model.py` pins and
+    what :func:`render_reference` turns into the reference half of
+    `docs/data-model.md`. Relations are sorted by name and columns are in
+    table order.
+    """
+    relations = con.execute(
+        """
+        SELECT table_name, 'table', comment FROM duckdb_tables()
+        WHERE database_name = current_database() AND schema_name = 'main' AND NOT temporary
+        UNION ALL
+        SELECT view_name, 'view', comment FROM duckdb_views()
+        WHERE database_name = current_database() AND schema_name = 'main'
+          AND NOT temporary AND NOT internal
+        ORDER BY 1
+        """
+    ).fetchall()
+    columns: dict[str, list[dict]] = {}
+    for table, name, data_type, comment in con.execute(
+        """
+        SELECT table_name, column_name, data_type, comment FROM duckdb_columns()
+        WHERE database_name = current_database() AND schema_name = 'main'
+        ORDER BY table_name, column_index
+        """
+    ).fetchall():
+        columns.setdefault(table, []).append(
+            {"name": name, "type": data_type, "comment": comment or ""}
+        )
+    described = []
+    for name, kind, comment in relations:
+        comment = comment or ""
+        first_word = comment.split(".", 1)[0].strip().lower()
+        described.append({
+            "name": name,
+            "kind": kind,
+            "tier": first_word if first_word in TIERS else None,
+            "comment": comment,
+            "columns": columns.get(name, []),
+        })
+    return described
+
+
+def shape(con: duckdb.DuckDBPyConnection) -> dict:
+    """The versioned part of :func:`describe`: names, kinds and column types.
+
+    Internal relations are left out, since they may change in any release, and
+    so are the comments, since rewording one changes no consumer's query.
+    """
+    from .export import JSON_FIELDS
+
+    return {
+        "data_model_version": DATA_MODEL_VERSION,
+        "relations": {
+            relation["name"]: {
+                "kind": relation["kind"],
+                "tier": relation["tier"],
+                "columns": [f"{c['name']} {c['type']}" for c in relation["columns"]],
+            }
+            for relation in describe(con)
+            if relation["tier"] != "internal"
+        },
+        "ndjson_fields": list(JSON_FIELDS),
+    }
+
+
+def only_adds(old: dict, new: dict) -> list[str]:
+    """What ``new`` removes or changes from ``old``; empty when it only adds.
+
+    The rule a minor version must follow, applied to two :func:`shape` dicts:
+    every relation keeps its kind and tier, a table keeps its columns *in order*
+    with new ones only appended (``load`` inserts by position, and a migrated
+    database can only append), a view keeps every column it had, and the NDJSON
+    record keeps every field.
+    """
+    problems = []
+    for name, before in old["relations"].items():
+        after = new["relations"].get(name)
+        if after is None:
+            problems.append(f"{name} was removed")
+            continue
+        for key in ("kind", "tier"):
+            if after[key] != before[key]:
+                problems.append(f"{name}'s {key} changed from {before[key]} to {after[key]}")
+        if before["kind"] == "table":
+            if after["columns"][: len(before["columns"])] != before["columns"]:
+                problems.append(f"{name}'s existing columns changed (new ones may only be appended)")
+        else:
+            missing = [c for c in before["columns"] if c not in after["columns"]]
+            if missing:
+                problems.append(f"{name} lost or retyped columns {missing}")
+    missing_fields = [f for f in old["ndjson_fields"] if f not in new["ndjson_fields"]]
+    if missing_fields:
+        problems.append(f"the NDJSON record lost fields {missing_fields}")
+    return problems
+
+
+def _fresh_database() -> duckdb.DuckDBPyConnection:
+    """An empty in-memory database at this code's data model."""
+    from .db import connect
+
+    return connect(":memory:")
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Regenerate the files that are derived from ``schema.sql``.
+
+    ``--golden PATH`` writes this version's :func:`shape`, which
+    `tests/test_data_model.py` compares every fresh database against; run it as
+    part of a deliberate version bump, never to make a failing test pass.
+    """
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(prog="python -m pubmed2db.datamodel", description=main.__doc__)
+    parser.add_argument("--golden", type=Path, help="write the shape JSON for this version here")
+    args = parser.parse_args(argv)
+    con = _fresh_database()
+    try:
+        if args.golden:
+            args.golden.write_text(json.dumps(shape(con), indent=2) + "\n")
+    finally:
+        con.close()
+
+
+if __name__ == "__main__":
+    main()

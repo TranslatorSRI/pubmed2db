@@ -47,6 +47,9 @@ def test_load_journals(con, monkeypatch):
     assert con.execute(
         "SELECT count(*) FROM journal_issn WHERE nlm_catalog_id = '0410462'"
     ).fetchone()[0] == 2
+    # A closed vocabulary in the data model's documentation.
+    assert {r[0] for r in con.execute("SELECT DISTINCT issn_type FROM journal_issn").fetchall()} \
+        == {"Print", "Electronic"}
 
 
 def test_load_journals_keeps_data_when_overview_is_empty(con, monkeypatch, tmp_path):

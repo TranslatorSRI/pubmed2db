@@ -7,6 +7,9 @@ shape changed — which is fine, but only together with a version bump.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import duckdb
 import pytest
 
@@ -226,3 +229,163 @@ def test_each_child_table_has_a_latest_view_matching_the_export(edge_con):
     # PMID 1001's superseded baseline authors are excluded; its update's kept.
     assert _rows(edge_con, "SELECT name FROM latest_author WHERE pmid = 1001") == [("Jane Smith",)]
     assert _rows(edge_con, "SELECT count(*) FROM latest_author WHERE pmid = 2002") == [(0,)]
+
+
+# --- the pinned shape ----------------------------------------------------------
+
+GOLDEN_DIR = Path(__file__).parent / "data_model"
+
+_BUMP_HELP = (
+    "The data model's shape changed. If that was deliberate, bump "
+    "datamodel.DATA_MODEL_VERSION (minor if this only adds, major otherwise; "
+    "docs/data-model.md says which), then write tests/data_model/<version>.json "
+    "with `uv run python -m pubmed2db.datamodel --golden tests/data_model/<version>.json` "
+    "and regenerate the doc. Never overwrite an existing version's file."
+)
+
+
+def _golden_files() -> list[tuple[tuple[int, int], Path]]:
+    return sorted(
+        (datamodel._major_minor(path.stem), path) for path in GOLDEN_DIR.glob("*.json")
+    )
+
+
+def test_a_fresh_database_has_exactly_this_versions_shape(con):
+    golden = json.loads((GOLDEN_DIR / f"{DATA_MODEL_VERSION}.json").read_text())
+    assert datamodel.shape(con) == golden, _BUMP_HELP
+
+
+def test_the_newest_golden_file_is_this_version():
+    """A golden file for an unreleased version, or a bump without one, both mean
+    the version and the shape have come apart."""
+    assert _golden_files()[-1][1].stem == DATA_MODEL_VERSION
+
+
+def test_minor_versions_only_add():
+    """Mechanically, what a minor bump promises consumers: nothing they read
+    goes away or moves. Between majors anything may change."""
+    files = _golden_files()
+    for (old_version, old_path), (new_version, new_path) in zip(files, files[1:]):
+        if old_version[0] == new_version[0]:
+            old = json.loads(old_path.read_text())
+            new = json.loads(new_path.read_text())
+            assert datamodel.only_adds(old, new) == [], f"{old_path.stem} -> {new_path.stem}"
+
+
+def test_only_adds_catches_what_a_minor_version_must_not_do():
+    base = {
+        "relations": {
+            "t": {"kind": "table", "tier": "stable", "columns": ["a INTEGER", "b VARCHAR"]},
+            "v": {"kind": "view", "tier": "stable", "columns": ["a INTEGER"]},
+        },
+        "ndjson_fields": ["id", "title"],
+    }
+
+    def changed(**edits):
+        new = json.loads(json.dumps(base))
+        for path, value in edits.items():
+            relation, key = path.split("__")
+            new["relations"][relation][key] = value
+        return new
+
+    grown = changed(t__columns=["a INTEGER", "b VARCHAR", "c DATE"], v__columns=["z INTEGER", "a INTEGER"])
+    grown["relations"]["new_table"] = {"kind": "table", "tier": "stable", "columns": []}
+    grown["ndjson_fields"].append("extra")
+    assert datamodel.only_adds(base, grown) == []
+
+    assert datamodel.only_adds(base, changed(t__columns=["a INTEGER", "c DATE", "b VARCHAR"]))
+    assert datamodel.only_adds(base, changed(t__columns=["a BIGINT", "b VARCHAR"]))
+    assert datamodel.only_adds(base, changed(v__columns=[]))
+    assert datamodel.only_adds(base, changed(t__tier="internal"))
+    assert datamodel.only_adds(base, {**base, "ndjson_fields": ["id"]})
+    dropped = json.loads(json.dumps(base))
+    del dropped["relations"]["v"]
+    assert datamodel.only_adds(base, dropped) == ["v was removed"]
+
+
+def test_every_relation_declares_its_tier_and_every_contract_column_its_meaning(con):
+    """The comments are the data dictionary shipped inside the file, so a
+    column without one is undocumented to anyone holding only the database."""
+    for relation in datamodel.describe(con):
+        assert relation["tier"] in datamodel.TIERS, relation["name"]
+        if relation["tier"] == "internal" or relation["kind"] == "view":
+            continue  # views say "Columns as <table>"
+        for column in relation["columns"]:
+            assert column["comment"].strip(), f"{relation['name']}.{column['name']}"
+
+
+def test_every_latest_view_names_the_table_it_filters(con):
+    from pubmed2db.export import _VERSIONED_CHILDREN
+
+    views = {r["name"]: r for r in datamodel.describe(con) if r["kind"] == "view"}
+    assert set(views) == {"latest_article"} | {f"latest_{t}" for t in _VERSIONED_CHILDREN}
+    for table in _VERSIONED_CHILDREN:
+        assert f"Columns as {table}." in views[f"latest_{table}"]["comment"]
+
+
+# --- invariants the documentation promises ------------------------------------------
+
+_CHILDREN_SQL = "SELECT table_name FROM duckdb_columns() WHERE column_name = 'source_file' " \
+    "AND table_name NOT IN ('article', 'deleted_pmid') AND table_name NOT LIKE 'latest_%' " \
+    "GROUP BY 1"
+
+
+def test_pmid_and_source_file_identify_an_article_version(edge_con):
+    assert _rows(
+        edge_con, "SELECT pmid, source_file FROM article GROUP BY ALL HAVING count(*) > 1"
+    ) == []
+
+
+def test_every_child_row_belongs_to_a_stored_article_version(edge_con):
+    children = [r[0] for r in _rows(edge_con, _CHILDREN_SQL)]
+    assert len(children) == 9
+    for table in children:
+        assert _rows(
+            edge_con,
+            f"SELECT count(*) FROM {table} c ANTI JOIN article a "
+            "ON a.pmid = c.pmid AND a.source_file = c.source_file",
+        ) == [(0,)], table
+
+
+def test_positions_are_0_based_and_unique_within_their_parent(edge_con):
+    for table, parent in (
+        ("abstract_text", ""),
+        ("author", ""),
+        ("author_affiliation", ", author_position"),
+        ("mesh_heading", ""),
+        ("publication_type", ""),
+    ):
+        assert _rows(
+            edge_con,
+            f"SELECT min(position) >= 0, count(*) = count(DISTINCT (pmid, source_file{parent}, position)) "
+            f"FROM {table}",
+        ) == [(True, True)], table
+    # Gap-free where the docs say so; author.position may have gaps by design.
+    for table in ("abstract_text", "mesh_heading", "publication_type"):
+        assert _rows(
+            edge_con,
+            f"SELECT count(*) FROM (SELECT max(position) + 1 = count(*) AS ok FROM {table} "
+            "GROUP BY pmid, source_file) WHERE NOT ok",
+        ) == [(0,)], table
+
+
+@pytest.mark.parametrize(
+    ("table", "column", "domain"),
+    [
+        ("source_file", "kind", {"baseline", "update"}),
+        ("author", "kind", {"author", "collective"}),
+        (
+            "history",
+            "pub_status",
+            {"received", "accepted", "revised", "aheadofprint", "ecollection", "pubmed",
+             "medline", "entrez", "pmc-release", "retracted"},
+        ),
+    ],
+)
+def test_closed_vocabularies_hold(edge_con, table, column, domain):
+    """The columns the docs give a closed list of values for (`journal_issn`'s is
+    in test_journals). `article_id.id_type` is deliberately absent: it is
+    documented as open."""
+    values = {r[0] for r in _rows(edge_con, f"SELECT DISTINCT {column} FROM {table}")}
+    assert values and values <= domain
+    assert _rows(edge_con, f"SELECT count(*) FROM {table} WHERE {column} IS NULL") == [(0,)]
