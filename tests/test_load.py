@@ -211,41 +211,6 @@ def test_registry_records_the_skip_counts(con, gz_fixture, tmp_path):
     assert summarize(con)["skipped_records"] == 1
 
 
-def test_schema_migrates_a_database_without_the_skip_columns(tmp_path):
-    """`CREATE TABLE IF NOT EXISTS` leaves an existing database at its old shape,
-    so the columns added after the first release need their own migration."""
-    import duckdb
-
-    from pubmed2db.db import connect, init_schema
-
-    db_path = tmp_path / "old.duckdb"
-    old = duckdb.connect(db_path)
-    old.execute(
-        """
-        CREATE TABLE source_file (
-            file_name TEXT PRIMARY KEY, kind TEXT NOT NULL, year_yy INTEGER NOT NULL,
-            file_number INTEGER NOT NULL, file_order_key BIGINT NOT NULL,
-            published_md5 TEXT, downloaded_at TIMESTAMP, processed_at TIMESTAMP,
-            n_articles INTEGER, n_deletions INTEGER
-        )
-        """
-    )
-    old.execute(
-        "INSERT INTO source_file VALUES "
-        "('pubmed25n0001.xml.gz', 'baseline', 25, 1, 25000001, NULL, NULL, NULL, NULL, NULL)"
-    )
-    old.close()
-
-    con = connect(db_path)
-    try:
-        init_schema(con)  # idempotent: the migration must survive a second run
-        assert con.execute(
-            "SELECT n_failed, n_book_records FROM source_file"
-        ).fetchall() == [(None, None)]
-    finally:
-        con.close()
-
-
 def test_publication_types_are_stored_with_names_and_order(loaded_con):
     """Direct DuckDB queries are a first-class consumer: the name and PubMed's
     order are columns, so filtering for "Review" needs no MeSH lookup."""
@@ -259,39 +224,6 @@ def test_publication_types_are_stored_with_names_and_order(loaded_con):
         (1, "D013485", "Research Support, Non-U.S. Gov't"),
         (2, "D016420", "Comment"),
     ]
-
-
-def test_schema_migrates_publication_type_to_names_and_positions(tmp_path, gz_fixture):
-    """A database loaded before names were parsed has the 3-column table. The
-    migration must append the columns in the order `load` inserts them BY
-    POSITION, and old rows read NULL -- "not yet reloaded", not "no name"."""
-    import duckdb
-
-    from pubmed2db.db import connect
-    from pubmed2db.load import load_file
-
-    db_path = tmp_path / "old.duckdb"
-    old = duckdb.connect(db_path)
-    old.execute(
-        "CREATE TABLE publication_type (pmid BIGINT NOT NULL, source_file TEXT NOT NULL, type_ui TEXT)"
-    )
-    old.execute("INSERT INTO publication_type VALUES (1, 'pubmed24n0001.xml.gz', 'D016428')")
-    old.close()
-
-    con = connect(db_path)
-    try:
-        assert [c[0] for c in con.execute("DESCRIBE publication_type").fetchall()] == [
-            "pmid", "source_file", "type_ui", "type_name", "position"
-        ]
-        load_file(con, gz_fixture("pubmed25n0002"), kind="update")
-        assert con.execute(
-            "SELECT type_name, position FROM publication_type WHERE pmid = 1 "
-        ).fetchall() == [(None, None)]
-        assert ("D016420", "Comment", 2) in con.execute(
-            "SELECT type_ui, type_name, position FROM publication_type WHERE pmid = 1001"
-        ).fetchall()
-    finally:
-        con.close()
 
 
 def test_load_progress_line_reports_rate_and_elapsed(con, gz_fixture, caplog):

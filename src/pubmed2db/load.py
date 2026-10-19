@@ -21,6 +21,7 @@ import requests
 from lxml import etree
 from pubmed_downloader.utils import Collective
 
+from .datamodel import record_load
 from .db import NEEDS_LOAD_SQL, parse_file_name, record_run
 from .parse import ParsedArticle, ParsedFile, parse_file
 from .util import current_rss_gib, download_file, eta_str, fmt_duration, peak_rss_gib
@@ -330,6 +331,8 @@ def load_files(
             "%d of %d file(s) failed to load and were skipped: %s",
             len(failed), total, ", ".join(failed),
         )
+    if loaded:
+        record_load(con)
 
     return loaded, failed
 

@@ -13,14 +13,27 @@
 -- first, then updatefiles in ascending number, and the year prefix increments
 -- across years. It is computed as (year_yy * 1000000 + file_number).
 --
--- Convention: this file only ever ADDS, and it runs on every connect. Tables are
--- `CREATE TABLE IF NOT EXISTS`, so a column added to a table here does *not*
--- appear in a database created before it — it needs its own
--- `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` line right below the table (see
--- `source_file.n_failed`). Nothing here drops a table or column, so a table
--- removed from this file keeps its rows forever in an existing database: after a
--- schema change, rebuild rather than `load --force` (see the README's
--- "`load --force` or a fresh database?").
+-- This file defines pubmed2db data model 1.0 (`datamodel.DATA_MODEL_VERSION`);
+-- `docs/data-model.md` documents it for consumers, and
+-- `tests/test_data_model.py` pins its shape, so a change here fails a test until
+-- the version is bumped deliberately.
+--
+-- Convention: from 1.0 on, this file only ever ADDS, and it runs on every
+-- connect. Tables are `CREATE TABLE IF NOT EXISTS`, so a column added to a table
+-- here does *not* appear in an existing database: it needs its own
+-- `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` line right below the table, placed
+-- so that a fresh and a migrated database end up with the same column order
+-- (`load` inserts BY POSITION). Adding a column is a minor version bump;
+-- renaming or dropping one is a major bump, which `datamodel.check_compatible`
+-- answers by refusing the old database rather than migrating it. Databases from
+-- before 1.0 are refused the same way.
+
+-- The data model version and who built the database (see datamodel.py). Written
+-- when the database is created and checked every time it is opened.
+CREATE TABLE IF NOT EXISTS pubmed2db_metadata (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 
 -- Registry of every PubMed XML file we know about. Drives incremental loads.
 CREATE TABLE IF NOT EXISTS source_file (
@@ -37,13 +50,6 @@ CREATE TABLE IF NOT EXISTS source_file (
     n_failed       INTEGER,                    -- records the extractor rejected
     n_book_records INTEGER                     -- <PubmedBookArticle>, not parsed
 );
-
--- CREATE TABLE IF NOT EXISTS leaves an existing database at its old shape, so
--- columns added after the first release need their own migration. Adding a
--- nullable column is a metadata-only change in DuckDB; NULL reads as "loaded
--- before this column existed", which is not the same as a counted zero.
-ALTER TABLE source_file ADD COLUMN IF NOT EXISTS n_failed INTEGER;
-ALTER TABLE source_file ADD COLUMN IF NOT EXISTS n_book_records INTEGER;
 
 -- Records when steps that leave no other timestamp were last run (currently just
 -- `journals`, whose tables are replaced wholesale). Download/load recency is
@@ -135,20 +141,14 @@ CREATE TABLE IF NOT EXISTS mesh_qualifier (
     major_topic   BOOLEAN
 );
 
+-- The name ("Review") and PubMed's order, which esummary's `pubtype` shares.
 CREATE TABLE IF NOT EXISTS publication_type (
     pmid        BIGINT NOT NULL,
     source_file TEXT   NOT NULL,
-    type_ui     TEXT                            -- MeSH LUID of the publication type
+    type_ui     TEXT,                           -- MeSH UI of the publication type
+    type_name   TEXT,
+    position    INTEGER                         -- 0-based
 );
-
--- The name ("Review") and PubMed's order, which esummary's `pubtype` shares.
--- Added after the first release, so migrated here rather than in the CREATE
--- above -- which keeps fresh and migrated databases at the same column order,
--- and `load` inserts BY POSITION. NULL means the row was loaded before names
--- were parsed: `load --force` (or a fresh database) fills it, and `export`
--- warns while any latest-version row is still NULL.
-ALTER TABLE publication_type ADD COLUMN IF NOT EXISTS type_name TEXT;
-ALTER TABLE publication_type ADD COLUMN IF NOT EXISTS position INTEGER;  -- 0-based
 
 CREATE TABLE IF NOT EXISTS grant_ (
     pmid        BIGINT NOT NULL,
@@ -162,8 +162,7 @@ CREATE TABLE IF NOT EXISTS grant_ (
 -- No `reference_citation` table: the citation graph is deliberately not stored.
 -- One real article carries ~444 references, so it would have been the largest
 -- table here, and nothing downstream consumes it. `parse._cited_pmids` keeps the
--- extraction if that changes. Databases built before this keep a stale table;
--- `DROP TABLE reference_citation` clears it.
+-- extraction if that changes.
 
 CREATE TABLE IF NOT EXISTS article_id (
     pmid        BIGINT NOT NULL,

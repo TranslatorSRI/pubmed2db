@@ -40,8 +40,12 @@ _VERSIONED_CHILDREN = (
     "history",
 )
 
-#: Dimension/bookkeeping tables exported as-is.
-_OTHER_TABLES = ("journal", "journal_issn", "source_file", "deleted_pmid", "pipeline_run")
+#: Dimension/bookkeeping tables exported as-is. ``pubmed2db_metadata`` goes with
+#: them so a Parquet export carries its data model version, like the database.
+_OTHER_TABLES = (
+    "journal", "journal_issn", "source_file", "deleted_pmid", "pipeline_run",
+    "pubmed2db_metadata",
+)
 
 #: PubMed ``ArticleId/@IdType`` -> CURIE prefix for the JSON ``identifiers``
 #: field. ``doi`` is lowercase to match Babel's ``src/prefixes.py``, so those
@@ -508,12 +512,9 @@ ids AS (
     GROUP BY pmid, source_file
 ),
 pts AS (
-    -- A NULL name or position is a row loaded before either was parsed (see
-    -- schema.sql); `export_json` warns about those. Ordering on the UI as well
-    -- keeps such a record's list deterministic until it is reloaded.
     SELECT pmid, source_file, list(
         {{'id': '{MESH_PREFIX}:' || type_ui, 'name': COALESCE(type_name, '')}}
-        ORDER BY position NULLS LAST, type_ui
+        ORDER BY position
     ) AS publication_types
     FROM publication_type pt
     WHERE EXISTS (
@@ -533,32 +534,6 @@ LEFT JOIN pts ON pts.pmid = la.pmid AND pts.source_file = la.source_file
     "PROJECTION",
     ",\n    ".join(f'{expr} AS "{name}"' for name, expr in _JSON_FIELDS),
 )
-
-
-def _warn_unnamed_publication_types(con: duckdb.DuckDBPyConnection) -> int:
-    """Warn if latest-version publication types predate the name column.
-
-    Names are parsed at load time, so a database loaded before they were ships
-    ``"name": ""`` for every type until it is reloaded — valid JSON, and silent
-    without this. Returns the count, for tests.
-    """
-    unnamed = con.execute(
-        """
-        SELECT count(*) FROM publication_type pt
-        WHERE pt.type_name IS NULL AND EXISTS (
-            SELECT 1 FROM _latest_snapshot la
-            WHERE la.pmid = pt.pmid AND la.source_file = pt.source_file
-        )
-        """
-    ).fetchone()[0]
-    if unnamed:
-        logger.warning(
-            "%d publication type(s) have no name because their files were loaded "
-            "before names were parsed; they export as \"name\": \"\". Run "
-            "`load --force` or rebuild the database to fill them.",
-            unnamed,
-        )
-    return unnamed
 
 
 def _shard_paths(out_dir: Path) -> list[Path]:
@@ -673,7 +648,6 @@ def export_json(
         total, f"at most {shards} shard(s)" if shards else "one shard per thread",
         out_dir, " (gzip)" if gzip_output else "",
     )
-    _warn_unnamed_publication_types(con)
 
     # DuckDB appends to a per-thread output directory rather than clearing it,
     # so a previous run's shards would survive this one and be read back as if

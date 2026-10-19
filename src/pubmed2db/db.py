@@ -9,6 +9,8 @@ from pathlib import Path
 
 import duckdb
 
+from .datamodel import check_compatible, stamp
+
 #: Filenames look like ``pubmed25n1274.xml.gz`` -> (year_yy=25, file_number=1274).
 _FILENAME_RE = re.compile(r"^pubmed(\d{2})n(\d+)\.xml\.gz$")
 
@@ -40,6 +42,10 @@ def connect(
 ) -> duckdb.DuckDBPyConnection:
     """Open (creating if needed) the DuckDB database and ensure the schema.
 
+    Raises :class:`pubmed2db.datamodel.IncompatibleDatabase` for a database
+    written under a data model this code cannot use — including any built
+    before data model 1.0 — and leaves that file untouched.
+
     ``threads`` caps DuckDB's thread pool. It is rarely needed: DuckDB reads the
     Slurm cgroup's CPU quota and already sizes the pool from ``--cpus-per-task``
     (measured on duckdb 1.5.4 — 2 threads under ``--cpus-per-task=2`` on a
@@ -65,7 +71,14 @@ def connect(
     if memory_limit is not None:
         config["memory_limit"] = memory_limit
     con = duckdb.connect(str(path), config=config)
-    init_schema(con)
+    try:
+        # Before schema.sql, so a database we refuse is left untouched.
+        check_compatible(con)
+        init_schema(con)
+        stamp(con)
+    except BaseException:
+        con.close()
+        raise
     return con
 
 

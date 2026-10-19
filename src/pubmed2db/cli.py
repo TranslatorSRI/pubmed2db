@@ -12,6 +12,7 @@ import duckdb
 from click.core import ParameterSource
 
 from . import __version__
+from .datamodel import IncompatibleDatabase
 from .db import connect
 
 log = logging.getLogger(__name__)
@@ -138,12 +139,15 @@ def _connect(ctx: click.Context):
     derived from the Slurm cgroup, so every step that sets none (download,
     journals, validate) records the cgroup probe AGENTS.md asks to re-take.
     """
-    con = connect(
-        ctx.obj["db"],
-        threads=ctx.obj["threads"],
-        temp_directory=ctx.obj["temp_dir"],
-        memory_limit=ctx.obj["memory_limit"],
-    )
+    try:
+        con = connect(
+            ctx.obj["db"],
+            threads=ctx.obj["threads"],
+            temp_directory=ctx.obj["temp_dir"],
+            memory_limit=ctx.obj["memory_limit"],
+        )
+    except IncompatibleDatabase as exc:
+        raise click.ClickException(f"{ctx.obj['db']}: {exc}") from exc
     memory_limit, threads, temp_directory = con.execute(
         "SELECT current_setting('memory_limit'), current_setting('threads'), "
         "current_setting('temp_directory')"
@@ -343,11 +347,18 @@ def validate(
     con = None
     db_path = Path(ctx.obj["db"])
     if db_path.exists():
-        candidate = _connect(ctx)
-        if articles_loaded(candidate):
-            con = candidate
+        try:
+            candidate = _connect(ctx)
+        except click.ClickException as exc:
+            # The checks that need it are optional, and the export can be
+            # validated without them: a database from another data model is a
+            # reason to skip those, not to refuse the whole run.
+            click.echo(f"Warning: not using the database: {exc.message}", err=True)
         else:
-            candidate.close()
+            if articles_loaded(candidate):
+                con = candidate
+            else:
+                candidate.close()
 
     try:
         if online and not email:
