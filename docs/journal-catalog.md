@@ -248,9 +248,12 @@ load-then-enrich shape this pipeline uses —
 merged into 0.1.0, is what lets a library user build a `Journal` from the
 overview file and fill the years from the catalog afterwards.
 
-One caveat when we adopt it: `Journal.active` defaults to `True`,
-which is wrong for the ~13,000 journals serfile marks ceased, so `active` would
-still have to be set from the catalog rather than taken from the model.
+One caveat for anyone who adopts it: `Journal.active` defaults to `True`,
+which is wrong for the ~13,000 journals serfile marks ceased, so `active` must
+still be set from the catalog rather than taken from the model. pubmed2db
+requires 0.1.0 but keeps its own parser for `J_Entrez.txt` anyway, because
+upstream's raises on any field it does not recognise
+(`load._parse_journal_overview` has the details).
 
 ## How to redo any of this
 

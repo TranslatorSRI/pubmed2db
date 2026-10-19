@@ -359,10 +359,13 @@ def _parse_journal_overview(path: Path):
     """Yield ``(record, issns)`` from an NLM journal overview file.
 
     The file is a series of ``key: value`` blocks separated by ``---`` lines.
-    We parse it directly rather than via ``pubmed_downloader.catalog`` because
-    that package's ``Journal`` model (<=0.0.14) requires start/end years that the
-    overview file does not provide, so it raises on the real data. 0.1.0 fixes
-    that (pubmed-downloader#16), but our ``<0.1`` pin excludes it.
+    Upstream's ``catalog.process_journal_overview()`` works since 0.1.0
+    (pubmed-downloader#16), and reads today's file identically (42,130 journals,
+    checked 2026-10-19), but we keep this parser because it is tolerant where
+    upstream's is strict: upstream raises on a key outside its ``REMAPPING``, on
+    a line with no ``:`` and on a block with no ``NlmId``. If NLM added a field,
+    upstream's parser would fail the whole ``journals`` step, while this one
+    ignores the field. Upstream also opens the file without an ``encoding``.
     """
     record: dict[str, str] = {}
     issns: list[tuple[str, str]] = []
