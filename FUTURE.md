@@ -55,26 +55,9 @@ on, and a copy left here rots into a contradiction of the code.
 
 ## Upstream dependency (`cthoyt/pubmed-downloader`)
 
-The dependency is pinned `<0.1` because we call private APIs (`_extract_article`,
+The dependency is pinned `<0.2` because we call private APIs (`_extract_article`,
 `_ensure_urls`); re-test before raising the ceiling.
 
-- **Drop `load._parse_journal_overview` when the ceiling is raised to admit
-  0.1.0** (#65; ~35 lines, with `_JOURNAL_KEYS`).
-  [pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16)
-  was merged and released in 0.1.0 (2026-10-08), so the fix exists upstream but
-  not in any version we allow. `process_journal_overview()` cannot
-  return a single record in ≤ 0.0.14: `Journal.start_year`/`end_year` are
-  annotated `int | None` but given no default, so pydantic makes them required,
-  and `J_Entrez.txt` has no such key. Every *other* field the overview file
-  cannot supply already defaults (`abbreviation_medline`, `synonyms`, `active`),
-  which is what marks these two as an oversight rather than a design statement.
-  Upstream's first answer to the PR was that the package reads the serfiles
-  instead; it was merged once the measurements showed `J_Entrez.txt` is the only
-  place `fulljournalname` and `IsoAbbr` exist at all, so a `Journal` built from
-  it can never have years and the fields must be optional.
-  **When we adopt it, keep setting `active` ourselves** — the model defaults it to
-  `True`, which is wrong for the ~13,000 ceased journals serfile identifies. See
-  [`docs/journal-catalog.md`](./docs/journal-catalog.md).
 - **`cites_pubmed_ids` never matches, but we no longer care.** `_extract_article`
   searches `medline_citation.findall(".//ReferenceList/Reference")`, but PubMed
   nests `<ReferenceList>` under `<PubmedData>`, so `Article.cites_pubmed_ids` is
@@ -122,7 +105,8 @@ Still open:
   `pubmed_data.findall(".//History/PubMedPubDate")` (looks safe only because
   `<Reference>` has no `<History>` — confirm), and the abstract/MeSH/author
   selectors. There may be one report to file, not two.
-- [ ] **Check which versions are affected.** We only tested 0.0.14. Establish the
+- [ ] **Check which versions are affected.** We tested 0.0.14 and 0.1.0; both have the
+  two `.//` selectors. Establish the
   range before claiming one in a report.
 - [ ] **Validate `_article_ids` against real data**, not just the fixture: records
   carrying unusual `ArticleId` types, and any whitespace or empty values it would
