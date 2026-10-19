@@ -144,15 +144,40 @@ def test_serfile_urls_picks_the_newest_baseline_and_skips_marcxml(monkeypatch):
       <a href="serfile.20260201.xml">serfile.20260201.xml</a>
       <a href="serfile.20260301.marcxml.xml">serfile.20260301.marcxml.xml</a>
     """
-    monkeypatch.setattr(
-        load_mod.requests, "get", lambda *a, **k: type("R", (), {"text": listing})()
-    )
+    monkeypatch.setattr(load_mod.requests, "get", lambda *a, **k: _Listing(200, listing))
 
     assert [u.rsplit("/", 1)[1] for u in real_serfile_urls()] == [
         "serfilebase.2026.xml",  # newest baseline, not the 2025 one
         "serfile.20260201.xml",  # updates oldest-first; 2025's delta is dropped
         "serfile.20260301.xml",
     ]
+
+
+class _Listing:
+    def __init__(self, status, text):
+        self.status, self.text = status, text
+
+    def raise_for_status(self):
+        import requests
+
+        if self.status >= 400:
+            raise requests.HTTPError(f"{self.status} Service Unavailable")
+
+
+def test_serfile_urls_reports_an_outage_as_an_outage(monkeypatch):
+    """A 503 page has no baseline in it either; without the status check the
+    error would read as "no serfilebase.YYYY.xml in the listing", which sends
+    whoever reads the log looking for a renamed file."""
+    import pytest
+    import requests
+
+    import pubmed2db.load as load_mod
+
+    monkeypatch.setattr(
+        load_mod.requests, "get", lambda *a, **k: _Listing(503, "<html>Maintenance</html>")
+    )
+    with pytest.raises(requests.HTTPError):
+        real_serfile_urls()
 
 
 def test_load_journals_takes_years_from_the_catalog_and_titles_from_j_entrez(con, monkeypatch):

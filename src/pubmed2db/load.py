@@ -396,7 +396,11 @@ def _serfile_urls() -> list[str]:
     here, and 80% of the records it yields are superseded duplicates that a
     caller has to dedupe. Anchoring on the baseline avoids both.
     """
-    html = requests.get(_SERFILE_LISTING, timeout=300).text
+    response = requests.get(_SERFILE_LISTING, timeout=300)
+    # Without this a 503 maintenance page reads as "no baseline in the
+    # listing", which sends whoever reads the log looking for a renamed file.
+    response.raise_for_status()
+    html = response.text
     # Both patterns require `.xml` immediately after the digits, which is what
     # rejects the `.marcxml.xml` spelling of the same data.
     baselines = set(_SERFILE_BASELINE_RE.findall(html))
