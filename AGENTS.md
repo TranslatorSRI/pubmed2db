@@ -35,16 +35,24 @@ explains its part; this table is only a map.
 ## Decisions that are not visible from the code
 
 - **The outputs follow a versioned data model, separate from the code
-  version.** `datamodel.DATA_MODEL_VERSION` (1.0) covers the database, the
-  Parquet export and the NDJSON record together. One number, because the
+  version.** The code version (`v1.2`) says how the code changed;
+  `datamodel.DATA_MODEL_VERSION` (1.0.0, standard semver) says how consumers
+  are affected, and `docs/releasing.md` defines both. It covers the database,
+  the Parquet export and the NDJSON record together. One number, because the
   NDJSON fields are SQL over the tables, so documenting one documents the other.
   Changing the shape fails `tests/test_data_model.py` until you bump it:
   - **minor** only appends (a column at a table's end, a table, a view, an
     NDJSON field);
   - **major** for anything else.
+  - **Patch** is for value fixes, and no test can detect that you owe one.
 
-  Then write `tests/data_model/<version>.json` with
-  `python -m pubmed2db.datamodel --golden`. **Never edit an existing version's
+  Then write `tests/data_model/<MAJOR.MINOR>.json` with
+  `python -m pubmed2db.datamodel --golden`; there is one file per
+  `MAJOR.MINOR`, because a patch cannot change the shape. Every bump, patch
+  included, also needs an entry in `docs/data-model.md`'s changelog saying, per
+  output, what consumers must do; a test checks that it exists. That per-output
+  table is the deliberate alternative to an extra version level for "breaks
+  some consumers but not others". **Never edit an existing version's
   golden file:** `test_minor_versions_only_add` compares consecutive files, and
   rewriting one erases the evidence it checks. Things that are easy to get
   wrong:

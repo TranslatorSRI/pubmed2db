@@ -20,10 +20,10 @@ generated from the comments shipped inside the database, so a copy of
 SELECT table_name, column_name, comment FROM duckdb_columns() WHERE schema_name = 'main';
 ```
 
-**Version.** This is data model **1.0**, first produced by the data build after
+**Version.** This is data model **1.0.0**, first produced by the data build after
 `2026sep26`. Earlier builds (`2026aug21`, `2026sep26`) predate the data model:
 current code refuses their databases, and their tables differ in the ways
-[listed below](#changes-from-the-pre-10-builds).
+[listed in the changelog](#changelog).
 
 ## Contents
 
@@ -36,7 +36,7 @@ current code refuses their databases, and their tables differ in the ways
 - [How the design was decided](#how-the-design-was-decided)
 - [Recipes](#recipes)
 - [Known limitations](#known-limitations)
-- [Changes from the pre-1.0 builds](#changes-from-the-pre-10-builds)
+- [Changelog](#changelog)
 - [Column reference](#column-reference)
 
 ## What pubmed2db produces
@@ -65,14 +65,25 @@ report and a sorted list of the build's PMIDs.
 
 ## Versioning and stability
 
-The data model has its own version, `MAJOR.MINOR`. It is separate from the
-pubmed2db code version: many code releases can share one data model.
+The data model has its own version, `MAJOR.MINOR.PATCH` in the standard
+[semantic versioning](https://semver.org/) sense. It says how *your* code is
+affected. pubmed2db's code version (`v1.2`, …) is separate and says how the
+code itself changed, so many code releases can share one data model.
 
-- **Minor** bumps only *add*: a table, a column (appended, never inserted), a
-  view, or an NDJSON field. Code written against 1.0 keeps working against 1.1.
-- **Major** bumps rename, remove, retype or change the meaning of something.
-  Changing an ordering column's base, or what NULL means in a column, counts as
-  a change of meaning.
+- **Patch** (1.0.0 → 1.0.1) fixes values without changing the shape or meaning
+  of anything: a parsing bug that left a field blank, a normalization that
+  missed a case. Your code needs no change; some outputs will differ, for the
+  better. The changelog says whether an existing database needs a reload to
+  pick the fix up.
+- **Minor** (1.0 → 1.1) only *adds*: a table, a column (appended, never
+  inserted), a view, or an NDJSON field. Code written against 1.0 keeps working
+  against 1.1.
+- **Major** (1 → 2) renames, removes, retypes or changes the meaning of
+  something. Changing an ordering column's base, or what NULL means in a
+  column, counts as a change of meaning. A major bump often leaves one output
+  untouched while breaking another, so its [changelog](#changelog) entry says,
+  **output by output**, what a consumer must do. Pin the major version, and
+  read that entry before moving to the next one.
 - **No bump** is needed for:
   - new values in a column documented as an open vocabulary, such as `article_id.id_type`;
   - new rows;
@@ -100,6 +111,7 @@ pubmed2db's own code enforces the rules on the database it writes:
 - It refuses to open a database from another major version, or from a newer
   minor version, and leaves that database untouched.
 - It upgrades an older minor version in place, since that only adds columns.
+- It opens any patch level, since a patch cannot change the shape.
 - It refuses every database built before 1.0.
 
 The repository's tests pin each version's exact shape, and check that a minor
@@ -491,10 +503,20 @@ CREATE TEMP TABLE current AS SELECT * FROM latest_article;
 - **The Parquet export has not yet been run on the full corpus**
   ([#29](https://github.com/TranslatorSRI/pubmed2db/issues/29)).
 
-## Changes from the pre-1.0 builds
+## Changelog
 
-The `2026aug21` and `2026sep26` builds predate the data model. Their databases
-differ from 1.0 as follows:
+Newest first. Each entry says, per output, what a consumer has to do.
+
+### 1.0.0
+
+The first versioned data model, first built after `2026sep26`. The
+`2026aug21` and `2026sep26` builds predate it.
+
+| Output | What a consumer must do |
+| --- | --- |
+| NDJSON | Nothing: the same fields with the same values. `metadata.json` is new beside the shards, and worth checking downloads against. |
+| Parquet | Update table and column names as below. `pubmed2db_metadata.parquet` and `metadata.json` are new. |
+| DuckDB | Rebuild: pubmed2db refuses a pre-1.0 database. Update queries as below. |
 
 | Pre-1.0 | 1.0 |
 | --- | --- |
@@ -509,8 +531,6 @@ differ from 1.0 as follows:
 | `author_affiliation.ror` | dropped (always NULL) |
 | naive `TIMESTAMP`s in the loading machine's local time | `TIMESTAMPTZ` |
 | — | `source_file.published_at`, and the `latest_<table>` views |
-
-The NDJSON record has the same fields and the same values.
 
 ## Column reference
 

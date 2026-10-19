@@ -13,7 +13,7 @@ plus four fields of our own: `id`, [`identifiers`](#identifiers-in-the-json-expo
 uses PubMed's own field names.
 
 All three outputs — the database, the Parquet export and the NDJSON export —
-follow one versioned **data model**, currently 1.0, documented for consumers in
+follow one versioned **data model**, currently 1.0.0, documented for consumers in
 [`docs/data-model.md`](./docs/data-model.md): what every table and field means,
 what PubMed data is left out, and how the design was decided. Each output carries
 its version, and the database documents its own columns
@@ -390,7 +390,7 @@ Two ways to apply one, and they are not interchangeable:
 > **A database from before data model 1.0 must be rebuilt.** Every command
 > refuses one, naming the problem and leaving the file untouched: 1.0 renamed and
 > dropped columns (see
-> [`docs/data-model.md`](./docs/data-model.md#changes-from-the-pre-10-builds)),
+> [`docs/data-model.md`](./docs/data-model.md#changelog)),
 > which no migration can do in place. The same holds for a database from another
 > major version. An older *minor* version is upgraded on open, since it only
 > lacks columns.

@@ -79,7 +79,8 @@ def test_a_pre_1_0_database_is_refused_and_left_untouched(tmp_path):
 
 @pytest.mark.parametrize(
     ("stored", "message"),
-    [("0.9", "rebuild the database"), ("2.0", "rebuild the database"), ("1.99", "newer than")],
+    [("0.9.0", "rebuild the database"), ("2.0.0", "rebuild the database"),
+     ("1.99.0", "newer than"), ("one", "unrecognized")],
 )
 def test_an_incompatible_version_is_refused(tmp_path, stored, message):
     path = tmp_path / "db.duckdb"
@@ -99,8 +100,8 @@ def test_an_older_minor_version_is_raised_to_ours(tmp_path, monkeypatch):
     stored version follows. Simulated by running code one minor ahead."""
     path = tmp_path / "db.duckdb"
     connect(path).close()
-    major, minor = DATA_MODEL_VERSION.split(".")
-    newer = f"{major}.{int(minor) + 1}"
+    major, minor, _ = datamodel.parse_version(DATA_MODEL_VERSION)
+    newer = f"{major}.{minor + 1}.0"
     monkeypatch.setattr(datamodel, "DATA_MODEL_VERSION", newer)
 
     con = connect(path)
@@ -238,27 +239,28 @@ GOLDEN_DIR = Path(__file__).parent / "data_model"
 _BUMP_HELP = (
     "The data model's shape changed. If that was deliberate, bump "
     "datamodel.DATA_MODEL_VERSION (minor if this only adds, major otherwise; "
-    "docs/data-model.md says which), then write tests/data_model/<version>.json "
-    "with `uv run python -m pubmed2db.datamodel --golden tests/data_model/<version>.json` "
+    "docs/data-model.md says which), then write tests/data_model/<MAJOR.MINOR>.json "
+    "with `uv run python -m pubmed2db.datamodel --golden tests/data_model/<MAJOR.MINOR>.json` "
     "and regenerate the doc. Never overwrite an existing version's file."
 )
 
 
 def _golden_files() -> list[tuple[tuple[int, int], Path]]:
     return sorted(
-        (datamodel._major_minor(path.stem), path) for path in GOLDEN_DIR.glob("*.json")
+        (datamodel.parse_version(path.stem), path) for path in GOLDEN_DIR.glob("*.json")
     )
 
 
 def test_a_fresh_database_has_exactly_this_versions_shape(con):
-    golden = json.loads((GOLDEN_DIR / f"{DATA_MODEL_VERSION}.json").read_text())
+    golden = json.loads((GOLDEN_DIR / f"{datamodel.shape_version(DATA_MODEL_VERSION)}.json").read_text())
     assert datamodel.shape(con) == golden, _BUMP_HELP
 
 
 def test_the_newest_golden_file_is_this_version():
-    """A golden file for an unreleased version, or a bump without one, both mean
-    the version and the shape have come apart."""
-    assert _golden_files()[-1][1].stem == DATA_MODEL_VERSION
+    """A golden file for an unreleased version, or a minor bump without one,
+    both mean the version and the shape have come apart. One file per
+    MAJOR.MINOR: a patch cannot change the shape."""
+    assert _golden_files()[-1][1].stem == datamodel.shape_version(DATA_MODEL_VERSION)
 
 
 def test_minor_versions_only_add():
@@ -414,8 +416,8 @@ def test_the_docs_column_reference_is_generated_from_the_database(con):
 
 
 def test_the_doc_names_only_columns_that_exist(con):
-    """Prose like `author.position` must name a real column. The section on
-    pre-1.0 builds is exempt: naming what no longer exists is its job."""
+    """Prose like `author.position` must name a real column. The changelog is
+    exempt: naming what no longer exists is its job."""
     import re
 
     columns = {
@@ -423,7 +425,7 @@ def test_the_doc_names_only_columns_that_exist(con):
     }
     relations = {r["name"] for r in datamodel.describe(con)}
     text = DOC.read_text()
-    prose = text[: text.index("\n## Changes from the pre-1.0 builds\n")]
+    prose = text[: text.index("\n## Changelog\n")]
     named = set(re.findall(r"`([a-z_]+)\.([a-z_]+)`", prose))
     unknown = {pair for pair in named if pair[0] in relations and pair not in columns}
     assert not unknown
@@ -467,3 +469,26 @@ def test_every_recipe_in_the_doc_runs(edge_con, tmp_path, monkeypatch):
                 session.execute(statement)
     finally:
         session.close()
+
+
+def test_patch_levels_neither_refuse_nor_downgrade(tmp_path, monkeypatch):
+    """A patch fixes values, never the shape, so code a patch behind or ahead
+    opens the database, and the stored version only ever rises."""
+    path = tmp_path / "db.duckdb"
+    connect(path).close()
+    major, minor, patch = datamodel.parse_version(DATA_MODEL_VERSION)
+
+    monkeypatch.setattr(datamodel, "DATA_MODEL_VERSION", f"{major}.{minor}.{patch + 1}")
+    connect(path).close()
+    monkeypatch.setattr(datamodel, "DATA_MODEL_VERSION", f"{major}.{minor}.{patch}")
+    con = connect(path)
+    try:
+        assert datamodel.stored_version(con) == f"{major}.{minor}.{patch + 1}"
+    finally:
+        con.close()
+
+
+def test_the_changelog_has_an_entry_for_this_version():
+    """Every bump, patch included, tells consumers what changed and what each
+    output's consumers must do; a version with no entry has told them nothing."""
+    assert f"\n### {DATA_MODEL_VERSION}\n" in _doc_section("Changelog")

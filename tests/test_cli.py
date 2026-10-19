@@ -315,7 +315,7 @@ def test_cli_export_then_validate_needs_no_flags(staged_download):
     # The export's metadata.json was found and checked, and the report says
     # which data model the export follows.
     report = json.loads((out_dir / "validation_report.json").read_text())
-    assert report["data_model_version"] == "1.0"
+    assert report["data_model_version"] == "1.0.0"
     assert any(
         c["name"] == "export-metadata" and c["status"] == "pass" for c in report["checks_run"]
     )

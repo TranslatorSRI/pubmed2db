@@ -15,19 +15,26 @@ it, and both tags are cut from it.
 | Data-build tag | the day the export finished (step 4) — unknown until then, so write `2026sepNN` in anything drafted before the run | `2026sep26` |
 | Version tag and GitHub release | `v<version>` / "pubmed2db v<version>" | `v1.0` |
 
-**Versions.**
-- Raise the **minor** version for anything a consumer can safely ignore, such as a new JSON field or a new table or column.
-- Raise the **major** version when an existing JSON field or Parquet column is renamed, removed or changes meaning.
-- Add a third component (`v1.1.1`) for a re-release that only fixes something.
+**Two version numbers, for two audiences.** The code version says how the *code* changed; the data model version says how *consumers* are affected. They move independently: a big code release can leave the data model alone, and a one-line fix can bump it.
 
-**The data model has its own version** (`datamodel.DATA_MODEL_VERSION`, 1.0 since the build after `2026sep26`), and it is what consumers pin. It follows the same minor/major rule, but it moves only when the shape of the outputs does, not with every code release. [`docs/data-model.md`](./data-model.md#versioning-and-stability) defines it. A release that changes it says so in its release PR and its GitHub release notes, with the new version and what changed. A major bump also says that existing databases must be rebuilt, since pubmed2db refuses to open them.
+**Code versions** (`vX.Y.Z`, the release tags):
+- **X** for a rewrite: a new language, framework or code organization.
+- **Y** for a release with substantial changes or improvements. This is the usual release, one per milestone (`v1.1`, `v1.2`).
+- **Z** for smaller improvements and fixes that shouldn't significantly change the output (`v1.1.1`).
+
+**The data model version** (`datamodel.DATA_MODEL_VERSION`, 1.0.0 since the build after `2026sep26`) is what consumers pin. It is standard semantic versioning, defined in [`docs/data-model.md`](./data-model.md#versioning-and-stability):
+- **patch:** values fixed, shape and meaning unchanged;
+- **minor:** only additions;
+- **major:** anything renamed, removed or changed in meaning.
+
+A major bump is often breaking for one output and harmless for another (1.0.0 renamed Parquet tables and left the NDJSON untouched). So rather than a separate level for "breaks some consumers", every bump gets an entry in that doc's changelog saying, output by output, what a consumer must do. A test fails until the entry exists. A release that changes the data model says so in its release PR and GitHub release notes, and links that entry.
 
 ## Steps
 
 1. **Plan.**
    - Open a milestone named for the version, with the planned build date as its due date. It is named for the version, not the date, so a build that slips does not leave it misnamed; the data-build tag records the actual date.
    - Put the build's issues and PRs on it. An item the run only has to *observe*, such as a measurement read from its logs, goes on the next milestone, with a line in the release PR's post-run checklist to record what the run showed.
-   - Decide whether the release changes the data model. `tests/test_data_model.py` fails on any shape change that was not bumped, so the question has to be answered before the release branch is green.
+   - Decide whether the release changes the data model, and at which level. `tests/test_data_model.py` fails on any shape change that was not bumped, but only a person can spot a patch-level change in values, so ask of every merged PR: does any output now hold different values?
    - Feature PRs may be stacked on each other, and each is reviewed on its own.
 
 2. **Cut the release branch.**

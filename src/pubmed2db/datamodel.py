@@ -2,10 +2,12 @@
 
 One version number covers every output — the DuckDB database, the Parquet export
 (the same tables as files) and the NDJSON export (a projection of them) — so a
-consumer of any of them pins one thing. It is **not** the code version: many
-code releases can share a data model, and `docs/data-model.md` says what each
-bump means. In short, a minor bump only *adds* (a table, a column, a view, an
-NDJSON field); a major bump renames, removes or changes the meaning of one.
+consumer of any of them pins one thing. It is **not** the code version: the
+code version says how the *code* changed, this one how consumers' code is
+affected, and `docs/data-model.md` says what each bump means. It is standard
+semantic versioning: a patch fixes values without changing the shape or meaning
+of anything, a minor bump only *adds* (a table, a column, a view, an NDJSON
+field), and a major bump renames, removes or changes the meaning of one.
 
 The version is written into the database when it is created, in the key/value
 ``pubmed2db_metadata`` table, and checked every time it is opened
@@ -28,7 +30,7 @@ from . import __version__
 
 #: The data model this code reads and writes. See the module docstring, and
 #: `docs/data-model.md` for when to bump it.
-DATA_MODEL_VERSION = "1.0"
+DATA_MODEL_VERSION = "1.0.0"
 
 #: The table holding :data:`DATA_MODEL_VERSION` and who built the database.
 METADATA_TABLE = "pubmed2db_metadata"
@@ -38,9 +40,25 @@ class IncompatibleDatabase(Exception):
     """The database was written under a data model this code cannot open."""
 
 
-def _major_minor(version: str) -> tuple[int, int]:
-    major, _, minor = version.partition(".")
-    return int(major), int(minor or 0)
+_VERSION_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
+
+
+def parse_version(version: str) -> tuple[int, int, int]:
+    """``"1.2.3"`` -> ``(1, 2, 3)``; a missing patch reads as 0. ValueError otherwise."""
+    match = _VERSION_RE.fullmatch(version)
+    if match is None:
+        raise ValueError(f"not a data model version: {version!r}")
+    return int(match[1]), int(match[2]), int(match[3] or 0)
+
+
+def shape_version(version: str) -> str:
+    """``MAJOR.MINOR``: the part of a version that a shape belongs to.
+
+    A patch cannot change the shape, so `tests/data_model/` holds one golden
+    file per ``MAJOR.MINOR``.
+    """
+    major, minor, _ = parse_version(version)
+    return f"{major}.{minor}"
 
 
 def code_version() -> str:
@@ -96,6 +114,7 @@ def check_compatible(con: duckdb.DuckDBPyConnection) -> None:
     an older minor only lacks columns that ``schema.sql``'s additive migrations
     then add. A newer minor is refused too: ``load`` inserts ``BY POSITION``, so
     old code writing into a table that has grown a column would misalign rows.
+    The patch level never decides: it cannot change the shape.
     """
     stored = stored_version(con)
     if stored is None:
@@ -109,17 +128,18 @@ def check_compatible(con: duckdb.DuckDBPyConnection) -> None:
                 "\"`load --force` or a fresh database?\"."
             )
         return
-    if not re.fullmatch(r"\d+\.\d+", stored):
-        raise IncompatibleDatabase(f"unrecognized data model version {stored!r}")
-    ours = _major_minor(DATA_MODEL_VERSION)
-    theirs = _major_minor(stored)
+    try:
+        theirs = parse_version(stored)
+    except ValueError:
+        raise IncompatibleDatabase(f"unrecognized data model version {stored!r}") from None
+    ours = parse_version(DATA_MODEL_VERSION)
     if theirs[0] != ours[0]:
         raise IncompatibleDatabase(
             f"this database is data model {stored}; this pubmed2db reads and writes "
             f"{DATA_MODEL_VERSION}. A major version changes existing tables, so "
             "rebuild the database with this pubmed2db (or use the one that built it)."
         )
-    if theirs > ours:
+    if theirs[:2] > ours[:2]:
         raise IncompatibleDatabase(
             f"this database is data model {stored}, newer than this pubmed2db's "
             f"{DATA_MODEL_VERSION}; upgrade pubmed2db to write to it."
@@ -142,14 +162,18 @@ def stamp(con: duckdb.DuckDBPyConnection) -> None:
     """Record the data model version, and who created the database if nobody has.
 
     Runs after ``schema.sql`` on every open. On a new database it writes all
-    three creation keys; on an older-minor one it raises the stored version to
-    ours, which is only correct because ``schema.sql`` has just added the
-    columns that version introduced.
+    three creation keys; on an older one it raises the stored version to ours,
+    which for a minor is only correct because ``schema.sql`` has just added the
+    columns that version introduced. A patch's fixes reach rows already loaded
+    only when they are reloaded; its changelog says whether that is needed, and
+    ``last_loaded_by`` says which code did the loading. Never lowered: older code
+    opening a newer-patch database leaves its version alone.
     """
-    if stored_version(con) is None:
+    stored = stored_version(con)
+    if stored is None:
         _set(con, "created_at", _now())
         _set(con, "created_by", code_version())
-    if stored_version(con) != DATA_MODEL_VERSION:
+    if stored is None or parse_version(stored) < parse_version(DATA_MODEL_VERSION):
         _set(con, "data_model_version", DATA_MODEL_VERSION)
 
 
@@ -230,7 +254,9 @@ def shape(con: duckdb.DuckDBPyConnection) -> dict:
     from .export import JSON_FIELDS
 
     return {
-        "data_model_version": DATA_MODEL_VERSION,
+        # MAJOR.MINOR only: a patch cannot change the shape, and must not need
+        # a new golden file.
+        "data_model_version": shape_version(DATA_MODEL_VERSION),
         "relations": {
             relation["name"]: {
                 "kind": relation["kind"],
