@@ -443,7 +443,9 @@ _JSON_FIELDS: tuple[tuple[str, str], ...] = (
     # DOI nor a PMCID; such a record still gets its own PMID CURIE.
     ("identifiers", "list_prepend('PMID:' || la.pmid, COALESCE(ids.identifiers, []::VARCHAR[]))"),
     ("journal_name", "COALESCE(j.title, '')"),
-    ("journal_abbrev", "COALESCE(j.abbreviation_iso, j.abbreviation_medline, '')"),
+    # J_Entrez.txt's IsoAbbr equalled MedAbbr in 42,056 of 42,056 journals, so
+    # data model 1.0 keeps only the one column (#48).
+    ("journal_abbrev", "COALESCE(j.abbreviation_medline, '')"),
     ("article_title", "COALESCE(la.article_title, '')"),
     ("volume", "COALESCE(la.volume, '')"),
     ("issue", "COALESCE(la.issue, '')"),

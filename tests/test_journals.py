@@ -25,7 +25,8 @@ def test_parse_journal_overview():
 
     nature, nature_issns = by_nlm["0410462"]
     assert nature["title"] == "Nature"
-    assert nature["abbreviation_iso"] == "Nature"
+    assert nature["abbreviation_medline"] == "Nature"
+    assert "abbreviation_iso" not in nature  # IsoAbbr == MedAbbr everywhere (#48)
     assert ("0028-0836", "Print") in nature_issns
     assert ("1476-4687", "Electronic") in nature_issns
 
@@ -40,7 +41,7 @@ def test_load_journals(con, monkeypatch):
     assert n == 2
 
     row = con.execute(
-        "SELECT title, abbreviation_iso FROM journal WHERE nlm_catalog_id = '0410462'"
+        "SELECT title, abbreviation_medline FROM journal WHERE nlm_catalog_id = '0410462'"
     ).fetchone()
     assert row == ("Nature", "Nature")
     assert con.execute(

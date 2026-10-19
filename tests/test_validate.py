@@ -46,7 +46,7 @@ _EFETCH = {
             <PubDate><MedlineDate>1998 Spring</MedlineDate></PubDate>
           </JournalIssue>
           <Title>Journal of Examples</Title>
-          <ISOAbbreviation>J. Examples</ISOAbbreviation>
+          <ISOAbbreviation>J Examples</ISOAbbreviation>
         </Journal>
         <ArticleTitle>Article three with a MedlineDate range.</ArticleTitle>
       </Article></MedlineCitation>

@@ -91,9 +91,8 @@ def _article_rows(parsed: ParsedArticle, source_file: str, order_key: int) -> di
         )
         if not is_collective:
             for aff in author.affiliations:
-                ror = aff.reference.curie if aff.reference else None
                 rows["author_affiliation"].append(
-                    (pmid, source_file, author.position, aff.name, ror)
+                    (pmid, source_file, author.position, aff.name)
                 )
 
     for heading in a.headings:
@@ -338,10 +337,11 @@ def load_files(
 
 
 #: Maps keys in NLM's J_Entrez/J_Medline overview file to our journal columns.
+#: ``IsoAbbr`` is not read: it equalled ``MedAbbr`` in 42,056 of 42,056 journals,
+#: so data model 1.0 dropped the column that held it (#48).
 _JOURNAL_KEYS = {
     "JournalTitle": "title",
     "MedAbbr": "abbreviation_medline",
-    "IsoAbbr": "abbreviation_iso",
     "NlmId": "nlm_catalog_id",
 }
 
@@ -631,13 +631,12 @@ def load_journals(con: duckdb.DuckDBPyConnection) -> int:
         con.execute("DELETE FROM journal")
         con.execute("DELETE FROM journal_issn")
         con.executemany(
-            "INSERT INTO journal VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO journal VALUES (?,?,?,?,?,?)",
             [
                 (
                     nlm_id,
                     rec.get("title"),
                     rec.get("abbreviation_medline"),
-                    rec.get("abbreviation_iso"),
                     # The overview file has no publication years; the serial
                     # catalog does. A journal the catalog does not cover (~2% of
                     # them, mostly proceedings volumes) keeps NULLs rather than

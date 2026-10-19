@@ -85,7 +85,6 @@ CREATE TABLE IF NOT EXISTS journal (
     nlm_catalog_id       TEXT PRIMARY KEY,
     title                TEXT,
     abbreviation_medline TEXT,
-    abbreviation_iso     TEXT,
     start_year           INTEGER,
     end_year             INTEGER,
     active               BOOLEAN
@@ -120,8 +119,7 @@ CREATE TABLE IF NOT EXISTS author_affiliation (
     pmid        BIGINT NOT NULL,
     source_file TEXT   NOT NULL,
     position    INTEGER NOT NULL,              -- author position
-    affiliation TEXT,
-    ror         TEXT                            -- grounded ROR curie, if present
+    affiliation TEXT
 );
 
 CREATE TABLE IF NOT EXISTS mesh_heading (
