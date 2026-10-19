@@ -35,7 +35,7 @@ _VERSIONED_CHILDREN = (
     "mesh_heading",
     "mesh_qualifier",
     "publication_type",
-    "grant_",
+    "article_grant",
     "article_id",
     "history",
 )

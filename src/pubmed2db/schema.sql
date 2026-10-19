@@ -148,7 +148,10 @@ CREATE TABLE IF NOT EXISTS publication_type (
     position    INTEGER                         -- 0-based
 );
 
-CREATE TABLE IF NOT EXISTS grant_ (
+-- Grants listed on the article (<GrantList>). Named `article_grant`, not
+-- `grant`: GRANT is reserved in standard SQL and in Postgres, where anyone
+-- loading the Parquet export would otherwise have to quote it.
+CREATE TABLE IF NOT EXISTS article_grant (
     pmid        BIGINT NOT NULL,
     source_file TEXT   NOT NULL,
     grant_id    TEXT,

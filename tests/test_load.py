@@ -64,7 +64,7 @@ def test_child_tables_populated(loaded_con):
     baseline = "pubmed25n0001.xml.gz"
 
     assert loaded_con.execute(
-        "SELECT grant_id, acronym, agency, country FROM grant_ WHERE pmid = 1001"
+        "SELECT grant_id, acronym, agency, country FROM article_grant WHERE pmid = 1001"
     ).fetchall() == [("R01 GM123456", "GM", "NIGMS NIH HHS", "United States")]
 
     assert loaded_con.execute(
