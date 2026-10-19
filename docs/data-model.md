@@ -352,11 +352,21 @@ code (`export._JSON_FIELDS`); the data model's tests pin the list.
 Every omission below is deliberate or measured. None of it is silent:
 whole-record skips are counted in `source_file`.
 
+**Records PubMed's bulk files never contain.** About 37,000 PubMed records,
+the NCBI Bookshelf chapters (StatPearls and other books), are in no build. On
+2026-10-19 live PubMed had 40,108 records matching `pubmed books[filter]`.
+2,694 of them reach a build as ordinary `PubmedArticle` records (monograph
+series such as IARC's, catalogued with a journal ID). The other 37,414,
+about 0.09% of PubMed, never appear in the baseline or updatefiles, which held
+no `<PubmedBookArticle>` across all 1,636 files of the 2026sep26 build. E-utilities
+`efetch` does serve them, as `<PubmedBookArticle>`. Whether a build should
+fetch them that way is [#27](https://github.com/TranslatorSRI/pubmed2db/issues/27).
+
 **Whole records that are not stored:**
 
 | What | Why | Where it shows |
 | --- | --- | --- |
-| `<PubmedBookArticle>` (NCBI Bookshelf citations) | Only journal citations are parsed ([#27](https://github.com/TranslatorSRI/pubmed2db/issues/27)) | `source_file.n_book_records` |
+| `<PubmedBookArticle>`, if a file ever carries one | Only journal citations are parsed; none occurred in the 2026 files (above) | `source_file.n_book_records` |
 | Records the parser rejects: no `ArticleTitle`, no `MedlineJournalInfo`/`NlmUniqueID`, a `<Grant>` without `Agency` or `Country`, a non-numeric date, an unexpected `Y`/`N` flag | The upstream parser requires these | `source_file.n_failed` |
 | An earlier copy of a PMID repeated within one file | The last copy wins | — |
 
@@ -553,8 +563,10 @@ CREATE TEMP TABLE current AS SELECT * FROM latest_article;
 
 ## Known limitations
 
-- **Book citations are not parsed** ([#27](https://github.com/TranslatorSRI/pubmed2db/issues/27)).
-  They are counted in `source_file.n_book_records`.
+- **NCBI Bookshelf chapters are absent**: about 37,000 PMIDs, which PubMed's
+  bulk files don't contain
+  ([#27](https://github.com/TranslatorSRI/pubmed2db/issues/27); see
+  [What is not in the data](#what-is-not-in-the-data)).
 - **Grounding is off.** Affiliations and author names are not linked to ROR or
   ORCID beyond the ORCIDs PubMed itself supplies, and those checksums are not
   validated.
