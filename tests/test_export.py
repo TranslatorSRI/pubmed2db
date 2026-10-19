@@ -256,7 +256,9 @@ def test_reexport_removes_stale_shards(loaded_con, tmp_path):
     # The COPY writer names shards from FILENAME_PATTERN '{i}', so the exact
     # stem is DuckDB's business -- what matters is that exactly one shard is
     # left and it is the gzipped one this run wrote.
-    survivors = sorted(path.name for path in out.iterdir() if path.name != "metadata.json")
+    survivors = sorted(
+        path.name for path in out.iterdir() if path.name not in ("metadata.json", "SHA256SUMS")
+    )
     assert len(survivors) == 1, survivors
     assert survivors[0].endswith(".ndjson.gz")
 
@@ -399,6 +401,10 @@ def test_exports_describe_themselves_in_metadata_json(loaded_con, tmp_path):
         assert meta["database"]["data_model_version"] == DATA_MODEL_VERSION
         assert [(f["name"], f["sha256"]) for f in meta["files"]] == [
             (path.name, file_sha256(path)) for path in sorted(files)
+        ]
+        # The same hashes, as `sha256sum -c` reads them: "<hex>  <name>".
+        assert (out / "SHA256SUMS").read_text().splitlines() == [
+            f"{f['sha256']}  {f['name']}" for f in meta["files"]
         ]
 
 
@@ -714,3 +720,21 @@ def test_a_damaged_gzip_shard_fails_to_decompress(loaded_con, tmp_path):
     flipped[len(data) // 2] ^= 0x01
     with pytest.raises((gzip.BadGzipFile, zlib.error)):
         gzip.decompress(bytes(flipped))
+
+
+def test_sha256sums_verifies_with_the_standard_tool(loaded_con, tmp_path):
+    """The file exists for consumers without a JSON parser, so check it with the
+    tool they would use: `sha256sum` (GNU) or `shasum -a 256` (macOS)."""
+    import shutil
+    import subprocess
+
+    from pubmed2db.export import export_json
+
+    out = tmp_path / "json"
+    export_json(loaded_con, out)
+    tool = (["sha256sum"] if shutil.which("sha256sum")
+            else ["shasum", "-a", "256"] if shutil.which("shasum") else None)
+    if tool is None:
+        pytest.skip("no sha256sum or shasum on this machine")
+    checked = subprocess.run([*tool, "-c", "SHA256SUMS"], cwd=out, capture_output=True, text=True)
+    assert checked.returncode == 0, checked.stdout + checked.stderr

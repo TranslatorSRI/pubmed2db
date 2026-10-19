@@ -52,7 +52,7 @@ Every export directory also holds `metadata.json`. It records:
 - the record count;
 - the code and database it came from;
 - the corpus cutoff;
-- a SHA-256 for every file.
+- a SHA-256 for every file, repeated in `SHA256SUMS` for `sha256sum -c`.
 
 `pubmed2db validate` checks the directory against it and writes
 `validation_report.json`, which repeats the data model version.

@@ -106,8 +106,10 @@ The DuckDB database is stored as `<data-dir>/pubmed.duckdb`; override with `--db
 
 Both exports finish by writing `metadata.json` into the output directory: the
 data model version, the record count, the corpus cutoff (the last file loaded,
-and when NCBI posted it), and a SHA-256 per file. `validate` checks the shards
-against it, and `status` prints the same cutoff.
+and when NCBI posted it), and a SHA-256 per file. The same hashes go into
+`SHA256SUMS`, so `sha256sum -c SHA256SUMS` checks a download with no JSON parser.
+`validate` checks the shards against `metadata.json`, and `status` prints the
+same cutoff.
 
 ### How the JSON export is written
 

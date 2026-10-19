@@ -28,6 +28,10 @@ _SHARD_STEM = "pubmed_metadata_"
 #: checksum per file. See :func:`write_export_metadata`.
 METADATA_FILE = "metadata.json"
 
+#: The same checksums in ``sha256sum``'s own format, so a consumer can verify a
+#: download with ``sha256sum -c SHA256SUMS`` and no JSON parser.
+CHECKSUMS_FILE = "SHA256SUMS"
+
 logger = logging.getLogger(__name__)
 
 #: Minimum gap between progress log lines, so large exports don't spam the log.
@@ -723,14 +727,16 @@ def file_sha256(path: Path) -> str:
 def write_export_metadata(
     con: duckdb.DuckDBPyConnection, out_dir: Path, files: list[Path], *, fmt: str, records: int,
 ) -> Path:
-    """Write ``metadata.json``: the export's data model version, provenance and checksums.
+    """Write ``metadata.json`` and ``SHA256SUMS``: the export's version, provenance and checksums.
 
     An export travels without its database, so this is where a consumer learns
     which data model it follows (``data_model_version``; check the major), what
     corpus it holds (``corpus``: the cutoff file and when NCBI posted it, #57),
     how many records to expect, and each file's size and SHA-256. ``validate``
-    checks the directory against it. Written last, after every file it
-    describes.
+    checks the directory against it. ``SHA256SUMS`` repeats the hashes for
+    ``sha256sum -c``. Both are written last, after every file they describe,
+    and ``metadata.json`` after ``SHA256SUMS``, so its presence means the export
+    finished.
 
     The hashes are for *identity*, not damage. A gzip shard that is truncated or
     corrupted already fails to decompress: DuckDB writes each shard as one gzip
@@ -742,6 +748,10 @@ def write_export_metadata(
     """
     from .status import corpus_provenance
 
+    hashes = {path.name: file_sha256(path) for path in sorted(files)}
+    (out_dir / CHECKSUMS_FILE).write_text(
+        "".join(f"{digest}  {name}\n" for name, digest in hashes.items())
+    )
     content = {
         "data_model_version": datamodel.DATA_MODEL_VERSION,
         "format": fmt,
@@ -751,7 +761,7 @@ def write_export_metadata(
         "database": datamodel.metadata(con),
         "corpus": corpus_provenance(con),
         "files": [
-            {"name": path.name, "bytes": path.stat().st_size, "sha256": file_sha256(path)}
+            {"name": path.name, "bytes": path.stat().st_size, "sha256": hashes[path.name]}
             for path in sorted(files)
         ],
     }
