@@ -58,21 +58,21 @@ on, and a copy left here rots into a contradiction of the code.
 The dependency is pinned `<0.1` because we call private APIs (`_extract_article`,
 `_ensure_urls`); re-test before raising the ceiling.
 
-- **Drop `load._parse_journal_overview` if
+- **Drop `load._parse_journal_overview` when the ceiling is raised to admit
+  0.1.0** (~35 lines, with `_JOURNAL_KEYS`).
   [pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16)
-  lands** (~35 lines, with `_JOURNAL_KEYS`). `process_journal_overview()` cannot
+  was merged and released in 0.1.0 (2026-10-08), so the fix exists upstream but
+  not in any version we allow. `process_journal_overview()` cannot
   return a single record in ≤ 0.0.14: `Journal.start_year`/`end_year` are
   annotated `int | None` but given no default, so pydantic makes them required,
   and `J_Entrez.txt` has no such key. Every *other* field the overview file
   cannot supply already defaults (`abbreviation_medline`, `synonyms`, `active`),
   which is what marks these two as an oversight rather than a design statement.
-  Upstream's answer to the PR was that the package reads the serfiles instead;
-  our measurement says that is half right — the catalog does carry the years, but
-  `J_Entrez.txt` is the only place `fulljournalname` and `IsoAbbr` exist at all,
-  so a `Journal` built from it can never have years and the fields must be
-  optional. That makes the PR worth pursuing, not moot: it is the same
-  load-then-enrich shape this pipeline uses.
-  **If it lands, keep setting `active` ourselves** — the model defaults it to
+  Upstream's first answer to the PR was that the package reads the serfiles
+  instead; it was merged once the measurements showed `J_Entrez.txt` is the only
+  place `fulljournalname` and `IsoAbbr` exist at all, so a `Journal` built from
+  it can never have years and the fields must be optional.
+  **When we adopt it, keep setting `active` ourselves** — the model defaults it to
   `True`, which is wrong for the ~13,000 ceased journals serfile identifies. See
   [`docs/journal-catalog.md`](./docs/journal-catalog.md).
 - **`cites_pubmed_ids` never matches, but we no longer care.** `_extract_article`
@@ -100,7 +100,9 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
 
 Nothing has been filed against `cthoyt/pubmed-downloader` for either, and nothing
 should be until the open items below are answered. (The journal-model fix is the
-exception: already filed as https://github.com/cthoyt/pubmed-downloader/pull/16.)
+exception: filed and merged as https://github.com/cthoyt/pubmed-downloader/pull/16.
+Its maintainer will not consider a pull request or issue whose text or code is
+AI-generated, so whatever we report must be written by hand.)
 
 Real-data evidence gathered on the `add-doi-and-pmcids` branch, which found the
 `article_id` bug independently:

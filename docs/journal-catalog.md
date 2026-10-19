@@ -215,10 +215,9 @@ not-invented-here:
 `_parse_catalog` cache was unreachable in 0.0.14 — `catalog.py:661` read
 `if cache_path.is_file() and not force_process and False:` — and is already fixed
 on `main` (`catalog.py:660`), so reporting it would be reporting a solved problem.
-The `Journal` year fields go the other way: still `int | None` with no default on
-`main` (`catalog.py:72-73`), so
+The `Journal` year fields are fixed too, though only from 0.1.0:
 [pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16)
-remains live.
+gave them a `None` default and was merged and released on 2026-10-08.
 
 `CatalogRecord` also has no ISO abbreviation field, which is moot for us for a
 separate measured reason: in `J_Entrez.txt`, `IsoAbbr` equals `MedAbbr` in
@@ -227,7 +226,7 @@ separate measured reason: in `J_Entrez.txt`, `IsoAbbr` equals `MedAbbr` in
 without a difference. `journal.abbreviation_iso` could be dropped — that is a
 Parquet schema change for downstream consumers, so it is its own decision.
 
-### Why `process_journal_overview()` is still worth fixing upstream
+### Why `process_journal_overview()` was worth fixing upstream
 
 It cannot return a single record in ≤ 0.0.14: `Journal.start_year` and
 `end_year` are annotated `int | None` but given no default, so pydantic makes
@@ -244,11 +243,11 @@ in `CatalogRecord`, and no reconstruction from the catalog reaches them (Finding
 catalog cannot supply; it can *never* supply publication years, because its input
 has none; and therefore those years must be optional. That is precisely the
 load-then-enrich shape this pipeline uses —
-[pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16) is
-what would let a library user build a `Journal` from the overview file and fill
-the years from the catalog afterwards.
+[pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16),
+merged into 0.1.0, is what lets a library user build a `Journal` from the
+overview file and fill the years from the catalog afterwards.
 
-One caveat if it lands and we adopt it: `Journal.active` defaults to `True`,
+One caveat when we adopt it: `Journal.active` defaults to `True`,
 which is wrong for the ~13,000 journals serfile marks ceased, so `active` would
 still have to be set from the catalog rather than taken from the model.
 
