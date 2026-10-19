@@ -728,10 +728,17 @@ def write_export_metadata(
     An export travels without its database, so this is where a consumer learns
     which data model it follows (``data_model_version``; check the major), what
     corpus it holds (``corpus``: the cutoff file and when NCBI posted it, #57),
-    how many records to expect, and a SHA-256 per file — the one way to tell a
-    complete download from a truncated shard, which gzip alone does not reveal
-    until the truncated stream is read to its end. ``validate`` checks the
-    directory against it. Written last, after every file it describes.
+    how many records to expect, and each file's size and SHA-256. ``validate``
+    checks the directory against it. Written last, after every file it
+    describes.
+
+    The hashes are for *identity*, not damage. A gzip shard that is truncated or
+    corrupted already fails to decompress: DuckDB writes each shard as one gzip
+    member, so a cut-off file raises ``EOFError`` and a flipped bit fails the
+    CRC (measured, 2026-10-19). What only a hash catches is a shard that is
+    intact but is not the one this export wrote, such as a leftover from an
+    earlier build, which Babel's docs warn about. A hash also guards a
+    ``--no-gzip`` export, which has no CRC at all.
     """
     from .status import corpus_provenance
 

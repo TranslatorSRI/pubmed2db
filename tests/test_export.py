@@ -685,3 +685,32 @@ def test_the_heartbeat_thread_never_dies_on_an_error(tmp_path, caplog, monkeypat
     assert still_running, "the heartbeat died on the first error"
     assert not thread.is_alive()
     assert any("could not log export progress" in r.getMessage() for r in caplog.records)
+
+
+def test_a_damaged_gzip_shard_fails_to_decompress(loaded_con, tmp_path):
+    """Why metadata.json's hashes are documented as identity, not integrity:
+    gzip already catches damage. That holds only while DuckDB writes each shard
+    as a single gzip member. A multi-member file truncated at a member boundary
+    is still valid gzip, just shorter, and only the record count would notice."""
+    import gzip
+    import zlib
+
+    from pubmed2db.export import export_json
+
+    (shard,) = export_json(loaded_con, tmp_path / "json", shards=1)
+    data = shard.read_bytes()
+
+    members, rest = 0, data
+    while rest:
+        decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        decompressor.decompress(rest)
+        rest = decompressor.unused_data
+        members += 1
+    assert members == 1
+
+    with pytest.raises(EOFError):
+        gzip.decompress(data[:-1])
+    flipped = bytearray(data)
+    flipped[len(data) // 2] ^= 0x01
+    with pytest.raises((gzip.BadGzipFile, zlib.error)):
+        gzip.decompress(bytes(flipped))

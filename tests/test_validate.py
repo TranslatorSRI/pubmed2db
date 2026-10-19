@@ -1018,8 +1018,9 @@ def test_progress_lines_and_peak_rss_are_logged(export_dir, monkeypatch, caplog)
 
 
 def test_export_metadata_catches_a_changed_or_missing_shard(loaded_con, tmp_path):
-    """metadata.json lists every shard with its SHA-256: the one guard against a
-    shard truncated or replaced after the export wrote it."""
+    """metadata.json lists every shard with its SHA-256. Damage is gzip's to
+    catch (shard-readable); the hash catches a shard that is intact but not the
+    one this export wrote, even one with the right record count."""
     import gzip
 
     from pubmed2db.export import export_json
@@ -1031,9 +1032,18 @@ def test_export_metadata_catches_a_changed_or_missing_shard(loaded_con, tmp_path
     assert check["status"] == "pass", check
     assert report["data_model_version"] == "1.0.0"
 
-    # Rewritten with one record fewer: still a valid gzip of valid NDJSON, so
-    # only the checksum and the record count can tell.
-    lines = gzip.decompress(shards[0].read_bytes()).splitlines(keepends=True)
+    original = shards[0].read_bytes()
+    lines = gzip.decompress(original).splitlines(keepends=True)
+
+    # Same records, one value changed: valid gzip, valid NDJSON, the right
+    # count. Only the hash can tell this is not the shard the export wrote.
+    shards[0].write_bytes(gzip.compress(b"".join(lines).replace(b"Revised title", b"Other title")))
+    report = validate.run_validation(out, online=False)
+    check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
+    assert check["status"] == "fail"
+    assert check["observed"] == "pubmed_metadata_0.ndjson.gz: checksum differs from metadata.json"
+
+    # Rewritten with one record fewer: the count disagrees too.
     shards[0].write_bytes(gzip.compress(b"".join(lines[:-1])))
     report = validate.run_validation(out, online=False)
     assert report["status"] == "fail"

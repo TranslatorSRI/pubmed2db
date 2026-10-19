@@ -79,9 +79,13 @@ explains its part; this table is only a map.
     one snapshot and filter against it. A test holds the views to exactly the
     exports' rows.
   - **`metadata.json` is written last**, after every file it checksums, and
-    `validate` fails on any shard that differs from it. It supplies the
-    per-shard checksum Babel#1050 noted was missing; a record count alone cannot
-    tell a truncated shard from a complete one.
+    `validate` fails on any shard that differs from it. **The SHA-256s are for
+    identity, not damage**, so don't justify them, or drop them, on integrity
+    grounds. gzip already catches damage: DuckDB writes each shard as one gzip
+    member, so truncation anywhere raises `EOFError` and a flipped bit fails
+    the CRC (measured 2026-10-19). Only a hash catches an intact shard that
+    isn't the one this export wrote (a leftover from another build) or damage
+    to a `--no-gzip` export.
 
 - **Reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
   as-is, no upstream changes.** We take its bulk download and its `Article` data

@@ -342,8 +342,10 @@ def check_export_metadata(
     """Hold the directory to the ``metadata.json`` its export wrote; return that metadata.
 
     The export records each shard's SHA-256 and the record count, so a shard
-    that is missing, extra, truncated or rewritten since is caught here rather
-    than by whoever downloads it. An export without the file (one from before
+    that is missing, extra, or replaced since — even by an intact one with the
+    same record count — is caught here rather than by whoever downloads it.
+    Damage is caught earlier and without this: a truncated or corrupted gzip
+    shard fails ``shard-readable``. An export without the file (one from before
     data model 1.0) is a ``skip``: nothing to check against, not a failure.
     """
     path = export_dir / METADATA_FILE
