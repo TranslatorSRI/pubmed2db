@@ -550,9 +550,17 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
     baseline. This uses ``iterparse`` rather than the whole-tree ``etree.parse``
     that :mod:`pubmed2db.parse` uses for the much smaller PubMed files: the
     baseline is ~450 MB, and streaming it costs ~5 s and ~50 MiB.
+
+    A monthly update that will not parse is skipped, but a baseline that will
+    not parse, or holds no records, raises. The updates only amend it, so
+    skipping it would return a few thousand records that `load_journals`
+    cannot tell from a real catalog -- and would load NULL years for every
+    other journal, where the exception lets it keep the years already loaded.
     """
     years: dict[str, tuple[int | None, int | None, bool | None]] = {}
     for path in paths:
+        is_baseline = bool(_SERFILE_BASELINE_RE.fullmatch(path.name))
+        n_before = len(years)
         try:
             for _, element in etree.iterparse(
                 os.fspath(path), tag="NLMCatalogRecord", recover=True
@@ -572,10 +580,14 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
         except etree.XMLSyntaxError as exc:
             # NLM really does publish empty files -- serfile.20240903.xml is
             # Content-Length: 0 -- and `recover=True` does not save an empty
-            # document. Per file, because the alternative is that one bad file
-            # costs every journal its years: `_journal_years` catches broadly,
-            # so an exception escaping here would empty the whole mapping.
+            # document. Per file, because the alternative is that one bad
+            # update costs every journal its years: `_journal_years` catches
+            # broadly, so an exception escaping here would empty the mapping.
+            if is_baseline:
+                raise
             logger.warning("%s failed to parse (%s); skipping it", path, exc)
+        if is_baseline and len(years) == n_before:
+            raise ValueError(f"{path} parsed to no catalog records")
     return years
 
 

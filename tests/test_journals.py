@@ -509,3 +509,60 @@ def test_parse_serfile_skips_a_file_it_cannot_parse():
     assert years["0410462"] == (1869, None, True)  # the good file still counts
 
     assert _parse_serfile([empty]) == {}  # and alone it is empty, not an error
+
+
+def test_parse_serfile_raises_when_the_baseline_will_not_parse(tmp_path):
+    """Unlike an update, a broken baseline must not be skipped: the updates alone
+    are a non-empty mapping that `load_journals` cannot tell from a real
+    catalog, so every journal they do not restate would load NULL years."""
+    import shutil
+
+    import pytest
+    from lxml import etree
+
+    from pubmed2db.load import _parse_serfile
+
+    update = FIXTURES / "serfile_update_sample.xml"
+    broken = tmp_path / "serfilebase.2026.xml"
+    broken.write_bytes(b"")
+    with pytest.raises(etree.XMLSyntaxError):
+        _parse_serfile([broken, update])
+
+    # A baseline that parses to nothing is just as unusable.
+    broken.write_text("<?xml version='1.0'?><NLMCatalogRecordSet/>")
+    with pytest.raises(ValueError, match="no catalog records"):
+        _parse_serfile([broken, update])
+
+    good = tmp_path / "serfilebase.2025.xml"
+    shutil.copy(FIXTURES / "serfile_sample.xml", good)
+    assert _parse_serfile([good, update])["0410462"] == (1869, 2025, False)
+
+
+def test_load_journals_keeps_loaded_years_when_the_baseline_is_broken(con, monkeypatch, tmp_path):
+    from pubmed2db.load import load_journals
+
+    monkeypatch.setattr(
+        catalog, "ensure_journal_overview", lambda **_: FIXTURES / "J_Entrez_sample.txt"
+    )
+    monkeypatch.setattr(
+        "pubmed2db.load._ensure_serfile", lambda: [FIXTURES / "serfile_sample.xml"]
+    )
+    load_journals(con)
+
+    broken = tmp_path / "serfilebase.2026.xml"
+    broken.write_bytes(b"")
+    monkeypatch.setattr(
+        "pubmed2db.load._ensure_serfile",
+        lambda: [broken, FIXTURES / "serfile_update_sample.xml"],
+    )
+    load_journals(con)
+    years = {
+        nlm_id: rest
+        for nlm_id, *rest in con.execute(
+            "SELECT nlm_catalog_id, start_year, end_year, active FROM journal"
+        ).fetchall()
+    }
+    # 7708172 is not in the update: skipping the baseline would have made it NULL.
+    assert years["7708172"] == [None, 1983, False]
+    # 0410462 is, but a partial catalog is not applied on top of the kept years.
+    assert years["0410462"] == [1869, None, True]
