@@ -82,8 +82,11 @@ CORE_FIELDS = ("article_title", "volume", "issue",
 #: the two sides have different sources, or because a disagreement is evidence
 #: about efetch's *rendering* rather than about what we parsed.
 #:
-#: ``journal_name``/``journal_abbrev`` come from the NLM Catalog dimension rather
-#: than the article XML, so the two sources can legitimately differ.
+#: ``journal_name``/``journal_abbrev`` come from the journal dimension, whose
+#: titles and abbreviations are NLM's ``J_Entrez.txt`` (not the serial catalog,
+#: which only supplies years), rather than the article XML, so the two sources
+#: can legitimately differ — though ``JournalTitle`` is byte-identical to what
+#: efetch serves, so they rarely do (#31).
 #:
 #: ``pub_date`` is here for the second reason, and it is worth spelling out
 #: because putting it in CORE_FIELDS looks obviously right.
@@ -102,7 +105,7 @@ CORE_FIELDS = ("article_title", "volume", "issue",
 #: Grouped by *why* each field is soft, because the reasons are unrelated: the
 #: run summary prints them separately, and each group is its own report check
 #: with its own warning code. Everything else is derived from this rather than
-#: written twice — the summary line once said "NLM Catalog source" for every
+#: written twice — the summary line once gave the journal reason for every
 #: soft field, and the single report check still called a ``pub_date``
 #: disagreement a journal mismatch, both long after ``pub_date`` joined for an
 #: entirely different reason.
@@ -116,7 +119,7 @@ class _SoftGroup(NamedTuple):
 
 _SOFT_GROUPS: tuple[_SoftGroup, ...] = (
     _SoftGroup(
-        "NLM Catalog source", ("journal_name", "journal_abbrev"),
+        "journal dimension, not the article XML", ("journal_name", "journal_abbrev"),
         "journal-soft", "journal_mismatches",
         "Sampled journal name/abbrev differs from Entrez (different source).",
     ),
