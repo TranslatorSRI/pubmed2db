@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
+import time
 
 import pytest
 
@@ -68,6 +70,15 @@ def _fake_eutils_factory(articles, *, entrez_count=2):
             wanted = [int(x) for x in params["id"].split(",")]
             body = "".join(articles[p] for p in wanted if p in articles)
             return f"<PubmedArticleSet>{body}</PubmedArticleSet>".encode()
+        if endpoint == "esummary.fcgi":
+            # Shaped like the live response: every ID asked about is named, a
+            # missing one with "error".
+            wanted = params["id"].split(",")
+            result = {"uids": wanted}
+            for uid in wanted:
+                result[uid] = {"uid": uid} if int(uid) in articles else {
+                    "uid": uid, "error": "cannot get document summary"}
+            return json.dumps({"result": result}).encode()
         raise AssertionError(f"unexpected endpoint {endpoint}")
 
     return fake
@@ -579,6 +590,43 @@ def test_a_drop_pubmed_no_longer_serves_is_a_warning(
     a warning (so the manifest is still written) rather than an error.
     """
     monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
+    manifest = _manifest_from_before_the_database(tmp_path, {1001, 1003, 4242})
+    manifest_out = tmp_path / "next.txt.gz"
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest,
+        manifest_out=manifest_out, email="me@example.com",
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["pubmed_confirmation"] == "entrez"
+    assert drops["database_rebuilt_since"] is True
+    assert drops["explained_by_pubmed"] == [4242]
+    assert drops["unexplained"] == []
+    assert report["status"] == "warn"
+    assert any(w["code"] == "drops_retired_upstream" for w in report["warnings"])
+    assert not any(e["code"] == "unexplained_drops" for e in report["errors"])
+    assert manifest_out.exists()
+
+
+def _manifest_from_before_the_database(tmp_path, pmids):
+    """A previous manifest written before the database existed: a rebuild."""
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest(pmids, manifest)
+    an_hour_ago = time.time() - 3600
+    os.utime(manifest, (an_hour_ago, an_hour_ago))
+    return manifest
+
+
+def test_a_drop_pubmed_no_longer_serves_fails_a_continuing_database(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """The same drop on a database that exported it last time: a missed update file.
+
+    A continuing database loads every update file, so a record PubMed retired
+    has its DeleteCitation here unless a file was skipped. PubMed agreeing the
+    record is gone does not explain how *this* database lost it.
+    """
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
     manifest = tmp_path / "prev.txt.gz"
     validate.write_manifest({1001, 1003, 4242}, manifest)
     manifest_out = tmp_path / "next.txt.gz"
@@ -588,13 +636,50 @@ def test_a_drop_pubmed_no_longer_serves_is_a_warning(
         manifest_out=manifest_out, email="me@example.com",
     )
     drops = report["checks"]["drops_since_previous"]
-    assert drops["pubmed_confirmation"] == "entrez"
+    assert drops["database_rebuilt_since"] is False
     assert drops["explained_by_pubmed"] == [4242]
-    assert drops["unexplained"] == []
-    assert report["status"] == "warn"
-    assert any(w["code"] == "drops_retired_upstream" for w in report["warnings"])
-    assert not any(e["code"] == "unexplained_drops" for e in report["errors"])
-    assert manifest_out.exists()
+    assert report["status"] == "fail"
+    assert any(e["code"] == "missed_deletions" for e in report["errors"])
+    assert not manifest_out.exists()
+
+
+def test_a_degraded_esummary_response_is_not_an_explanation(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """A response that does not mention a PMID says nothing about it.
+
+    NCBI can answer 200 with an error body or a truncated one. Reading every
+    PMID missing from that as "PubMed dropped it" would turn lost records into a
+    warning, and the warning run's manifest would bury them for good.
+    """
+    fake = _fake_eutils_factory(_EFETCH)
+
+    def degraded(endpoint, params, **kwargs):
+        if endpoint == "esummary.fcgi":
+            return b'{"esummaryresult": ["Unable to obtain query #1"]}'
+        return fake(endpoint, params, **kwargs)
+
+    monkeypatch.setattr(validate, "_eutils", degraded)
+    manifest = _manifest_from_before_the_database(tmp_path, {1001, 1003, 4242})
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["pubmed_confirmation"] == "unreachable"
+    assert drops["explained_by_pubmed"] == []
+    assert drops["unexplained"] == [4242]
+    assert report["status"] == "fail"
+
+
+def test_pmids_served_needs_an_answer_for_every_pmid(monkeypatch):
+    """A well-formed response that leaves a PMID out raises rather than guessing."""
+    def partial(endpoint, params, **_):
+        return json.dumps({"result": {"uids": ["1001"], "1001": {"uid": "1001"}}}).encode()
+
+    monkeypatch.setattr(validate, "_eutils", partial)
+    with pytest.raises(RuntimeError, match="did not answer"):
+        validate.pmids_served([1001, 4242], api_key=None, email=None)
 
 
 def test_a_drop_pubmed_still_serves_is_an_error(
@@ -623,12 +708,12 @@ def test_too_many_unexplained_drops_are_not_sent_to_pubmed(
     export_dir, loaded_con, monkeypatch, tmp_path
 ):
     """Past the cap the previous manifest is suspect, not the export."""
-    def no_efetch(endpoint, params, **_):
-        if endpoint == "efetch.fcgi":
-            raise AssertionError("efetch must not be called over the limit")
+    def no_esummary(endpoint, params, **_):
+        if endpoint == "esummary.fcgi":
+            raise AssertionError("esummary must not be called over the limit")
         return _fake_eutils_factory(_EFETCH)(endpoint, params)
 
-    monkeypatch.setattr(validate, "_eutils", no_efetch)
+    monkeypatch.setattr(validate, "_eutils", no_esummary)
     monkeypatch.setattr(validate, "_DROP_CONFIRM_LIMIT", 1)
     manifest = tmp_path / "prev.txt.gz"
     validate.write_manifest({1001, 1003, 4242, 4243}, manifest)
@@ -640,6 +725,9 @@ def test_too_many_unexplained_drops_are_not_sent_to_pubmed(
     assert drops["pubmed_confirmation"] == "over_limit"
     assert drops["unexplained"] == [4242, 4243]
     assert report["status"] == "fail"
+    error = next(e for e in report["errors"] if e["code"] == "unexplained_drops")
+    assert "without --previous-manifest" in error["message"]
+    assert "run validate online" not in error["message"]
 
 
 def test_unreachable_pubmed_leaves_drops_unexplained(
@@ -660,7 +748,8 @@ def test_unreachable_pubmed_leaves_drops_unexplained(
     assert drops["pubmed_confirmation"] == "unreachable"
     assert drops["unexplained"] == [4242]
     error = next(e for e in report["errors"] if e["code"] == "unexplained_drops")
-    assert "online" in error["message"]
+    assert "reachable" in error["message"]
+    assert "run validate online" not in error["message"]
 
 
 # --------------------------------------------------------------------------- #
