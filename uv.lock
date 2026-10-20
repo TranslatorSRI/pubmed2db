@@ -548,6 +548,7 @@ dependencies = [
     { name = "pytz" },
     { name = "requests" },
     { name = "tqdm" },
+    { name = "urllib3" },
 ]
 
 [package.optional-dependencies]
@@ -567,6 +568,7 @@ requires-dist = [
     { name = "pytz", specifier = ">=2026.5" },
     { name = "requests", specifier = ">=2.34" },
     { name = "tqdm", specifier = ">=4.70" },
+    { name = "urllib3", specifier = ">=2" },
 ]
 provides-extras = ["dev"]
 

@@ -159,15 +159,27 @@ def _connect(ctx: click.Context):
     return con
 
 
+def _sync(con, **options) -> list:
+    """Run `download.sync`, reporting files that failed as a CLI error.
+
+    The rest were still fetched and registered, so a re-run only retries the
+    failures; the non-zero exit stops a Slurm chain loading a partial corpus.
+    """
+    from .download import DownloadError, sync
+
+    try:
+        return sync(con, **options)
+    except DownloadError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 @main.command()
 @_sync_options
 @click.pass_context
 def download(ctx: click.Context, baseline: bool, updates: bool, limit: int | None, verify: bool) -> None:
     """Download baseline/update files and record MD5 checksums."""
-    from .download import sync
-
     with closing(_connect(ctx)) as con:
-        results = sync(con, baseline=baseline, updates=updates, limit=limit, verify=verify)
+        results = _sync(con, baseline=baseline, updates=updates, limit=limit, verify=verify)
         click.echo(f"Synced {len(results)} file(s).")
 
 
@@ -487,11 +499,10 @@ def update(
     force: bool,
 ) -> None:
     """Download, refresh journals, and load — for scheduled runs."""
-    from .download import sync
     from .load import load_journals
 
     with closing(_connect(ctx)) as con:
-        results = sync(con, baseline=baseline, updates=updates, limit=limit, verify=verify)
+        results = _sync(con, baseline=baseline, updates=updates, limit=limit, verify=verify)
         click.echo(f"Synced {len(results)} file(s).")
         # The journal refresh is the least critical of the three steps: don't
         # let an NLM outage throw away a completed download and skip the

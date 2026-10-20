@@ -21,9 +21,10 @@ its version, and the database documents its own columns
 
 ## How it works
 
-Downloading and XML parsing reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
-(bulk download of the PubMed baseline + daily update files, plus the rich `Article`
-data model). On top of it, pubmed2db adds:
+File listing and XML parsing reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
+(the PubMed baseline + daily update file listings and cache layout, plus the rich
+`Article` data model); the transfers themselves use pubmed2db's own download,
+which times out a stalled connection. On top of it, pubmed2db adds:
 
 - **MD5 tracking** — each `<file>.xml.gz.md5` sidecar is fetched and the checksum stored;
   a new or changed checksum triggers a (re)load. PubMed files are normally immutable, so
@@ -265,6 +266,10 @@ have not been loaded yet, and warns if the journal dimension is empty (journal
 names would be blank). When in doubt, `uv run pubmed2db update` runs the whole pipeline
 (`download → journals → load`) in order.
 
+A PubMed file that fails to download (an HTTP error, or no data for 120 seconds)
+is skipped while the rest are still fetched; `download` then exits non-zero
+naming the failures, and a re-run fetches only those.
+
 `journals` reads two NLM sources: `J_Entrez.txt` (10 MB, refetched every run) for
 the titles and abbreviations the export ships, and the serial catalog
 (`serfilebase.YYYY.xml`, ~449 MB, plus that year's monthly updates — usually
@@ -410,15 +415,16 @@ Two ways to apply one, and they are not interchangeable:
   time (about a day at corpus scale — see [`slurm/README.md`](./slurm/README.md#running-load-how-long---time)),
   no re-download, and the database keeps its history.
 - **A fresh database** (delete `<data-dir>/pubmed.duckdb`, then `journals` and
-  `load`) is the answer whenever the *schema* changed, and the safer default if
-  you are unsure.
+  `load`) is the answer whenever the schema *removed or redefined* something,
+  and the safer default if you are unsure.
 
 The asymmetry is that within a major version `schema.sql` only ever adds:
 `CREATE TABLE IF NOT EXISTS` plus explicit `ALTER TABLE ... ADD COLUMN IF NOT
-EXISTS` migrations. A forced reload refreshes the rows a parser change affects,
-but it leaves any pre-existing wrong rows in place for files it re-parses
-identically, and only a rebuild is guaranteed to leave exactly the shape and
-rows the current code would write.
+EXISTS` migrations. So a column added in a minor version is applied on the
+next connect and filled by `load --force`. A forced reload refreshes the rows a
+parser change affects, but it leaves any pre-existing wrong rows in place for
+files it re-parses identically, and only a rebuild is guaranteed to leave
+exactly the shape and rows the current code would write.
 
 Rebuilding costs a full `load` and a `journals` refresh, and nothing else — the
 downloaded files are not touched — so unless the corpus is already loaded on a
@@ -478,7 +484,7 @@ still fetched, so a changed published checksum is always detected.
 
 ## Notes
 
-- We reuse `pubmed-downloader` **as-is** for downloading and XML parsing, but work
+- We reuse `pubmed-downloader` **as-is** for file listings and XML parsing, but work
   around three bugs in it (≤ 0.0.14), all tracked in [`FUTURE.md`](./FUTURE.md):
   `catalog.process_journal_overview()` requires `start_year`/`end_year` fields the
   real `J_Entrez.txt` does not contain, so it raises on live data (fixed by
@@ -494,6 +500,15 @@ still fetched, so a changed published checksum is always detected.
   and takes all 83 monthly deltas instead; that costs 2.52 GiB rather than 872 MiB
   and returns 80% duplicate records for the same coverage, which is why `journals`
   enumerates NLM's listing itself.
+- **MeSH names are PubMed's, not MeSH's.** The descriptor, qualifier and
+  publication-type names come from each record's own XML. They are never looked
+  up in the MeSH vocabulary or reconciled across records, so if PubMed names a
+  descriptor differently in two records, both names are kept. Each version of a
+  PMID keeps the names its file gave it, and exports read the latest version.
+  This keeps the data identical to PubMed's files. Any drift between older and
+  newer records is cleared by the
+  [year-boundary rebuild](#load---force-or-a-fresh-database), which reloads
+  every record from the new baseline.
 - This tool is intended to eventually replace the PubMed download in
   [Babel](https://github.com/NCATSTranslator/Babel) (`createcompendia/publications.py`).
 

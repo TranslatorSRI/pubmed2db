@@ -251,7 +251,8 @@ def test_field_validation_matches(export_dir, loaded_con, monkeypatch):
     fv = report["checks"]["field_validation"]
     assert fv["checked"] == 2
     assert fv["mismatches"] == []
-    assert fv["soft_mismatches"] == []
+    for group in validate._SOFT_GROUPS:
+        assert fv[group.code] == [], group.code
     assert report["status"] == "pass", report["errors"] + report["warnings"]
 
 
@@ -284,11 +285,97 @@ def test_publication_types_mismatch_is_soft(export_dir, loaded_con, monkeypatch,
     report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
 
     fv = report["checks"]["field_validation"]
-    assert [m["field"] for m in fv["soft_mismatches"]] == ["publication_types"]
+    assert [m["field"] for m in fv["publication_type_mismatches"]] == ["publication_types"]
+    assert fv["journal_mismatches"] == fv["pub_date_mismatches"] == []
     assert fv["mismatches"] == []
     # A warning under its own code -- not a failure, and not blamed on the journal.
     assert report["status"] == "warn", report["errors"]
     assert [w["code"] for w in report["warnings"]] == ["publication_type_mismatches"]
+
+
+def test_unnamed_publication_types_blame_the_load_not_indexing(
+    loaded_con, tmp_path, monkeypatch
+):
+    """A database loaded before names were parsed exported `"name": ""` on
+    every type. That must read as "rebuild", once, under its own code -- not as
+    every sampled record's types having been revised by indexing."""
+    from pubmed2db.export import export_json
+
+    loaded_con.execute("UPDATE publication_type SET type_name = NULL")
+    out = tmp_path / "export"
+    export_json(loaded_con, out)
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
+    report = validate.run_validation(out, con=loaded_con, email="me@example.com")
+
+    assert report["status"] == "warn", report["errors"]
+    [warning] = report["warnings"]
+    assert warning["code"] == "publication_type_names_missing"
+    assert "Rebuild the database" in warning["message"]
+    assert report["checks"]["field_validation"]["publication_type_mismatches"] == []
+
+
+def test_unnamed_publication_types_still_compare_their_ids(monkeypatch):
+    """Comparing on ids alone must not hide a real revision."""
+    report = validate.Report()
+    doc = {**_valid_doc(), "publication_types": [{"id": "MESH:D016428", "name": ""}]}
+    revised = {**doc, "publication_types": [
+        {"id": "MESH:D016428", "name": "Journal Article"},
+        {"id": "MESH:D016454", "name": "Review"},
+    ]}
+    monkeypatch.setattr(validate, "efetch_documents", lambda *a, **k: {9: revised})
+    validate.check_fields(
+        report, {9: doc}, online=True, api_key=None, email="me@example.com",
+        abstract_threshold=0.9,
+    )
+    assert [w["code"] for w in report.warnings] == ["publication_type_mismatches"]
+
+
+@pytest.mark.parametrize(
+    "types",
+    [
+        "Review",                                             # not a list
+        [{"id": "MeSH:D016454", "name": "Review"}],           # Biolink's casing is MESH
+        [{"id": "D016454", "name": "Review"}],                # no prefix
+        [{"id": "MESH:D016454"}],                             # no name
+        [{"id": "MESH:D016454", "label": "Review"}],          # renamed key
+        [{"id": "MESH:D016454", "name": "Review", "x": 1}],   # extra key
+        ["MESH:D016454"],                                     # bare CURIE
+    ],
+)
+def test_malformed_publication_types_fail_structure(export_dir, types):
+    """The efetch side builds its ids from the same `MESH_PREFIX` as the
+    export, so a prefix slip passes the field comparison; only a structural
+    check written against the contract itself catches it."""
+    _append_to_shard(
+        export_dir, json.dumps({**_valid_doc(), "id": "PMID:1200", "publication_types": types})
+    )
+    # The append changed the shard's checksum; that error is not under test.
+    (export_dir / "metadata.json").unlink()
+    report = validate.run_validation(export_dir, online=False)
+    assert [e["code"] for e in report["errors"]] == ["invalid_publication_types"]
+
+
+def test_one_soft_group_cannot_crowd_out_anothers_examples(monkeypatch):
+    """Each soft check points at its own example list. A single shared list
+    capped at 20 filled up with whichever group came first."""
+    report = validate.Report()
+    sample, fetched = {}, {}
+    for pmid in range(1, validate._MAX_EXAMPLES + 6):
+        doc = {**_valid_doc(), "id": f"PMID:{pmid}", "pub_date": "2020"}
+        sample[pmid] = doc
+        fetched[pmid] = {**doc, "publication_types": [{"id": "MESH:D016454", "name": "Review"}]}
+    fetched[pmid] = {**fetched[pmid], "pub_date": "2021"}  # only the last record
+    monkeypatch.setattr(validate, "efetch_documents", lambda *a, **k: fetched)
+    validate.check_fields(
+        report, sample, online=True, api_key=None, email="me@example.com",
+        abstract_threshold=0.9,
+    )
+
+    fv = report.checks["field_validation"]
+    assert len(fv["publication_type_mismatches"]) == validate._MAX_EXAMPLES
+    assert [m["pmid"] for m in fv["pub_date_mismatches"]] == [pmid]
+    sees = {c.name: c.see for c in report.checks_run}
+    assert sees["pub-date-soft"] == "checks.field_validation.pub_date_mismatches"
 
 
 def test_field_validation_flags_mismatch(export_dir, loaded_con, monkeypatch):
@@ -645,6 +732,19 @@ def test_summary_lists_sections_skips_and_gaps(export_dir):
     assert "journal_name" in out and "article_title" in out
 
 
+def test_summary_columns_line_up(export_dir):
+    """Every row's expectation and observation start in the same column, in
+    every section -- fixed widths went ragged once check names outgrew them."""
+    report = validate.run_validation(export_dir, online=False)
+    rows = [line for line in validate.format_summary(report).splitlines()
+            if line.startswith("  [")]
+    starts = set()
+    for check in report["checks_run"]:
+        [row] = [r for r in rows if r[9:].startswith(check["name"] + " ")]
+        starts.add(row.index(check["expectation"], 9 + len(check["name"])))
+    assert len(starts) == 1, "\n".join(rows)
+
+
 def test_report_records_the_thresholds_it_was_judged_against(export_dir):
     """A report that cannot reproduce its own thresholds cannot be re-read later."""
     report = validate.run_validation(
@@ -777,7 +877,7 @@ def test_date_renderings_are_compared_normalized(export_dir, loaded_con, monkeyp
     fields = report.checks["field_validation"]
     assert fields["checked"] == 1
     assert all(m.get("field") != "pub_date" for m in fields["mismatches"]), fields
-    assert all(m.get("field") != "pub_date" for m in fields["soft_mismatches"]), fields
+    assert fields["pub_date_mismatches"] == [], fields
 
 
 def test_each_soft_reason_is_its_own_check(monkeypatch):
