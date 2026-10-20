@@ -4,7 +4,7 @@ One version number covers every output — the DuckDB database, the Parquet expo
 (the same tables as files) and the NDJSON export (a projection of them) — so a
 consumer of any of them pins one thing. It is **not** the code version: the
 code version says how the *code* changed, this one how consumers' code is
-affected, and `docs/DataModel.md` says what each bump means. It is standard
+affected, and `docs/data-model/README.md` says what each bump means. It is standard
 semantic versioning: a patch fixes values without changing the shape or meaning
 of anything, a minor bump only *adds* (a table, a column, a view, an NDJSON
 field), and a major bump renames, removes or changes the meaning of one.
@@ -29,7 +29,7 @@ import duckdb
 from . import __version__
 
 #: The data model this code reads and writes. See the module docstring, and
-#: `docs/DataModel.md` for when to bump it.
+#: `docs/data-model/README.md` for when to bump it.
 DATA_MODEL_VERSION = "1.0.0"
 
 #: The table holding :data:`DATA_MODEL_VERSION` and who built the database.
@@ -166,7 +166,7 @@ def stamp(con: duckdb.DuckDBPyConnection) -> None:
     three creation keys; on an older one it raises the stored version to ours,
     which for a minor is only correct because ``schema.sql`` has just added the
     columns that version introduced (:func:`check_migrated` holds it to that). A patch's fixes reach rows already loaded
-    only when they are reloaded; its changelog says whether that is needed, and
+    only when they are reloaded; its entry in `docs/data-model/Changelog.md` says whether that is needed, and
     ``last_loaded_by`` says which code did the loading. Never lowered: older code
     opening a newer-patch database leaves its version alone.
     """
@@ -234,7 +234,7 @@ def metadata(con: duckdb.DuckDBPyConnection) -> dict[str, str]:
 # --- the data model's shape, read back from a database --------------------------
 
 #: The stability tiers a table or view's comment starts with, as ``"Stable."``.
-#: `docs/DataModel.md` defines them; only ``internal`` is outside the contract.
+#: `docs/data-model/README.md` defines them; only ``internal`` is outside the contract.
 TIERS = ("stable", "provenance", "internal")
 
 
@@ -243,8 +243,8 @@ def describe(con: duckdb.DuckDBPyConnection) -> list[dict]:
 
     The comments are ``schema.sql``'s ``COMMENT ON`` statements, so this is the
     data dictionary as shipped. It is what `tests/test_data_model.py` pins and
-    what :func:`render_reference` turns into the reference half of
-    `docs/DataModel.md`. Relations are sorted by name and columns are in
+    what :func:`render_reference` turns into
+    `docs/data-model/Reference.md`. Relations are sorted by name and columns are in
     table order.
     """
     relations = con.execute(
@@ -339,8 +339,8 @@ def only_adds(old: dict, new: dict) -> list[str]:
     return problems
 
 
-#: The markers around the generated half of `docs/DataModel.md`.
-REFERENCE_BEGIN = "<!-- BEGIN GENERATED REFERENCE: python -m pubmed2db.datamodel --docs docs/DataModel.md -->"
+#: The markers around the generated part of `docs/data-model/Reference.md`.
+REFERENCE_BEGIN = "<!-- BEGIN GENERATED REFERENCE: python -m pubmed2db.datamodel --docs docs/data-model/Reference.md -->"
 REFERENCE_END = "<!-- END GENERATED REFERENCE -->"
 
 
@@ -349,7 +349,7 @@ def _cell(text: str) -> str:
 
 
 def render_reference(relations: list[dict]) -> str:
-    """The column reference of `docs/DataModel.md`, rendered from :func:`describe`.
+    """The column reference, `docs/data-model/Reference.md`, rendered from :func:`describe`.
 
     Generated rather than written so that the document and the comments shipped
     in the database cannot say different things: a test regenerates it and
@@ -361,7 +361,7 @@ def render_reference(relations: list[dict]) -> str:
     for tier in TIERS:
         for relation in (r for r in tables if r["tier"] == tier):
             lines += [
-                f"### `{relation['name']}`",
+                f"## `{relation['name']}`",
                 "",
                 relation["comment"],
                 "",
@@ -374,7 +374,7 @@ def render_reference(relations: list[dict]) -> str:
                 for c in relation["columns"]
             ]
             lines.append("")
-    lines += ["### Views", "", "| View | Meaning |", "| --- | --- |"]
+    lines += ["## Views", "", "| View | Meaning |", "| --- | --- |"]
     lines += [
         f"| `{r['name']}` | {_cell(r['comment'])} |"
         for r in relations if r["kind"] == "view"
@@ -404,7 +404,7 @@ def main(argv: list[str] | None = None) -> None:
     `tests/test_data_model.py` compares every fresh database against; run it as
     part of a deliberate version bump, never to make a failing test pass.
     ``--docs PATH`` rewrites the generated column reference in
-    `docs/DataModel.md` after a comment in ``schema.sql`` changes.
+    `docs/data-model/Reference.md` after a comment in ``schema.sql`` changes.
     """
     import argparse
     import json

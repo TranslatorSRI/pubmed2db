@@ -1,6 +1,6 @@
 """The data model contract: its version, its shape, and what it promises.
 
-`docs/DataModel.md` is the consumer-facing description; these tests are what
+`docs/data-model/` is the consumer-facing description; these tests are what
 stops the database drifting away from it. A failure here usually means the
 shape changed — which is fine, but only together with a version bump.
 """
@@ -278,7 +278,7 @@ GOLDEN_DIR = Path(__file__).parent / "data_model"
 _BUMP_HELP = (
     "The data model's shape changed. If that was deliberate, bump "
     "datamodel.DATA_MODEL_VERSION (minor if this only adds, major otherwise; "
-    "docs/DataModel.md says which), then write tests/data_model/<MAJOR.MINOR>.json "
+    "docs/data-model/README.md says which), then write tests/data_model/<MAJOR.MINOR>.json "
     "with `uv run python -m pubmed2db.datamodel --golden tests/data_model/<MAJOR.MINOR>.json` "
     "and regenerate the doc. Never overwrite an existing version's file."
 )
@@ -432,9 +432,12 @@ def test_closed_vocabularies_hold(edge_con, table, column, domain):
     assert _rows(edge_con, f"SELECT count(*) FROM {table} WHERE {column} IS NULL") == [(0,)]
 
 
-# --- docs/DataModel.md ------------------------------------------------------------
+# --- docs/data-model/ -------------------------------------------------------------
 
-DOC = Path(__file__).parent.parent / "docs" / "DataModel.md"
+DOCS = Path(__file__).parent.parent / "docs" / "data-model"
+DOC = DOCS / "README.md"
+CHANGELOG = DOCS / "Changelog.md"
+REFERENCE = DOCS / "Reference.md"
 
 
 def _doc_section(heading: str) -> str:
@@ -448,24 +451,22 @@ def test_the_docs_column_reference_is_generated_from_the_database(con):
     """The reference half of the doc is the database's own comments, rendered.
     Hand-editing it, or changing a comment without regenerating, fails here."""
     expected = datamodel.render_reference(datamodel.describe(con))
-    assert expected in DOC.read_text(), (
-        "docs/DataModel.md is stale: run "
-        "`uv run python -m pubmed2db.datamodel --docs docs/DataModel.md`"
+    assert expected in REFERENCE.read_text(), (
+        "docs/data-model/Reference.md is stale: run "
+        "`uv run python -m pubmed2db.datamodel --docs docs/data-model/Reference.md`"
     )
 
 
 def test_the_doc_names_only_columns_that_exist(con):
-    """Prose like `author.position` must name a real column. The changelog is
-    exempt: naming what no longer exists is its job."""
+    """Prose like `author.position` must name a real column. The changelog,
+    a separate file, is exempt: naming what no longer exists is its job."""
     import re
 
     columns = {
         (r["name"], c["name"]) for r in datamodel.describe(con) for c in r["columns"]
     }
     relations = {r["name"] for r in datamodel.describe(con)}
-    text = DOC.read_text()
-    prose = text[: text.index("\n## Changelog\n")]
-    named = set(re.findall(r"`([a-z_]+)\.([a-z_]+)`", prose))
+    named = set(re.findall(r"`([a-z_]+)\.([a-z_]+)`", DOC.read_text()))
     unknown = {pair for pair in named if pair[0] in relations and pair not in columns}
     assert not unknown
 
@@ -530,4 +531,28 @@ def test_patch_levels_neither_refuse_nor_downgrade(tmp_path, monkeypatch):
 def test_the_changelog_has_an_entry_for_this_version():
     """Every bump, patch included, tells consumers what changed and what each
     output's consumers must do; a version with no entry has told them nothing."""
-    assert f"\n### {DATA_MODEL_VERSION}\n" in _doc_section("Changelog")
+    assert f"\n## {DATA_MODEL_VERSION}\n" in CHANGELOG.read_text()
+
+
+def test_links_between_the_data_model_docs_resolve():
+    """The three files link each other by absolute URL on `main`, so the doc
+    reads the same without the repository. GitHub cannot check those links
+    before the branch merges; this does, against the files and their headings."""
+    import re
+
+    base = "https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/"
+
+    def anchors(path: Path) -> set[str]:
+        # GitHub's slug: lower-case, drop punctuation but `-` and `_`, spaces to `-`.
+        return {
+            re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+            for heading in re.findall(r"^#+ (.+)$", path.read_text(), re.M)
+        }
+
+    broken = []
+    for source in (DOC, CHANGELOG, REFERENCE):
+        for name, anchor in re.findall(re.escape(base) + r"([\w.]+)(?:#([\w-]+))?", source.read_text()):
+            target = DOCS / name
+            if not target.is_file() or (anchor and anchor not in anchors(target)):
+                broken.append(f"{source.name}: {name}#{anchor}")
+    assert not broken
