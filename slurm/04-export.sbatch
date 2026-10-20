@@ -3,15 +3,18 @@
 #SBATCH --output=data/logs/%x-%j.out
 #SBATCH --mem=256G
 #SBATCH --cpus-per-task=8
-#SBATCH --time=02:00:00
+#SBATCH --time=01:00:00
 #
 # Export the latest version of every abstract to NDJSON shards.
 #
 # Memory is the constraint, not time: this is a whole-corpus operation (a window
-# function over every article, then a string_agg and a global sort), so its
-# footprint scales with the database rather than the largest input file.
-# Measured at 201.1 GiB peak and 23m13s for 40.9M documents, hence 256G and a
-# generous two hours. Do NOT copy the loader's 64G here.
+# function over every article, then a string_agg), so its footprint scales with
+# the database rather than the largest input file. Measured on the COPY-based
+# writer: 41.2M documents in 13m 14s at 191.9 GiB peak under a 200GB buffer
+# limit, and 41.0M in 12m 03s at 153.3 GiB under 160GB -- DuckDB fills whatever
+# it is given, so config.sh now sets 160GB. 256G is the allocation that has
+# been run; 192G is the next thing to try, not a number to assume. Do NOT copy
+# the loader's 64G here. One hour is 4x the measured wall time.
 #
 # Slurm will not grow --mem mid-job, so an under-requested export is OOM-killed
 # partway through with nothing to show for it. Grab the memory up front.
@@ -24,9 +27,8 @@
 # SLURM_CPUS_PER_TASK); raising one without the other either oversubscribes the
 # allocation or leaves cores idle.
 #
-# The peak RSS and wall time in slurm/README.md's table predate that rewrite.
-# They are the numbers to beat, not the numbers to request -- the first run of
-# the new export re-baselines them.
+# slurm/README.md -> "Running `export`" has the run history, including the
+# pre-COPY runs these numbers replaced.
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"

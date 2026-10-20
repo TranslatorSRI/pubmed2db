@@ -341,6 +341,7 @@ FIELD ACCURACY  (240 records sampled: 15/shard x 16 shards, seed 0)
 
 NOT CHECKED
   - compared strictly against Entrez: article_title, volume, issue, pub_year, ...
+  - article_title compared after folding efetch's rendering (terminal period, [ ] around a translated title, [Not Available] for an empty title)
   - compared but never fails the run (assigned upstream after our last update file): identifiers
   - MeSH terms, authors, affiliations and grants are stored in the DB, never exported
 ```
@@ -411,8 +412,9 @@ neither a parser fix nor a schema change reaches data that is already loaded.
 Two ways to apply one, and they are not interchangeable:
 
 - **`load --force`** re-parses every local file and replaces its rows, so it
-  applies a *parsing* change to the whole corpus: roughly a baseline's worth of
-  time (~2–3 h), no re-download, and the database keeps its history.
+  applies a *parsing* change to the whole corpus: roughly a full load's worth of
+  time (about a day at corpus scale — see [`slurm/README.md`](./slurm/README.md#running-load-how-long---time)),
+  no re-download, and the database keeps its history.
 - **A fresh database** (delete `<data-dir>/pubmed.duckdb`, then `journals` and
   `load`) is the answer whenever the schema *removed or redefined* something,
   and the safer default if you are unsure.
@@ -428,11 +430,11 @@ development, is exactly that case. A forced reload also leaves any pre-existing
 wrong rows in place for files it re-parses identically.
 
 Rebuilding costs a full `load` and a `journals` refresh, and nothing else — the
-downloaded files are not touched — so unless the corpus is already loaded on a machine where 2–3 hours of
-`load` is cheaper than the disk churn, prefer the rebuild. At a new baseline year
-the question is moot: a fresh database is the recommended path anyway, since
-loading the new year into the old database stores a second version of every PMID
-(see above).
+downloaded files are not touched — so unless the corpus is already loaded on a
+machine where a day of `load` is cheaper than the disk churn, prefer the
+rebuild. At a new baseline year the question is moot: a fresh database is the
+recommended path anyway, since loading the new year into the old database stores
+a second version of every PMID (see above).
 
 **A fresh database needs `journals` run again.** The journal dimension lives in
 the database, so deleting it deletes the journals too, and `load` does not
@@ -524,8 +526,9 @@ dimension reads from two NLM sources rather than one.
   file into a separate DuckDB file, then use a query that spans multiple files to either load everything into one
   file or to simply export it from the multiple files (using PMIDs to group related queries might not take very long?).
   Running it with 64G of memory seems sufficient.
-- `uv run pubmed2db export --format json` is fast but memory-hungry: 40,901,984 documents in ~23 minutes
-  (≈30k documents/s) at a peak RSS of 201.1 GiB, run with `--mem 256G` (an earlier run peaked at 199.6 GiB).
+- `uv run pubmed2db export --format json` is fast but memory-hungry: 41,153,516 documents in 13m 14s
+  (≈52k documents/s) at a peak RSS of 191.9 GiB, run with `--mem 256G` and a 200GB DuckDB memory limit
+  (153.3 GiB and 12m 03s under a 160GB limit — the peak follows the limit, not the query).
   Unlike `load`, its memory scales with the whole database rather than the largest input file — see
   [`slurm/README.md`](./slurm/README.md#running-export) for why, and for what to request on a cluster.
 - **`export` publishes in place, not atomically.** Both formats write straight into `--out`:

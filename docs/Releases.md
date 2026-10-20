@@ -13,7 +13,7 @@ once the release PR has merged.
 | Milestone | `pubmed2db v<version>`, due on the planned build date | "pubmed2db v1.1" |
 | Release branch | `pubmed2db-v<version>` | `pubmed2db-v1.1` |
 | Release PR | `pubmed2db v<version>`, stacked on the last feature PR | "pubmed2db v1.1" |
-| Data-build tag | the date the outputs were produced | `2026aug21` |
+| Data-build tag | the day the export finished (step 4) — unknown until then, so write `2026sepNN` in anything drafted before the run | `2026sep26` |
 | Version tag and GitHub release | `v<version>.<patch>` / "pubmed2db v<version>.<patch>" | `v1.1.0` |
 
 **Versions.**
@@ -32,9 +32,14 @@ once the release PR has merged.
    - Branch from the tip of the last PR in the stack, or from `main` if there is no stack.
    - Open the release PR on the milestone, with that same branch as its base, so its diff shows only what the release branch adds. GitHub retargets it onto `main` once the feature PRs beneath it merge (step 5).
    - Its description lists the PRs it carries, anything the build needs that a routine run does not (a reload, new outbound hosts, new settings), and a checklist to clear before the run.
+   - Every item on that checklist is required. Something worth doing only if convenient goes on the next release's checklist instead: v1.1's one "optionally" item, the DuckDB cgroup probe, was the one skipped.
 
-3. **Build on the cluster from the release branch** ([`slurm/README.md`](../slurm/README.md)). Fix what the run turns up:
-   - Commit a small fix directly on the release branch.
+3. **Build on the cluster from the release branch** ([`slurm/README.md`](../slurm/README.md)).
+   - Record in the release PR the exact `submit.sh` command and every environment override it ran with (`LOAD_MEMORY_LIMIT=…`). The logs record neither: the v1.1 build's memory limits had to be inferred from `config.sh`'s defaults, and #37's answer rests on that inference.
+
+   Fix what the run turns up:
+   - Put the fixes in a PR against the release branch (#58 for v1.1), so they are reviewed and described like any other change, and merge it into the release branch.
+   - GitHub links a closing keyword only while the PR's base is the default branch, so one in that PR does nothing. An issue the run answers gets `Closes #N` in the **release** PR. But the release PR is stacked on a feature branch too, so those keywords need checking once it is retargeted onto `main` (step 5).
    - Fix anything that belongs to a feature PR in that PR, then **merge** its branch into the release branch.
    - Merge rather than rebase: the commit the cluster ran has to stay reachable.
 
@@ -45,14 +50,25 @@ once the release PR has merged.
    git push origin 2026sep26
    ```
 
-   Use the date the outputs were produced, which need not be the milestone's date.
+   Use the day the export finished, which need not be the milestone's date
+   (`2026aug21` was a run that started on the 20th). The better name is the
+   date of the last update file the build loaded, since that is the cutoff —
+   the next file belongs to the next build — but nothing reports it yet (#57).
+
+   Once the tag exists, a bare `git describe` names the *build*, not the version: `2026sep26` on the tagged commit, `2026sep26-7-gaa2b666` seven commits later. Before it exists, it names the nearest version tag instead (`v1.0-26-gfca8601`), which reads like a version and is not one. Ask for the one you mean:
+
+   ```bash
+   git describe --match 'v*'    # the code version:  v1.0-26-gfca8601
+   git describe --match '20*'   # the data build:    2026sep26
+   ```
 
 5. **Merge the feature PRs into `main`**, in stack order, with **merge commits** (see below). The repository deletes a merged branch, and GitHub then retargets the next PR in the stack onto `main`.
 
    GitHub does not re-read a PR's closing keywords when it retargets the PR. After each retarget, check `gh pr view <N> --json closingIssuesReferences`, and if an issue is missing, edit the description. Saving it unchanged is not enough: in the v1.1 cycle, #58's `Closes #11. Closes #37.` stayed unlinked through its retarget and through an unchanged re-save, and linked as soon as one of its sentences changed.
 
 6. **Wrap up the release PR.**
-   - Bring its description up to date: what shipped, what the run measured, and what was deferred.
+   - Bring its description up to date: what shipped, what was deferred, and how the run went.
+   - Record the run's measurements in the repo, not only in the description: `slurm/README.md`'s run tables take the timings and peaks, and each issue the run answered gets its numbers in a comment. The description links to them. It is read at review and at changelog time and never again, so it cannot be the only copy.
    - Merge it with a merge commit.
 
 7. **Tag the version on `main` and publish it.** Pull `main` and tag the release PR's merge commit, by its id rather than `HEAD` in case something else has merged since:

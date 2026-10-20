@@ -506,18 +506,34 @@ def test_shards_tracks_the_export_allocation() -> None:
 #: default" is to pass it empty. Each must use `=` rather than `:=`, or the
 #: default is silently restored and the operator gets the opposite of what they
 #: asked for.
-CLEARABLE_SETTINGS = ["LOAD_MEMORY_LIMIT", "EXPORT_MEMORY_LIMIT", "DUCKDB_TEMP_DIR",
-                      "VALIDATE_SAMPLE_TOTAL"]
+CLEARABLE_SETTINGS = ["LOAD_MEMORY_LIMIT", "EXPORT_MEMORY_LIMIT", "VALIDATE_SAMPLE_TOTAL"]
+
+
+def test_spill_dir_is_opt_in() -> None:
+    """DUCKDB_TEMP_DIR defaults to empty -- DuckDB's own spill location.
+
+    It used to default to /local/scratch/duckdb_tmp, which does not exist on
+    ht1, so every export there warned and fell back to the default anyway. A
+    path here is for a node that has local scratch, and is passed explicitly.
+    """
+    result = subprocess.run(
+        ["bash", "-c", 'source slurm/config.sh; printf "%s" "$DUCKDB_TEMP_DIR"'],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
 
 
 @pytest.mark.parametrize("name", CLEARABLE_SETTINGS)
 def test_an_empty_value_stays_empty(name: str) -> None:
     """`:=` restores the default on an empty value; `=` keeps it empty.
 
-    This has bitten once already: DUCKDB_TEMP_DIR documented "set it empty to
-    use DuckDB's default" while using `:=`, so it did the opposite. The two
-    memory limits were written the same way and missed, so the rule is pinned
-    for all three rather than for the instance that was noticed.
+    This has bitten once already: DUCKDB_TEMP_DIR (since made opt-in, so no
+    longer in this list) documented "set it empty to use DuckDB's default"
+    while using `:=`, so it did the opposite. The two memory limits were
+    written the same way and missed, so the rule is pinned for every setting
+    of that shape rather than for the instance that was noticed.
     """
     result = subprocess.run(
         ["bash", "-c", f'source slurm/config.sh; printf "%s" "${name}"'],
