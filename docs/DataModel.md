@@ -621,9 +621,9 @@ The first versioned data model, first built after `2026sep26`. The
 ## Column reference
 
 Generated from the comments in the database. Regenerate after changing
-`schema.sql` with `python -m pubmed2db.datamodel --docs docs/data-model.md`.
+`schema.sql` with `python -m pubmed2db.datamodel --docs docs/DataModel.md`.
 
-<!-- BEGIN GENERATED REFERENCE: python -m pubmed2db.datamodel --docs docs/data-model.md -->
+<!-- BEGIN GENERATED REFERENCE: python -m pubmed2db.datamodel --docs docs/DataModel.md -->
 
 ### `abstract_text`
 

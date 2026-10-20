@@ -8,8 +8,8 @@ Parquet (PubMed field names, for downloadable queries).
 Everything a user needs — commands, options, operational notes, the year-boundary
 rebuild — is in [`README.md`](./README.md); deferred work and known limitations
 are in [`FUTURE.md`](./FUTURE.md); how a release and its data build are cut is in
-[`docs/releasing.md`](./docs/releasing.md); what the outputs *mean*, for the
-people who consume them, is in [`docs/data-model.md`](./docs/data-model.md). This
+[`docs/Releases.md`](./docs/Releases.md); what the outputs *mean*, for the
+people who consume them, is in [`docs/DataModel.md`](./docs/DataModel.md). This
 file is the map plus the handful of decisions you cannot see from the code.
 
 ## Layout
@@ -38,7 +38,7 @@ explains its part; this table is only a map.
 - **The outputs follow a versioned data model, separate from the code
   version.** The code version (`v1.2`) says how the code changed;
   `datamodel.DATA_MODEL_VERSION` (1.0.0, standard semver) says how consumers
-  are affected, and `docs/releasing.md` defines both. It covers the database,
+  are affected, and `docs/Releases.md` defines both. It covers the database,
   the Parquet export and the NDJSON record together. One number, because the
   NDJSON fields are SQL over the tables, so documenting one documents the other.
   Changing the shape fails `tests/test_data_model.py` until you bump it:
@@ -50,7 +50,7 @@ explains its part; this table is only a map.
   Then write `tests/data_model/<MAJOR.MINOR>.json` with
   `python -m pubmed2db.datamodel --golden`; there is one file per
   `MAJOR.MINOR`, because a patch cannot change the shape. Every bump, patch
-  included, also needs an entry in `docs/data-model.md`'s changelog saying, per
+  included, also needs an entry in `docs/DataModel.md`'s changelog saying, per
   output, what consumers must do; a test checks that it exists. That per-output
   table is the deliberate alternative to an extra version level for "breaks
   some consumers but not others". **Never edit an existing version's
@@ -61,9 +61,9 @@ explains its part; this table is only a map.
     `Provenance.` or `Internal.`; `datamodel.describe` reads the tier from
     there. Only internal tables (`pipeline_run`) are outside the contract.
   - **The comments are the data dictionary, and the doc is generated from
-    them.** `docs/data-model.md`'s column reference is
+    them.** `docs/DataModel.md`'s column reference is
     `datamodel.render_reference`; edit the `COMMENT ON` in `schema.sql`, then
-    run `python -m pubmed2db.datamodel --docs docs/data-model.md`. A test fails
+    run `python -m pubmed2db.datamodel --docs docs/DataModel.md`. A test fails
     on a stale block, so don't hand-edit it.
   - **Pre-1.0 databases are refused, not migrated.** `check_compatible` runs
     *before* `schema.sql`, so a refused file is untouched. That is why the old

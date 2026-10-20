@@ -14,7 +14,7 @@ uses PubMed's own field names.
 
 All three outputs — the database, the Parquet export and the NDJSON export —
 follow one versioned **data model**, currently 1.0.0, documented for consumers in
-[`docs/data-model.md`](./docs/data-model.md): what every table and field means,
+[`docs/DataModel.md`](./docs/DataModel.md): what every table and field means,
 what PubMed data is left out, and how the design was decided. Each output carries
 its version, and the database documents its own columns
 (`SELECT table_name, column_name, comment FROM duckdb_columns()`).
@@ -400,7 +400,7 @@ Two ways to apply one, and they are not interchangeable:
 > **A database from before data model 1.0 must be rebuilt.** Every command
 > refuses one, naming the problem and leaving the file untouched: 1.0 renamed and
 > dropped columns (see
-> [`docs/data-model.md`](./docs/data-model.md#changelog)),
+> [`docs/DataModel.md`](./docs/DataModel.md#changelog)),
 > which no migration can do in place. The same holds for a database from another
 > major version. An older *minor* version is upgraded on open, since it only
 > lacks columns.
@@ -537,7 +537,7 @@ Tests gzip the readable XML fixtures under `tests/fixtures/` into temporary
 (gitignored).
 
 Releases, and the dated data builds they produce, follow
-[`docs/releasing.md`](./docs/releasing.md).
+[`docs/Releases.md`](./docs/Releases.md).
 
 Helper scripts live in `scripts/` and document themselves — run one with
 `--help` for its usage and options. `benchmark_load.py` times parsing against

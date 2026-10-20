@@ -17,9 +17,9 @@
 -- the database: `SELECT table_name, column_name, comment FROM duckdb_columns()`
 -- documents a copy of the file with no repository in sight. Each table comment
 -- starts with its stability tier -- "Stable.", "Provenance." or "Internal." --
--- which `docs/data-model.md` defines. `tests/test_data_model.py` requires a
+-- which `docs/DataModel.md` defines. `tests/test_data_model.py` requires a
 -- comment on every stable and provenance column, pins every column's name and
--- type to the version, and checks the generated half of `docs/data-model.md`
+-- type to the version, and checks the generated half of `docs/DataModel.md`
 -- against these comments, so a change here fails a test until the version is
 -- bumped deliberately (and `python -m pubmed2db.datamodel` regenerates the doc).
 --

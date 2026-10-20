@@ -1,6 +1,6 @@
 """The data model contract: its version, its shape, and what it promises.
 
-`docs/data-model.md` is the consumer-facing description; these tests are what
+`docs/DataModel.md` is the consumer-facing description; these tests are what
 stops the database drifting away from it. A failure here usually means the
 shape changed — which is fine, but only together with a version bump.
 """
@@ -239,7 +239,7 @@ GOLDEN_DIR = Path(__file__).parent / "data_model"
 _BUMP_HELP = (
     "The data model's shape changed. If that was deliberate, bump "
     "datamodel.DATA_MODEL_VERSION (minor if this only adds, major otherwise; "
-    "docs/data-model.md says which), then write tests/data_model/<MAJOR.MINOR>.json "
+    "docs/DataModel.md says which), then write tests/data_model/<MAJOR.MINOR>.json "
     "with `uv run python -m pubmed2db.datamodel --golden tests/data_model/<MAJOR.MINOR>.json` "
     "and regenerate the doc. Never overwrite an existing version's file."
 )
@@ -393,9 +393,9 @@ def test_closed_vocabularies_hold(edge_con, table, column, domain):
     assert _rows(edge_con, f"SELECT count(*) FROM {table} WHERE {column} IS NULL") == [(0,)]
 
 
-# --- docs/data-model.md ------------------------------------------------------------
+# --- docs/DataModel.md ------------------------------------------------------------
 
-DOC = Path(__file__).parent.parent / "docs" / "data-model.md"
+DOC = Path(__file__).parent.parent / "docs" / "DataModel.md"
 
 
 def _doc_section(heading: str) -> str:
@@ -410,8 +410,8 @@ def test_the_docs_column_reference_is_generated_from_the_database(con):
     Hand-editing it, or changing a comment without regenerating, fails here."""
     expected = datamodel.render_reference(datamodel.describe(con))
     assert expected in DOC.read_text(), (
-        "docs/data-model.md is stale: run "
-        "`uv run python -m pubmed2db.datamodel --docs docs/data-model.md`"
+        "docs/DataModel.md is stale: run "
+        "`uv run python -m pubmed2db.datamodel --docs docs/DataModel.md`"
     )
 
 
