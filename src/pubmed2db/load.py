@@ -678,7 +678,7 @@ def _journal_years() -> dict[str, tuple[int | None, int | None, bool | None]]:
 
 
 def load_journals(con: duckdb.DuckDBPyConnection) -> int:
-    """Load the NLM Catalog journal dimension.
+    """Load the journal dimension from J_Entrez.txt and NLM's serial catalog.
 
     Downloads NLM's journal overview (J_Entrez) via ``pubmed_downloader`` and
     replaces the ``journal`` / ``journal_issn`` tables. Returns the number of
