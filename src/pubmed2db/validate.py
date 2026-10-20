@@ -79,8 +79,11 @@ CORE_FIELDS = ("article_title", "volume", "issue",
 #: the two sides have different sources, or because a disagreement is evidence
 #: about efetch's *rendering* rather than about what we parsed.
 #:
-#: ``journal_name``/``journal_abbrev`` come from the NLM Catalog dimension rather
-#: than the article XML, so the two sources can legitimately differ.
+#: ``journal_name``/``journal_abbrev`` come from the journal dimension, whose
+#: titles and abbreviations are NLM's ``J_Entrez.txt`` (not the serial catalog,
+#: which only supplies years), rather than the article XML, so the two sources
+#: can legitimately differ — though ``JournalTitle`` is byte-identical to what
+#: efetch serves, so they rarely do (#31).
 #:
 #: ``pub_date`` is here for the second reason, and it is worth spelling out
 #: because putting it in CORE_FIELDS looks obviously right.
@@ -98,11 +101,11 @@ CORE_FIELDS = ("article_title", "volume", "issue",
 #: normalized.
 #: Keyed by *why* each field is soft, because the two reasons are unrelated and
 #: the run summary prints them separately. ``SOFT_FIELDS`` is derived from this
-#: rather than written twice — the summary line used to say "NLM Catalog source"
+#: rather than written twice — the summary line used to give the journal reason
 #: for the whole tuple, which stopped being true the moment ``pub_date`` joined
 #: it for an entirely different reason.
 SOFT_FIELD_REASONS: dict[str, tuple[str, ...]] = {
-    "NLM Catalog source": ("journal_name", "journal_abbrev"),
+    "journal dimension, not the article XML": ("journal_name", "journal_abbrev"),
     "efetch renders a date, we ship the archival string": ("pub_date",),
 }
 
