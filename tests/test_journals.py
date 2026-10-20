@@ -187,7 +187,7 @@ def test_serfile_urls_reports_an_outage_as_an_outage(monkeypatch):
 def test_load_journals_takes_years_from_the_catalog_and_titles_from_j_entrez(con, monkeypatch):
     """The whole point of not switching sources: J_Entrez owns the row set and
     the title (it is PubMed's own rendering), the catalog only fills the years.
-    See docs/journal-catalog.md."""
+    See docs/JournalCatalog.md."""
     from pubmed2db.load import load_journals
 
     monkeypatch.setattr(
