@@ -1,7 +1,7 @@
 # Releasing pubmed2db
 
 Every release pairs a **code version** (`v1.1`) with the **data build** it
-produced (`2026sep27`). The release branch is where the two meet: the cluster
+produced (`2026sep26`). The release branch is where the two meet: the cluster
 runs from it, the bugs that run turns up are fixed on it or in the PRs feeding
 it, and both tags are cut from it.
 
@@ -40,8 +40,8 @@ it, and both tags are cut from it.
 4. **Tag the data build** on the exact commit the cluster ran, and record that commit in the release PR:
 
    ```bash
-   git tag -a 2026sep27 <sha> -m "pubmed2db used to create 2026sep27"
-   git push origin 2026sep27
+   git tag -a 2026sep26 <sha> -m "pubmed2db used to create 2026sep26"
+   git push origin 2026sep26
    ```
 
    Use the date the outputs were produced, which need not be the milestone's date.
