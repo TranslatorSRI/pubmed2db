@@ -472,15 +472,21 @@ drops quietly — keeps last year's row as its newest version and stays in every
 export from then on. A database built from the new baseline simply doesn't
 contain it.
 
-Either way, delete the previous year's files yourself:
+Either way, get the previous year's files out of the download cache yourself.
+`download` never removes anything: once PubMed drops a file from its listing we
+stop hearing about it, so a full extra copy of the corpus sits in `data/` until
+you move it — for 2026 that is 51 GB of baseline plus 13 GB of updates. And
+`load` reads every `*.xml.gz` in `data/pubmed/baseline/` and
+`data/pubmed/updates/`, registered or not, so files left there are parsed
+straight back into a fresh database. `scripts/fresh_database.py` moves the
+superseded year to `data/pubmed-archive/<year>/`, which nothing reads, and
+deletes the database in the same step (see
+[Between runs](#between-runs-what-to-keep-archive-and-delete)). To reclaim
+the disk instead of keeping the files:
 
 ```bash
-rm data/pubmed/baseline/pubmed25n*.xml.gz data/pubmed/updates/pubmed25n*.xml.gz
+rm -r data/pubmed-archive/2025
 ```
-
-`download` never removes anything. Once PubMed drops a file from its listing we
-stop hearing about it, so a full extra copy of the corpus sits in `data/` until
-you clear it — for 2026 that is 51 GB of baseline plus 13 GB of updates.
 
 Verification is on by default, but only hashes files that are new or whose
 published checksum changed — re-running `download` over an unchanged baseline

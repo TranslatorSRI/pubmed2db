@@ -175,3 +175,81 @@ def test_archive_dumps_the_source_file_registry(data_dir: Path) -> None:
     assert csv.splitlines()[0].startswith("file_name,kind,")
     assert "pubmed26n0001.xml.gz,baseline" in csv and "abc123" in csv
     assert "pubmed.duckdb HOST:" in result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# fresh_database.py
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def two_years(data_dir: Path) -> Path:
+    """Two baseline years on disk, a database with a WAL, and no finished export."""
+    (data_dir / "json" / "metadata.json").unlink()
+    for kind in ("baseline", "updates"):
+        d = data_dir / "pubmed" / kind
+        d.mkdir(parents=True)
+        for name in ("pubmed25n0001.xml.gz", "pubmed25n1500.xml.gz", "pubmed26n0001.xml.gz"):
+            (d / name).write_text(name)
+        (d / "stray.txt").write_text("not a pubmed file")
+    (data_dir / "pubmed.duckdb").write_text("db")
+    (data_dir / "pubmed.duckdb.wal").write_text("wal")
+    (data_dir / "pubmed2db" / "serfile").mkdir(parents=True)
+    (data_dir / "pubmed2db" / "serfile" / "serfilebase.2026.xml").write_text("catalog")
+    return data_dir
+
+
+def _listing(root: Path) -> set[str]:
+    return {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()}
+
+
+def test_fresh_database_moves_the_old_year_and_deletes_the_database(two_years: Path) -> None:
+    before = _listing(two_years)
+    result = run(FRESH, "--data-dir", str(two_years), "--yes")
+    assert result.returncode == 0, result.stderr
+    after = _listing(two_years)
+
+    # Last year's files are kept, outside the two directories load globs.
+    for kind in ("baseline", "updates"):
+        assert f"pubmed-archive/2025/{kind}/pubmed25n0001.xml.gz" in after
+        assert f"pubmed-archive/2025/{kind}/pubmed25n1500.xml.gz" in after
+        assert f"pubmed/{kind}/pubmed25n0001.xml.gz" not in after
+        assert f"pubmed/{kind}/pubmed26n0001.xml.gz" in after
+        assert f"pubmed/{kind}/stray.txt" in after
+    assert "pubmed.duckdb" not in after and "pubmed.duckdb.wal" not in after
+
+    # Everything else is exactly as it was.
+    untouched = {p for p in before if p.startswith(("manifests/", "logs/", "builds/", "pubmed2db/"))}
+    assert untouched and untouched <= after
+    assert "serial catalog unavailable" in result.stdout
+    assert "drops_retired_upstream" in result.stdout
+
+
+def test_fresh_database_refuses_while_a_finished_export_is_unarchived(two_years: Path) -> None:
+    (two_years / "json" / "metadata.json").write_text("{}")
+    before = _listing(two_years)
+    result = run(FRESH, "--data-dir", str(two_years), "--yes")
+    assert result.returncode == 1
+    assert "archive_build.py" in result.stderr
+    assert _listing(two_years) == before
+
+
+def test_fresh_database_asks_first(two_years: Path) -> None:
+    before = _listing(two_years)
+    result = run(FRESH, "--data-dir", str(two_years), stdin="n\n")
+    assert result.returncode == 0, result.stderr
+    assert "move 4 file(s)" in result.stdout
+    assert "Nothing changed." in result.stdout
+    assert _listing(two_years) == before
+
+
+def test_fresh_database_with_one_year_moves_nothing(two_years: Path) -> None:
+    for kind in ("baseline", "updates"):
+        for p in (two_years / "pubmed" / kind).glob("pubmed25n*"):
+            p.unlink()
+    result = run(FRESH, "--data-dir", str(two_years), "--yes")
+    assert result.returncode == 0, result.stderr
+    assert "nothing to move" in result.stdout
+    assert not (two_years / "pubmed-archive").exists()
+    assert not (two_years / "pubmed.duckdb").exists()
+    assert (two_years / "pubmed" / "baseline" / "pubmed26n0001.xml.gz").is_file()
