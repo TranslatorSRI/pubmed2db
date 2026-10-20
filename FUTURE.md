@@ -49,7 +49,7 @@ on, and a copy left here rots into a contradiction of the code.
   (warning-only) fields; revisit if a stricter journal cross-check is wanted.
   Worth knowing before that revisit: `journal.title` is `J_Entrez.txt`'s
   `JournalTitle`, which is byte-identical to what `esummary` and `efetch` serve
-  (see [`docs/journal-catalog.md`](./docs/journal-catalog.md)), so the two sides
+  (see [`docs/JournalCatalog.md`](./docs/JournalCatalog.md)), so the two sides
   agree far more often than "different source" suggests — which makes a hard
   check more viable than the current wording implies.
 
@@ -74,7 +74,7 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
   it can never have years and the fields must be optional.
   **When we adopt it, keep setting `active` ourselves** — the model defaults it to
   `True`, which is wrong for the ~13,000 ceased journals serfile identifies. See
-  [`docs/journal-catalog.md`](./docs/journal-catalog.md).
+  [`docs/JournalCatalog.md`](./docs/JournalCatalog.md).
 - **`cites_pubmed_ids` never matches, but we no longer care.** `_extract_article`
   searches `medline_citation.findall(".//ReferenceList/Reference")`, but PubMed
   nests `<ReferenceList>` under `<PubmedData>`, so `Article.cites_pubmed_ids` is
