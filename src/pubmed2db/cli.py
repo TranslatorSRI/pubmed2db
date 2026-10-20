@@ -131,7 +131,7 @@ def main(
     ctx.obj["verbose"] = verbose
 
 
-def _connect(ctx: click.Context):
+def _connect(ctx: click.Context, *, read_only: bool = False):
     """Open the database with the group-level DuckDB tuning options applied.
 
     Logs what DuckDB actually runs with, which is not always what was asked
@@ -145,6 +145,7 @@ def _connect(ctx: click.Context):
             threads=ctx.obj["threads"],
             temp_directory=ctx.obj["temp_dir"],
             memory_limit=ctx.obj["memory_limit"],
+            read_only=read_only,
         )
     except IncompatibleDatabase as exc:
         raise click.ClickException(f"{ctx.obj['db']}: {exc}") from exc
@@ -359,13 +360,17 @@ def validate(
     con = None
     db_path = Path(ctx.obj["db"])
     if db_path.exists():
+        # Read-only: validate only reads, so it must not need the write lock
+        # (another job may hold it) or a writable mount.
         try:
-            candidate = _connect(ctx)
-        except click.ClickException as exc:
+            candidate = _connect(ctx, read_only=True)
+        except (click.ClickException, duckdb.Error) as exc:
             # The checks that need it are optional, and the export can be
-            # validated without them: a database from another data model is a
-            # reason to skip those, not to refuse the whole run.
-            click.echo(f"Warning: not using the database: {exc.message}", err=True)
+            # validated without them: a database from another data model, or
+            # one locked by a running load, is a reason to skip those, not to
+            # refuse the whole run.
+            message = exc.message if isinstance(exc, click.ClickException) else str(exc)
+            click.echo(f"Warning: not using the database: {message}", err=True)
         else:
             if articles_loaded(candidate):
                 con = candidate

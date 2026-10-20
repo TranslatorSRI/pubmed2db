@@ -111,6 +111,45 @@ def test_an_older_minor_version_is_raised_to_ours(tmp_path, monkeypatch):
         con.close()
 
 
+def test_a_migration_missing_a_column_is_refused_and_not_stamped(tmp_path, monkeypatch):
+    """A minor version whose CREATE TABLE gained a column without the matching
+    ALTER TABLE leaves a migrated database short of it; `load` inserts by
+    position, so opening it must fail before the version is raised. Simulated
+    by code one minor ahead and a table whose columns differ from schema.sql's
+    (dropping one instead trips schema.sql's own COMMENT ON first)."""
+    path = tmp_path / "db.duckdb"
+    connect(path).close()
+    raw = duckdb.connect(str(path))
+    raw.execute("ALTER TABLE source_file ADD COLUMN stray INTEGER")
+    raw.close()
+    major, minor, _ = datamodel.parse_version(DATA_MODEL_VERSION)
+    monkeypatch.setattr(datamodel, "DATA_MODEL_VERSION", f"{major}.{minor + 1}.0")
+
+    with pytest.raises(IncompatibleDatabase, match="source_file"):
+        connect(path)
+    raw = duckdb.connect(str(path))
+    try:
+        assert datamodel.stored_version(raw) == DATA_MODEL_VERSION
+    finally:
+        raw.close()
+
+
+def test_a_read_only_open_writes_nothing(tmp_path):
+    """`validate` opens read-only, so it works on a read-only mount and never
+    rewrites a database's views or version."""
+    path = tmp_path / "db.duckdb"
+    connect(path).close()
+    path.chmod(0o444)
+    try:
+        con = connect(path, read_only=True)
+        try:
+            assert datamodel.stored_version(con) == DATA_MODEL_VERSION
+        finally:
+            con.close()
+    finally:
+        path.chmod(0o644)
+
+
 def test_cli_explains_an_incompatible_database(tmp_path):
     from click.testing import CliRunner
 
