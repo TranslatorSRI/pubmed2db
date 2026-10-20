@@ -49,7 +49,7 @@ on, and a copy left here rots into a contradiction of the code.
   (warning-only) fields; revisit if a stricter journal cross-check is wanted.
   Worth knowing before that revisit: `journal.title` is `J_Entrez.txt`'s
   `JournalTitle`, which is byte-identical to what `esummary` and `efetch` serve
-  (see [`docs/journal-catalog.md`](./docs/journal-catalog.md)), so the two sides
+  (see [`docs/JournalCatalog.md`](./docs/JournalCatalog.md)), so the two sides
   agree far more often than "different source" suggests — which makes a hard
   check more viable than the current wording implies.
 

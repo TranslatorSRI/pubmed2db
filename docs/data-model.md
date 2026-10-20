@@ -305,7 +305,7 @@ They come from two NLM sources, deliberately:
 - **The serial catalog** supplies `start_year`, `end_year` and `active`. About
   1% of journals, mostly proceedings volumes, are not in it and keep NULL years.
 
-The [journal catalog note](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/journal-catalog.md)
+The [journal catalog note](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/JournalCatalog.md)
 has the measurements behind that split.
 
 ### Provenance
@@ -460,7 +460,7 @@ methods are reusable.
   journals when first measured, and in all 42,097 of the 2026sep26 build,
   which is why 1.0 stores one. The measurements and the recipe to
   repeat them are in the
-  [journal catalog note](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/journal-catalog.md).
+  [journal catalog note](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/JournalCatalog.md).
 - **Check every XPath's scope.** pubmed2db reuses
   [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)'s parser,
   whose descendant (`.//`) searches reach into `<ReferenceList>`. That is how
