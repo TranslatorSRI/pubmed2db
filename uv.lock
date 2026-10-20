@@ -544,6 +544,7 @@ dependencies = [
     { name = "lxml" },
     { name = "pubmed-downloader" },
     { name = "pyarrow" },
+    { name = "pystow" },
     { name = "requests" },
     { name = "tqdm" },
 ]
@@ -560,6 +561,7 @@ requires-dist = [
     { name = "lxml", specifier = ">=6.1" },
     { name = "pubmed-downloader", specifier = ">=0.0.14,<0.1" },
     { name = "pyarrow", specifier = ">=25" },
+    { name = "pystow", specifier = ">=0.9" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9" },
     { name = "requests", specifier = ">=2.34" },
     { name = "tqdm", specifier = ">=4.70" },

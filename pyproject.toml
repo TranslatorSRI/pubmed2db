@@ -14,7 +14,9 @@ authors = [{ name = "Gaurav Vaidya", email = "gaurav@ggvaidya.com" }]
 dependencies = [
     # Upper bound: we call private APIs (`_extract_article`, `_ensure_urls`), so
     # any 0.0.x release can break us. Re-test before raising the ceiling.
-    # 0.0.14 is the latest release, so the ceiling has not been reached yet.
+    # 0.1.0 (2026-10-08) is out and excluded until it has been re-tested; it
+    # carries pubmed-downloader#16, which would let us drop
+    # `load._parse_journal_overview` (see FUTURE.md).
     "pubmed-downloader>=0.0.14,<0.1",
     # The export is one COPY statement whose SQL leans on version-specific
     # behaviour (regexp classes, TRY_CAST, PER_THREAD_OUTPUT options), so the
@@ -23,6 +25,7 @@ dependencies = [
     "pyarrow>=25",
     "click>=8.4",
     "requests>=2.34",
+    "pystow>=0.9",
     "tqdm>=4.70",
     "lxml>=6.1",
 ]

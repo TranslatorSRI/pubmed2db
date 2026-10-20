@@ -18,7 +18,7 @@ from pubmed2db.db import connect
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-#: A small NLM Catalog journal dimension matching the fixture articles.
+#: A small journal dimension matching the fixture articles.
 SAMPLE_JOURNALS = [
     ("0410462", "Nature", "Nature", "Nature", 1869, None, True),
     ("9999991", "Journal of Examples", "J Examples", "J. Examples", 1990, None, True),
@@ -37,6 +37,18 @@ def gzip_fixture(stem: str, dst_dir: Path) -> Path:
 def gz_fixture(tmp_path):
     """Return a factory that gzips a fixture ``.xml`` into ``<stem>.xml.gz``."""
     return partial(gzip_fixture, dst_dir=tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def no_serfile_download(monkeypatch):
+    """Keep the test suite offline.
+
+    ``load_journals`` now also pulls NLM's serial catalog for publication years.
+    Default the *URL list* to empty, so `_ensure_serfile` still runs (and stays
+    testable in its own right) but downloads nothing; tests that care about the
+    years re-patch `_ensure_serfile`, and the ones that test it re-patch this.
+    """
+    monkeypatch.setattr("pubmed2db.load._serfile_urls", lambda: [])
 
 
 @pytest.fixture

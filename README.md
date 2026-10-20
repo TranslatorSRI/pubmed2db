@@ -29,8 +29,10 @@ data model). On top of it, pubmed2db adds:
   `<Season>` shares the `pub_month` column with `<Month>` — the DTD makes the two
   mutually exclusive — so a Parquet consumer reading `article.pub_month` sees
   `Winter` or `Sep-Dec` as readily as `Mar`.
-- **Journal names** — the journal title and abbreviations come from the NLM Catalog
-  (`uv run pubmed2db journals`) and are joined on `nlm_catalog_id`.
+- **Journal names** — the journal title and abbreviations come from NLM's
+  `J_Entrez.txt` (`uv run pubmed2db journals`) and are joined on `nlm_catalog_id`;
+  publication years come from NLM's serial catalog. Two sources, deliberately:
+  see [`docs/JournalCatalog.md`](./docs/JournalCatalog.md).
 
 ## Setup
 
@@ -67,7 +69,8 @@ adds that much again — see [Re-running after a gap](#re-running-after-a-gap).
 # Download the baseline + update files to data/ (MD5-checked, incremental).
 uv run pubmed2db --data-dir data download
 
-# Refresh the journal dimension from the NLM Catalog.
+# Refresh the journal dimension from J_Entrez.txt and NLM's serial catalog
+# (~890 MB on a first run).
 uv run pubmed2db --data-dir data journals
 
 # Parse downloaded files into the database (full history).
@@ -226,6 +229,23 @@ have not been loaded yet, and warns if the journal dimension is empty (journal
 names would be blank). When in doubt, `uv run pubmed2db update` runs the whole pipeline
 (`download → journals → load`) in order.
 
+`journals` reads two NLM sources: `J_Entrez.txt` (10 MB, refetched every run) for
+the titles and abbreviations the export ships, and the serial catalog
+(`serfilebase.YYYY.xml`, ~449 MB, plus that year's monthly updates — usually
+~1 MB but occasionally a bulk re-release of 150-250 MB, so budget ~890 MB of
+cache per year) for `start_year` / `end_year` / `active`. NLM publishes no `.md5`
+sidecars for the catalog, so each cached file gets an `.etag` sidecar holding the
+server's ETag instead, and a HEAD per file per run decides whether to re-fetch —
+a warm run downloads nothing. The catalog is an enrichment: if it is unreachable, or
+its baseline will not parse, the step logs a warning and refreshes the titles while
+keeping the years a previous run loaded (NULL on a first run) rather than failing.
+A monthly update that fails to download or parse is skipped with a warning and
+fetched again next run, and a republished file whose re-fetch fails keeps its
+cached copy. Unlike the PubMed files, the catalog cache cleans up after itself:
+once a new baseline year has downloaded, the previous year's files are deleted.
+About 1% of journals (proceedings volumes, mostly) have no catalog record and keep
+NULL years permanently.
+
 `uv run pubmed2db validate <dir>` inspects a finished JSON export and writes a
 `validation_report.json` (pretty-printed, archivable) whose leading
 `errors`/`warnings` arrays are empty when the export looks good. It confirms
@@ -343,8 +363,9 @@ Two ways to apply one, and they are not interchangeable:
 - **`load --force`** re-parses every local file and replaces its rows, so it
   applies a *parsing* change to the whole corpus: roughly a baseline's worth of
   time (~2–3 h), no re-download, and the database keeps its history.
-- **A fresh database** (delete `<data-dir>/pubmed.duckdb`, then `load`) is the
-  answer whenever the *schema* changed, and the safer default if you are unsure.
+- **A fresh database** (delete `<data-dir>/pubmed.duckdb`, then `journals` and
+  `load`) is the answer whenever the *schema* changed, and the safer default if
+  you are unsure.
 
 The asymmetry is that `schema.sql` only ever adds: `CREATE TABLE IF NOT EXISTS`
 plus explicit `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations. Nothing
@@ -354,12 +375,26 @@ still exist while a table removed from the schema keeps its rows forever —
 reload also leaves any pre-existing wrong rows in place for files it re-parses
 identically.
 
-Rebuilding costs a full `load` and nothing else — the downloaded files are not
-touched — so unless the corpus is already loaded on a machine where 2–3 hours of
+Rebuilding costs a full `load` and a `journals` refresh, and nothing else — the
+downloaded files are not touched — so unless the corpus is already loaded on a machine where 2–3 hours of
 `load` is cheaper than the disk churn, prefer the rebuild. At a new baseline year
 the question is moot: a fresh database is the recommended path anyway, since
 loading the new year into the old database stores a second version of every PMID
 (see above).
+
+**A fresh database needs `journals` run again.** The journal dimension lives in
+the database, so deleting it deletes the journals too, and `load` does not
+rebuild them: skip `journals` and `export` warns, then ships blank journal names.
+`update` and `./slurm/submit.sh all` both include it. Nothing is assumed current
+from an earlier run: `J_Entrez.txt` is re-fetched every time, and the serial
+catalog cache (`<data-dir>/pubmed2db/serfile/`, which survives deleting the
+database) is re-checked against NLM's listing and ETags, so a warm cache
+downloads only what NLM has added or republished. What a fresh database cannot
+do is fall back on earlier years. If the catalog is unreachable or its baseline
+will not parse, `journals` still succeeds, but every journal's `start_year`,
+`end_year` and `active` is NULL rather than last run's values — so check the
+`journals` output for `serial catalog unavailable` before exporting, and re-run
+`journals` if it is there.
 
 **Watch for a new baseline year.** Around November–December PubMed publishes a
 fresh baseline for the *coming* year (`pubmed26n*.xml.gz` lands in late 2025,
@@ -401,18 +436,26 @@ still fetched, so a changed published checksum is always detected.
 - We reuse `pubmed-downloader` **as-is** for downloading and XML parsing, but work
   around three bugs in it (≤ 0.0.14), all tracked in [`FUTURE.md`](./FUTURE.md):
   `catalog.process_journal_overview()` requires `start_year`/`end_year` fields the
-  real `J_Entrez.txt` does not contain, so it raises on live data; its reference
+  real `J_Entrez.txt` does not contain, so it raises on live data (fixed by
+  [pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16) in
+  0.1.0, which our `<0.1` pin still excludes); its reference
   extraction looks under `MedlineCitation` for a `<ReferenceList>` that PubMed puts
   under `<PubmedData>`, so it never finds one; and its article-ID extraction
   descends into that `<ReferenceList>`, attributing every cited reference's DOI to
   the citing article. We parse the journal file and the article IDs ourselves; the
   reference bug is moot here because we deliberately do not store the citation
   graph (one article carries ~444 references, and nothing consumes them).
+  Separately, `catalog.ensure_serfile_catalog()` skips the `serfilebase*` baseline
+  and takes all 83 monthly deltas instead; that costs 2.52 GiB rather than 872 MiB
+  and returns 80% duplicate records for the same coverage, which is why `journals`
+  enumerates NLM's listing itself.
 - This tool is intended to eventually replace the PubMed download in
   [Babel](https://github.com/NCATSTranslator/Babel) (`createcompendia/publications.py`).
 
 See [`AGENTS.md`](./AGENTS.md) for a map of the source and the design decisions
-behind it, and [`FUTURE.md`](./FUTURE.md) for known limitations and planned work.
+behind it, [`FUTURE.md`](./FUTURE.md) for known limitations and planned work, and
+[`docs/JournalCatalog.md`](./docs/JournalCatalog.md) for why the journal
+dimension reads from two NLM sources rather than one.
 
 ## Information on running this pipeline
 

@@ -44,21 +44,37 @@ on, and a copy left here rots into a contradiction of the code.
   "efetch returns nothing" as deleted. Entrez `esummary` distinguishes deleted
   vs. merged/moved records; use it to label merges explicitly rather than
   surfacing them as "still live → review manually".
-- **Semantic field tolerance** (#31). Journal name/abbrev come from the NLM
-  Catalog dimension, not the article XML, so they are compared as *soft*
+- **Semantic field tolerance** (#31). Journal name/abbrev come from the journal
+  dimension (`J_Entrez.txt`), not the article XML, so they are compared as *soft*
   (warning-only) fields; revisit if a stricter journal cross-check is wanted.
+  Worth knowing before that revisit: `journal.title` is `J_Entrez.txt`'s
+  `JournalTitle`, which is byte-identical to what `esummary` and `efetch` serve
+  (see [`docs/JournalCatalog.md`](./docs/JournalCatalog.md)), so the two sides
+  agree far more often than "different source" suggests — which makes a hard
+  check more viable than the current wording implies.
 
 ## Upstream dependency (`cthoyt/pubmed-downloader`)
 
 The dependency is pinned `<0.1` because we call private APIs (`_extract_article`,
 `_ensure_urls`); re-test before raising the ceiling.
 
-- **Revert the custom journal parser** in `load._parse_journal_overview` once
-  `pubmed_downloader.catalog.process_journal_overview()` no longer requires
-  `start_year`/`end_year` (broken in ≤ 0.0.14 — those fields aren't in
-  `J_Entrez.txt`, filed at https://github.com/cthoyt/pubmed-downloader/pull/16).
-  Then we can go back to using the library's `Journal` model directly. See
-  `load._parse_journal_overview` for what we do instead.
+- **Drop `load._parse_journal_overview` when the ceiling is raised to admit
+  0.1.0** (#65; ~35 lines, with `_JOURNAL_KEYS`).
+  [pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16)
+  was merged and released in 0.1.0 (2026-10-08), so the fix exists upstream but
+  not in any version we allow. `process_journal_overview()` cannot
+  return a single record in ≤ 0.0.14: `Journal.start_year`/`end_year` are
+  annotated `int | None` but given no default, so pydantic makes them required,
+  and `J_Entrez.txt` has no such key. Every *other* field the overview file
+  cannot supply already defaults (`abbreviation_medline`, `synonyms`, `active`),
+  which is what marks these two as an oversight rather than a design statement.
+  Upstream's first answer to the PR was that the package reads the serfiles
+  instead; it was merged once the measurements showed `J_Entrez.txt` is the only
+  place `fulljournalname` and `IsoAbbr` exist at all, so a `Journal` built from
+  it can never have years and the fields must be optional.
+  **When we adopt it, keep setting `active` ourselves** — the model defaults it to
+  `True`, which is wrong for the ~13,000 ceased journals serfile identifies. See
+  [`docs/JournalCatalog.md`](./docs/JournalCatalog.md).
 - **`cites_pubmed_ids` never matches, but we no longer care.** `_extract_article`
   searches `medline_citation.findall(".//ReferenceList/Reference")`, but PubMed
   nests `<ReferenceList>` under `<PubmedData>`, so `Article.cites_pubmed_ids` is
@@ -84,7 +100,9 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
 
 Nothing has been filed against `cthoyt/pubmed-downloader` for either, and nothing
 should be until the open items below are answered. (The journal-model fix is the
-exception: already filed as https://github.com/cthoyt/pubmed-downloader/pull/16.)
+exception: filed and merged as https://github.com/cthoyt/pubmed-downloader/pull/16.
+Its maintainer will not consider a pull request or issue whose text or code is
+AI-generated, so whatever we report must be written by hand.)
 
 Real-data evidence gathered on the `add-doi-and-pmcids` branch, which found the
 `article_id` bug independently:

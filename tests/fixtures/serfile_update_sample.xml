@@ -1,0 +1,13 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<NLMCatalogRecordSet>
+  <!-- A monthly delta re-stating one baseline record as ceased. -->
+  <NLMCatalogRecord Owner="NLM" Status="Completed">
+    <NlmUniqueID>0410462</NlmUniqueID>
+    <TitleMain><Title Sort="0">Nature.</Title></TitleMain>
+    <PublicationInfo>
+      <Country>England</Country>
+      <PublicationFirstYear>1869</PublicationFirstYear>
+      <PublicationEndYear>2025</PublicationEndYear>
+    </PublicationInfo>
+  </NLMCatalogRecord>
+</NLMCatalogRecordSet>
