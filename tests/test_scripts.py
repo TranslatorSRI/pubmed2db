@@ -253,3 +253,17 @@ def test_fresh_database_with_one_year_moves_nothing(two_years: Path) -> None:
     assert not (two_years / "pubmed-archive").exists()
     assert not (two_years / "pubmed.duckdb").exists()
     assert (two_years / "pubmed" / "baseline" / "pubmed26n0001.xml.gz").is_file()
+
+
+# --------------------------------------------------------------------------- #
+# The docs that point at the README's "Between runs" section
+# --------------------------------------------------------------------------- #
+
+
+def test_the_between_runs_section_exists_where_the_docs_point() -> None:
+    """Three files link the section by anchor; renaming the heading breaks all three silently."""
+    heading = "### Between runs: what to keep, archive and delete"
+    anchor = "#between-runs-what-to-keep-archive-and-delete"
+    assert heading in (REPO_ROOT / "README.md").read_text()
+    for name in ("README.md", "slurm/README.md", "docs/Releases.md"):
+        assert anchor in (REPO_ROOT / name).read_text(), name
