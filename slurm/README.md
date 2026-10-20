@@ -31,6 +31,15 @@ Logs land in `data/logs/pubmed2db-<step>-<jobid>.out`. Between steps,
 `uv run pubmed2db status` reports what has been downloaded, loaded and is ready
 to export, which is the quickest way to confirm a step did what you expected.
 
+**Starting over from a fresh database** (deleting `data/pubmed.duckdb`, say at a
+new baseline year) needs `journals` as well as `load`, because the journal
+dimension lives in the database; `all` includes it. Before `export`, grep the
+`journals` log for `serial catalog unavailable`. On a fresh database that
+warning means every journal's years are NULL, and since the step still exits 0,
+`afterok` lets an `all` chain carry on into `export` regardless. Re-running
+`journals` alone fixes it. The README's "`load --force` or a fresh database?"
+has the rest.
+
 > **The `#SBATCH` headers in those scripts are the source of truth for what each
 > step requests.** This file explains *why* each figure is what it is and records
 > the runs it came from; it deliberately no longer repeats the flags, so a
