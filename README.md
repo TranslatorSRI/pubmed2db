@@ -363,10 +363,16 @@ uv run pubmed2db validate data/json-new \
     --manifest data/manifests/pmids-20260921.txt.gz
 ```
 
-A dropped PMID is fine if the database recorded a `DeleteCitation` for it; one
-that vanished *without* a recorded deletion is an **error**, since it means
-records were lost rather than retired. With no database available the drops can't
-be attributed, so they downgrade to a warning to review.
+A dropped PMID is fine if the database recorded a `DeleteCitation` for it, or
+if PubMed no longer serves it either (asked online, for the drops the database
+cannot explain). One that PubMed *still* serves is an **error**, since it means
+records were lost rather than retired. Drops PubMed has retired but no loaded
+file deleted are a **warning** (`drops_retired_upstream`): that is the expected
+result of the first run after a [fresh database](#load---force-or-a-fresh-database),
+which never loads the update files that carried those deletions, and on a
+continuing database it means an update file was missed. Offline, or with no
+database available, the drops can't be attributed: offline they stay errors,
+and without a database they downgrade to a warning to review.
 
 The coverage check expects the export to be within ±5% of the live PubMed total
 (the 2026-07-30 full run came in at 99.90% of it). A **partial** export — from a

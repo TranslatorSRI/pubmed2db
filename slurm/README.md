@@ -59,6 +59,10 @@ has the rest.
 manifest nobody wrote (#32). The script picks the newest earlier manifest as
 `--previous-manifest` automatically. A run that *fails* writes no manifest, so a
 truncated export cannot become the next run's baseline.
+The chain survives a fresh database: the first run after one warns
+`drops_retired_upstream` for the PMIDs PubMed retired between the previous build
+and the new baseline (the new database never loaded those deletions, so
+`validate` asks PubMed instead), and still writes its manifest.
 
 ## The scripts
 

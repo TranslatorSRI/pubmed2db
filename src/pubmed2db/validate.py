@@ -188,6 +188,14 @@ _MAX_EXAMPLES = 20
 #: efetch accepts many IDs per request; batch to stay well under URL limits.
 _EFETCH_BATCH = 20
 
+#: Most unexplained drops `check_drops_since` will ask PubMed about. At
+#: _EFETCH_BATCH per request that is 1,000 requests: ~100 s with an API key
+#: (10/s), ~6 min without (3/s). The first run after a fresh-database rebuild
+#: has a few thousand (the deletions PubMed published between the previous
+#: build and the new baseline); far more than this means the previous manifest
+#: describes a different corpus, which no amount of fetching will explain.
+_DROP_CONFIRM_LIMIT = 20_000
+
 #: A sampled record whose core fields mismatch above this fraction is an error.
 _FIELD_MISMATCH_RATE = 0.20
 
@@ -1550,14 +1558,30 @@ def check_drops_since(
     all_pmids: set[int],
     previous_manifest: Path | None,
     con: duckdb.DuckDBPyConnection | None,
+    online: bool,
+    api_key: str | None,
+    email: str | None,
 ) -> None:
     """Diff this export's PMID set against a previous export's manifest.
 
     This is the check the coverage counts cannot make: two exports can hold the
     same number of records while a thousand PMIDs silently swapped out. A PMID
-    the previous export shipped and this one does not is only legitimate if the
-    database recorded a ``DeleteCitation`` for it, so an *unexplained* drop is an
-    error — it means records vanished without PubMed asking for their removal.
+    the previous export shipped and this one does not is legitimate if the
+    database recorded a ``DeleteCitation`` for it, or if PubMed no longer serves
+    it either. A drop PubMed *still* serves is an error: records vanished
+    without PubMed asking for their removal.
+
+    The second test exists for the fresh-database rebuild (README, "Prefer a
+    fresh database at the year boundary"). A database built from the new
+    baseline never loads the update files that carried the deletions published
+    between the previous build and that baseline, so its ``deleted_pmid`` cannot
+    explain them; nor can it explain a record PubMed dropped quietly, which the
+    old additive database kept. Judged by the database alone every one of those
+    was an error, the run failed, no manifest was written, and the next run
+    diffed against the same old manifest and failed again. Asking PubMed is what
+    makes the drop check usable across the one event it is most needed for.
+    It only asks about drops the database cannot explain, and only up to
+    :data:`_DROP_CONFIRM_LIMIT` of them.
 
     Without a database the drops cannot be attributed, so they are reported as a
     warning to review rather than silently accepted.
@@ -1592,6 +1616,25 @@ def check_drops_since(
         explained = sorted(r[0] for r in rows)
         unexplained = sorted(dropped - set(explained))
 
+    # Then ask PubMed about what the database could not explain. Only with a
+    # database: without one the whole set is unattributed and stays a warning.
+    retired_upstream: list[int] = []
+    confirmation: str | None = None
+    if unexplained and con is not None:
+        if not online:
+            confirmation = "offline"
+        elif len(unexplained) > _DROP_CONFIRM_LIMIT:
+            confirmation = "over_limit"
+        else:
+            try:
+                served = efetch_documents(unexplained, api_key=api_key, email=email)
+                confirmation = "entrez"
+                retired_upstream = [p for p in unexplained if p not in served]
+                unexplained = [p for p in unexplained if p in served]
+            except Exception as exc:
+                logger.warning("could not confirm dropped PMIDs via API: %s", exc)
+                confirmation = "unreachable"
+
     report.checks["drops_since_previous"] = {
         "previous_manifest": str(previous_manifest),
         "previous_count": len(previous_pmids),
@@ -1600,6 +1643,9 @@ def check_drops_since(
         "added": len(added),
         "explained_by_deletion": _capped(explained),
         "explained_by_deletion_count": len(explained),
+        "explained_by_pubmed": _capped(retired_upstream),
+        "explained_by_pubmed_count": len(retired_upstream),
+        "pubmed_confirmation": confirmation,
         "unexplained": _capped(unexplained),
         "unexplained_count": len(unexplained),
         "added_examples": _capped(sorted(added)),
@@ -1607,15 +1653,27 @@ def check_drops_since(
 
     observed = (
         f"{len(dropped):,} dropped ({len(explained):,} explained by a recorded "
-        f"deletion), {len(added):,} added"
+        f"deletion, {len(retired_upstream):,} no longer served by PubMed), "
+        f"{len(added):,} added"
     )
     if unexplained and con is not None:
+        why = {
+            "offline": "; offline, so PubMed was not asked about them",
+            "over_limit": (
+                f"; more than {_DROP_CONFIRM_LIMIT:,}, so PubMed was not asked "
+                "about them (does the previous manifest describe this corpus?)"
+            ),
+            "unreachable": "; PubMed was unreachable, so they could not be attributed",
+            "entrez": "; PubMed still serves them",
+        }[confirmation]
         report.record(
-            "pmid-set-diff", "drops since previous", expectation, FAIL, observed,
+            "pmid-set-diff", "drops since previous", expectation, FAIL, observed + why,
             code="unexplained_drops",
             message=(
                 "PMIDs present in the previous export are missing from this one "
-                "without a recorded deletion."
+                "without a recorded deletion"
+                + (", and PubMed still serves them." if confirmation == "entrez"
+                   else "; run validate online to ask PubMed whether it still serves them.")
             ),
             count=len(unexplained), see="checks.drops_since_previous.unexplained",
         )
@@ -1629,6 +1687,18 @@ def check_drops_since(
                 "no database was available to confirm they were deleted."
             ),
             count=len(unexplained), see="checks.drops_since_previous.unexplained",
+        )
+    elif retired_upstream:
+        report.record(
+            "pmid-set-diff", "drops since previous", expectation, WARN, observed,
+            code="drops_retired_upstream",
+            message=(
+                "PubMed no longer serves these PMIDs, but no DeleteCitation for "
+                "them was loaded. Expected on the first run after a fresh-database "
+                "rebuild (the deletions were published before the new baseline); "
+                "on a continuing database it means an update file was missed."
+            ),
+            count=len(retired_upstream), see="checks.drops_since_previous.explained_by_pubmed",
         )
     else:
         report.record("pmid-set-diff", "drops since previous", expectation, PASS, observed)
@@ -1720,6 +1790,7 @@ def run_validation(
     check_drops_since(
         report, all_pmids=structure.all_pmids,
         previous_manifest=previous_manifest, con=con,
+        online=online, api_key=api_key, email=email,
     )
 
     # A manifest is a *baseline*: the next run diffs its export against it and
