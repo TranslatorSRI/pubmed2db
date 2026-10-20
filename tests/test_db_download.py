@@ -75,8 +75,9 @@ class _FakeEnsure:
         self.payload = payload
         self.downloads = 0
 
-    def download(self, url: str, path: Path) -> None:
+    def download(self, url: str, path: Path, *, session) -> None:
         assert path == self.path
+        assert session is not None  # the sync's shared session, not a fresh one
         path.write_bytes(self.payload)
         self.downloads += 1
 
@@ -85,7 +86,7 @@ class _FakeEnsure:
 
 
 def _sync_kind(con, monkeypatch, tmp_path, *, urls, body, registry=None, limit=None,
-               ensure_module=None, verify=False):
+               ensure_module=None, verify=False, failed=None):
     """Run download._sync_kind against a fake listing/server."""
     from pubmed2db import download
 
@@ -107,6 +108,7 @@ def _sync_kind(con, monkeypatch, tmp_path, *, urls, body, registry=None, limit=N
         limit=limit,
         verify=verify,
         session=session,
+        failed=failed if failed is not None else [],
     )
 
 
@@ -317,3 +319,110 @@ def test_a_missing_local_file_is_verified_when_refetched(con, monkeypatch, tmp_p
 
     assert results == []
     assert not blob.exists()
+
+
+class _FlakyServer:
+    """A pystow-module stand-in whose downloads fail on the listed attempts.
+
+    Attempts are numbered from 1 across every file, and a failure raises
+    `requests.ConnectionError`, as `util.download_file` does for a stall.
+    """
+
+    def __init__(self, directory: Path, payload: bytes, fail_on: set[int]) -> None:
+        self.directory, self.payload, self.fail_on = directory, payload, fail_on
+        self.attempts = 0
+
+    def download(self, url: str, path: Path, *, session) -> None:
+        import requests
+
+        self.attempts += 1
+        if self.attempts in self.fail_on:
+            raise requests.ConnectionError("Read timed out")
+        path.write_bytes(self.payload)
+
+    def join(self, *, name: str) -> Path:
+        return self.directory / name
+
+
+def test_a_stalled_file_does_not_abandon_the_rest(con, monkeypatch, tmp_path):
+    """The read timeout turns a stall into an exception; one blip on file 400
+    of ~1,300 must not cost the other 900. The failed file stays unregistered,
+    so the next sync sees it as new and tries again."""
+    names = [f"pubmed25n000{n}.xml.gz" for n in (3, 2, 1)]
+    server = _FlakyServer(tmp_path, b"fresh", fail_on={2})
+    failed: list[str] = []
+
+    results = _sync_kind(
+        con,
+        monkeypatch,
+        tmp_path,
+        urls=[f"https://example.invalid/updatefiles/{n}" for n in names],
+        body=f"MD5(x)= {_GOOD_MD5}",
+        ensure_module=server,
+        failed=failed,
+    )
+
+    assert failed == ["pubmed25n0002.xml.gz"]
+    assert [p.name for p, _ in results] == ["pubmed25n0003.xml.gz", "pubmed25n0001.xml.gz"]
+    assert {r[0] for r in con.execute("SELECT file_name FROM source_file").fetchall()} == {
+        "pubmed25n0003.xml.gz",
+        "pubmed25n0001.xml.gz",
+    }
+
+
+def test_a_failed_retry_of_a_corrupt_file_is_skipped(con, monkeypatch, tmp_path):
+    """The corrupt copy is deleted before the retry, so a retry that fails must
+    leave the file absent and unregistered, not abort the sync."""
+    file_name = "pubmed25n0001.xml.gz"
+    server = _FlakyServer(tmp_path, b"corrupt", fail_on={2})
+    failed: list[str] = []
+
+    results = _sync_kind(
+        con,
+        monkeypatch,
+        tmp_path,
+        urls=[f"https://example.invalid/updatefiles/{file_name}"],
+        body=f"MD5(x)= {_GOOD_MD5}",
+        ensure_module=server,
+        verify=True,
+        failed=failed,
+    )
+
+    assert (results, failed) == ([], [file_name])
+    assert not (tmp_path / file_name).exists()
+    assert con.execute("SELECT count(*) FROM source_file").fetchone()[0] == 0
+
+
+def test_sync_fails_after_fetching_everything_else(con, monkeypatch, tmp_path):
+    """Skipping a failed file must not let the step report success over a
+    partial corpus: `sync` raises once both kinds have been tried."""
+    from pubmed2db import download
+
+    kinds = []
+
+    def fake_sync_kind(con, *, kind, failed, **kwargs):
+        kinds.append(kind)
+        if kind == "baseline":
+            failed.append("pubmed25n0001.xml.gz")
+        return []
+
+    monkeypatch.setattr(download, "_sync_kind", fake_sync_kind)
+    monkeypatch.setattr(download, "_remove_partial_downloads", lambda directory: None)
+    with pytest.raises(download.DownloadError, match="pubmed25n0001.xml.gz"):
+        download.sync(con)
+    assert kinds == ["baseline", "update"]  # the updates were still fetched
+
+
+def test_remove_partial_downloads(tmp_path):
+    """A SIGKILL skips download_file's cleanup; the next sync sweeps what it
+    left, and touches nothing else."""
+    from pubmed2db.download import _remove_partial_downloads
+
+    keep = [tmp_path / "pubmed25n0001.xml.gz", tmp_path / "pubmed25n0001.xml.gz.md5"]
+    for path in keep:
+        path.write_bytes(b"x")
+    (tmp_path / "pubmed25n0002.xml.gz.part").write_bytes(b"trunc")
+
+    _remove_partial_downloads(tmp_path)
+    assert sorted(tmp_path.iterdir()) == sorted(keep)
+    _remove_partial_downloads(tmp_path / "absent")  # a kind never synced

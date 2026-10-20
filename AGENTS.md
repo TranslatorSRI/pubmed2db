@@ -33,8 +33,9 @@ explains its part; this table is only a map.
 ## Decisions that are not visible from the code
 
 - **Reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
-  as-is, no upstream changes.** We take its bulk download and its `Article` data
-  model, but not its `iterate_process_*`/JSONL cache — DuckDB is our store, and
+  as-is, no upstream changes.** We take its file listings, its cache layout and
+  its `Article` data model, but not its transfers (see below) or its
+  `iterate_process_*`/JSONL cache — DuckDB is our store, and
   `parse.py` drives the XML itself for the fields that pipeline drops (its
   docstring says which). Pinned `<0.1` because we call private APIs
   (`_extract_article`, `_ensure_urls`).
@@ -271,13 +272,18 @@ explains its part; this table is only a map.
   so a republished one keeps stale bytes unless its checksum moved); both are
   pinned by tests in `tests/test_db_download.py`, whose docstrings say what they
   hold in place.
-- **Nothing large is fetched with pystow's `ensure()`.** Its urllib backend sets
-  no timeout, and a stalled NLM connection hung a live `journals` run with the
-  socket still open; its requests backend never checks the status. Both
-  `download.py` and the serial catalog go through `util.download_file` (timeout,
-  `raise_for_status`, `.part` then rename), while pubmed-downloader and pystow
-  still supply the listing and the cache paths. The test fakes have no
-  `ensure()`, so a call creeping back fails.
+- **Nothing is fetched with pystow's `ensure()`, directly or through a
+  pubmed-downloader helper.** Its urllib backend sets no timeout, and a stalled
+  NLM connection hung a live `journals` run with the socket still open; its
+  requests backend never checks the status. The PubMed files, `J_Entrez.txt`
+  and the serial catalog all go through `util.download_file` (timeout,
+  `raise_for_status`, `.part` then rename, bytes written undecoded), while
+  pubmed-downloader and pystow still supply the listings and the cache paths.
+  `test_nothing_is_fetched_with_pystow_ensure` scans the package for any
+  `ensure`/`ensure_*` call, because the download fakes only catch one on the
+  module they replace. A file that fails is skipped and the sync carries on,
+  then `download` exits non-zero naming it; a SIGKILL skips `download_file`'s
+  cleanup, so `download` and the catalog prune each sweep stale `.part` files.
 
 - **The `#SBATCH` headers in `slurm/` are the only place an allocation is
   written down**, and `slurm/README.md` deliberately does not repeat them — it
