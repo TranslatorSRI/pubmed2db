@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import requests
+import urllib3
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,26 @@ def eta_str(elapsed: float, done: int, remaining: int) -> str:
     return fmt_duration(elapsed / done * remaining)
 
 
-def download_file(url: str, path: Path) -> Mapping[str, str]:
+def _raw_chunks(response: requests.Response):
+    """The undecoded body, raising requests' exceptions as ``iter_content`` does.
+
+    ``raw.stream`` raises urllib3's own (a read timeout is
+    ``urllib3.exceptions.ReadTimeoutError``), which an ``except
+    requests.RequestException`` would not catch.
+    """
+    try:
+        yield from response.raw.stream(1 << 20, decode_content=False)
+    except urllib3.exceptions.ProtocolError as exc:
+        raise requests.exceptions.ChunkedEncodingError(exc) from exc
+    except urllib3.exceptions.ReadTimeoutError as exc:
+        raise requests.exceptions.ConnectionError(exc) from exc
+    except urllib3.exceptions.SSLError as exc:
+        raise requests.exceptions.SSLError(exc) from exc
+
+
+def download_file(
+    url: str, path: Path, *, session: requests.Session | None = None
+) -> Mapping[str, str]:
     """Stream ``url`` to ``path``, replacing it only once the transfer completes.
 
     Use this rather than pystow's ``ensure()`` for anything large. Its default
@@ -78,18 +98,31 @@ def download_file(url: str, path: Path) -> Mapping[str, str]:
     the status, so it would save a 5xx page as the file. The read timeout bounds
     the gap between chunks, not the whole transfer. Writing to a ``.part`` and
     renaming means a killed job never leaves a truncated file under the real
-    name for the next run to trust.
+    name for the next run to trust (a SIGKILL skips the ``finally``, so callers
+    sweep stale ``.part`` files themselves).
 
-    Returns the response's headers, so a caller can record a validator (an
-    ETag) that describes exactly the bytes written.
+    The file on disk is the bytes exactly as served, never decoded. requests
+    asks for gzip by default and ``iter_content`` undoes any
+    ``Content-Encoding``, so a server that labels a ``.xml.gz`` with
+    ``Content-Encoding: gzip`` — a common Apache misconfiguration — would have
+    had plain XML saved under the ``.gz`` name, failing every MD5 check. Asking
+    for ``identity`` keeps a well-behaved server from compressing in transit,
+    which is what makes the raw bytes the file.
+
+    Pass a ``session`` to reuse its connections across many files. Returns the
+    response's headers, so a caller can record a validator (an ETag) that
+    describes exactly the bytes written.
     """
     logger.info("downloading %s", url)
     part = path.with_name(path.name + ".part")
+    get = (session or requests).get
     try:
-        with requests.get(url, stream=True, timeout=(60, 120)) as response:
+        with get(
+            url, stream=True, timeout=(60, 120), headers={"Accept-Encoding": "identity"}
+        ) as response:
             response.raise_for_status()
             with part.open("wb") as out:
-                for chunk in response.iter_content(chunk_size=1 << 20):
+                for chunk in _raw_chunks(response):
                     out.write(chunk)
             headers = response.headers
         os.replace(part, path)

@@ -18,9 +18,11 @@
 -- appear in a database created before it — it needs its own
 -- `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` line right below the table (see
 -- `source_file.n_failed`). Nothing here drops a table or column, so a table
--- removed from this file keeps its rows forever in an existing database: after a
--- schema change, rebuild rather than `load --force` (see the README's
--- "`load --force` or a fresh database?").
+-- removed from this file keeps its rows forever in an existing database. Hence
+-- the rule (the README's "`load --force` or a fresh database?"): a change that
+-- only *adds* -- a table, or a column with its migration line -- is filled by
+-- `load --force`; one that removes or redefines anything needs a rebuild. Say
+-- which in the migration's comment, as `publication_type.type_name` does.
 
 -- Registry of every PubMed XML file we know about. Drives incremental loads.
 CREATE TABLE IF NOT EXISTS source_file (
@@ -120,6 +122,8 @@ CREATE TABLE IF NOT EXISTS author_affiliation (
     ror         TEXT                            -- grounded ROR curie, if present
 );
 
+-- Names are verbatim from each record's XML, never reconciled across records
+-- (one UI can carry different names). See AGENTS.md, "MeSH labels".
 CREATE TABLE IF NOT EXISTS mesh_heading (
     pmid          BIGINT NOT NULL,
     source_file   TEXT   NOT NULL,
@@ -147,8 +151,8 @@ CREATE TABLE IF NOT EXISTS publication_type (
 -- Added after the first release, so migrated here rather than in the CREATE
 -- above -- which keeps fresh and migrated databases at the same column order,
 -- and `load` inserts BY POSITION. NULL means the row was loaded before names
--- were parsed: `load --force` (or a fresh database) fills it, and `export`
--- warns while any latest-version row is still NULL.
+-- were parsed: `load --force` (or a fresh database) fills it -- this change only
+-- adds -- and `status`/`export` warn while any row is still NULL.
 ALTER TABLE publication_type ADD COLUMN IF NOT EXISTS type_name TEXT;
 ALTER TABLE publication_type ADD COLUMN IF NOT EXISTS position INTEGER;  -- 0-based
 
