@@ -556,6 +556,18 @@ LEFT JOIN pts ON pts.pmid = la.pmid AND pts.source_file = la.source_file
 )
 
 
+def _remove_finished_mark(out_dir: Path) -> None:
+    """Delete a previous export's ``metadata.json`` and ``SHA256SUMS`` before writing.
+
+    ``metadata.json`` is the "export finished" mark. Left in place, an export
+    that dies after removing the old files would still look finished, with
+    checksums for files that are gone or have been replaced. Remove the mark
+    first, so a directory without one is one whose export never completed.
+    """
+    for name in (METADATA_FILE, CHECKSUMS_FILE):
+        (out_dir / name).unlink(missing_ok=True)
+
+
 def _shard_paths(out_dir: Path) -> list[Path]:
     """The shard files this export owns, sorted — its output and its leftovers."""
     return sorted(
@@ -649,6 +661,7 @@ def export_json(
         raise ValueError("shards must be >= 1")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    _remove_finished_mark(out_dir)
 
     # Clock the whole export, not just the COPY. Materializing the snapshot is a
     # window function over the entire `article` table -- the reason export memory
@@ -732,13 +745,16 @@ def file_sha256(path: Path) -> str:
 
 def write_export_metadata(
     con: duckdb.DuckDBPyConnection, out_dir: Path, files: list[Path], *, fmt: str, records: int,
+    article_versions: int | None = None,
 ) -> Path:
     """Write ``metadata.json`` and ``SHA256SUMS``: the export's version, provenance and checksums.
 
     An export travels without its database, so this is where a consumer learns
     which data model it follows (``data_model_version``; check the major), what
     corpus it holds (``corpus``: the cutoff file and when NCBI posted it, #57),
-    how many records to expect, and each file's size and SHA-256. ``validate``
+    how many current articles it holds (``records``, the same in every format;
+    a history export adds ``article_versions``, every row of
+    ``article.parquet``), and each file's size and SHA-256. ``validate``
     checks the directory against it. ``SHA256SUMS`` repeats the hashes for
     ``sha256sum -c``. Both are written last, after every file they describe,
     and ``metadata.json`` after ``SHA256SUMS``, so its presence means the export
@@ -762,6 +778,7 @@ def write_export_metadata(
         "data_model_version": datamodel.DATA_MODEL_VERSION,
         "format": fmt,
         "records": records,
+        **({} if article_versions is None else {"article_versions": article_versions}),
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "generated_by": datamodel.code_version(),
         "database": datamodel.metadata(con),
@@ -797,6 +814,7 @@ def export_parquet(
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    _remove_finished_mark(out_dir)
     written: list[Path] = []
 
     tables = 1 + len(_VERSIONED_CHILDREN) + len(_OTHER_TABLES)
@@ -860,11 +878,15 @@ def export_parquet(
         written.append(path)
         _progress(len(written))
 
+    # `records` counts current articles in every format, so two exports of one
+    # build agree on it; the history export adds its version count separately.
     records = con.execute(
-        "SELECT count(*) FROM _latest_snapshot" if latest else "SELECT count(*) FROM article"
+        "SELECT count(*) FROM _latest_snapshot" if latest else "SELECT count(*) FROM latest_article"
     ).fetchone()[0]
+    article_versions = None if latest else con.execute("SELECT count(*) FROM article").fetchone()[0]
     write_export_metadata(
-        con, out_dir, written, fmt="parquet-latest" if latest else "parquet-all", records=records,
+        con, out_dir, written, fmt="parquet-latest" if latest else "parquet-all",
+        records=records, article_versions=article_versions,
     )
     logger.info(
         "exported %d Parquet file(s) to %s (peak RSS %.1f GiB)",

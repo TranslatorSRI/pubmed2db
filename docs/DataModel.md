@@ -49,7 +49,7 @@ current code refuses their databases, and their tables differ in the ways
 
 Every export directory also holds `metadata.json`. It records:
 - the data model version and the export format;
-- the record count;
+- the record count (`records`: current articles, the same in every format; an `--all` Parquet export adds `article_versions`, every version in its article file);
 - the code and database it came from;
 - the corpus cutoff;
 - a SHA-256 for every file, repeated in `SHA256SUMS` for `sha256sum -c`.
