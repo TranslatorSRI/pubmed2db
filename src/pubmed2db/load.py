@@ -377,7 +377,7 @@ def _parse_journal_overview(path: Path):
 
 #: NLM's serial catalog. It carries the publication years `J_Entrez.txt` omits,
 #: but *not* the journal titles — those stay with J_Entrez, which is PubMed's own
-#: rendering. `docs/journal-catalog.md` has the measurements behind that split.
+#: rendering. `docs/JournalCatalog.md` has the measurements behind that split.
 _SERFILE_LISTING = "https://ftp.nlm.nih.gov/projects/serfilelease/"
 _SERFILE_BASELINE_RE = re.compile(r"serfilebase\.(\d{4})\.xml\b")
 _SERFILE_UPDATE_RE = re.compile(r"serfile\.(\d{8})\.xml\b")
@@ -685,7 +685,7 @@ def load_journals(con: duckdb.DuckDBPyConnection) -> int:
     journals loaded.
 
     J_Entrez defines the row set and the titles; the serial catalog only fills
-    ``start_year`` / ``end_year`` / ``active``. `docs/journal-catalog.md` records
+    ``start_year`` / ``end_year`` / ``active``. `docs/JournalCatalog.md` records
     why the titles do not come from the catalog.
     """
     from pubmed_downloader.catalog import ensure_journal_overview
@@ -748,7 +748,7 @@ def load_journals(con: duckdb.DuckDBPyConnection) -> int:
                     # The overview file has no publication years; the serial
                     # catalog does. A journal the catalog does not cover (~1% of
                     # them, mostly proceedings volumes) keeps NULLs rather than
-                    # being dropped — see docs/journal-catalog.md.
+                    # being dropped — see docs/JournalCatalog.md.
                     *years.get(nlm_id, (None, None, None)),
                 )
                 for nlm_id, rec in journals.items()
