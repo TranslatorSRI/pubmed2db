@@ -409,8 +409,9 @@ Two ways to apply one, and they are not interchangeable:
   applies a *parsing* change to the whole corpus: roughly a full load's worth of
   time (about a day at corpus scale — see [`slurm/README.md`](./slurm/README.md#running-load-how-long---time)),
   no re-download, and the database keeps its history.
-- **A fresh database** (delete `<data-dir>/pubmed.duckdb`, then `load`) is the
-  answer whenever the *schema* changed, and the safer default if you are unsure.
+- **A fresh database** (delete `<data-dir>/pubmed.duckdb`, then `journals` and
+  `load`) is the answer whenever the *schema* changed, and the safer default if
+  you are unsure.
 
 The asymmetry is that within a major version `schema.sql` only ever adds:
 `CREATE TABLE IF NOT EXISTS` plus explicit `ALTER TABLE ... ADD COLUMN IF NOT
@@ -419,12 +420,26 @@ but it leaves any pre-existing wrong rows in place for files it re-parses
 identically, and only a rebuild is guaranteed to leave exactly the shape and
 rows the current code would write.
 
-Rebuilding costs a full `load` and nothing else — the downloaded files are not
-touched — so unless the corpus is already loaded on a machine where a day of
-`load` is cheaper than the disk churn, prefer the rebuild. At a new baseline year
-the question is moot: a fresh database is the recommended path anyway, since
-loading the new year into the old database stores a second version of every PMID
-(see above).
+Rebuilding costs a full `load` and a `journals` refresh, and nothing else — the
+downloaded files are not touched — so unless the corpus is already loaded on a
+machine where a day of `load` is cheaper than the disk churn, prefer the
+rebuild. At a new baseline year the question is moot: a fresh database is the
+recommended path anyway, since loading the new year into the old database stores
+a second version of every PMID (see above).
+
+**A fresh database needs `journals` run again.** The journal dimension lives in
+the database, so deleting it deletes the journals too, and `load` does not
+rebuild them: skip `journals` and `export` warns, then ships blank journal names.
+`update` and `./slurm/submit.sh all` both include it. Nothing is assumed current
+from an earlier run: `J_Entrez.txt` is re-fetched every time, and the serial
+catalog cache (`<data-dir>/pubmed2db/serfile/`, which survives deleting the
+database) is re-checked against NLM's listing and ETags, so a warm cache
+downloads only what NLM has added or republished. What a fresh database cannot
+do is fall back on earlier years. If the catalog is unreachable or its baseline
+will not parse, `journals` still succeeds, but every journal's `start_year`,
+`end_year` and `active` is NULL rather than last run's values — so check the
+`journals` output for `serial catalog unavailable` before exporting, and re-run
+`journals` if it is there.
 
 **Watch for a new baseline year.** Around November–December PubMed publishes a
 fresh baseline for the *coming* year (`pubmed26n*.xml.gz` lands in late 2025,
