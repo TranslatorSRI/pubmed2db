@@ -120,8 +120,10 @@ COMMENT ON COLUMN article.date_completed IS 'MedlineCitation/DateCompleted: when
 COMMENT ON COLUMN article.date_revised IS 'MedlineCitation/DateRevised: when NLM last revised the record. A missing month or day reads as the 1st.';
 COMMENT ON COLUMN article.loaded_at IS 'When this version was loaded into the database.';
 
--- Journal dimension, sourced from the NLM Catalog (J_Entrez/J_Medline), not
--- versioned. Joined to articles on nlm_catalog_id.
+-- Journal dimension, not versioned. Joined to articles on nlm_catalog_id.
+-- Titles, abbreviations and ISSNs come from NLM's J_Entrez.txt; start_year,
+-- end_year and active from the serial catalog (serfile). docs/journal-catalog.md
+-- says why it takes two sources.
 CREATE TABLE IF NOT EXISTS journal (
     nlm_catalog_id       TEXT PRIMARY KEY,
     title                TEXT,
