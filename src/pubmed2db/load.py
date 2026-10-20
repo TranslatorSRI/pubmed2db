@@ -441,9 +441,11 @@ def _serfile_head(url: str) -> tuple[str | None, int | None]:
     NLM publishes no ``.md5`` sidecars for these files, unlike the PubMed
     baseline where :mod:`pubmed2db.download` uses them to notice a republished
     file. The ETag is the validator this server does offer, and a HEAD does the
-    same job for a few hundred bytes instead of ~450 MB. The size is ``None``
-    when the response is compressed, since the file on disk is the decoded
-    bytes (NLM serves these uncompressed today). Both are ``None`` on any
+    same job for a few hundred bytes instead of ~450 MB. It asks for
+    ``identity``, as `util.download_file` does, so the length is the size of
+    the file that download writes. A server that compresses anyway gets
+    ``None`` for the size: a length compressed on the fly need not match the
+    next GET's (NLM serves these uncompressed today). Both are ``None`` on any
     network trouble — the caller then keeps whatever is already cached rather
     than failing.
 
@@ -453,7 +455,9 @@ def _serfile_head(url: str) -> tuple[str | None, int | None]:
     freeze the cached copy forever.
     """
     try:
-        response = requests.head(url, timeout=60, allow_redirects=True)
+        response = requests.head(
+            url, timeout=60, allow_redirects=True, headers={"Accept-Encoding": "identity"}
+        )
         response.raise_for_status()
     except requests.RequestException as exc:
         logger.debug("could not read a validator for %s (%s); keeping the cached copy", url, exc)
@@ -468,11 +472,11 @@ def _ensure_serfile() -> list[Path]:
     """Download the serfile baseline and updates, returning their local paths.
 
     Skipping a cached file by *name* alone would let a republished one keep its
-    stale bytes indefinitely — the hazard `AGENTS.md` records for pystow's
-    ``ensure()``. These files are immutable by name in the normal
-    case, and the baseline is ~450 MB, so re-fetching unconditionally is out;
-    instead each one gets an ``.etag`` sidecar and is re-fetched only when the
-    server's validator moves. A new month simply arrives under a new name, which
+    stale bytes indefinitely — the hazard `download.py` meets with the PubMed
+    files' published ``.md5`` sidecars, which this server does not offer. These
+    files are immutable by name in the normal case, and the baseline is ~450 MB,
+    so re-fetching unconditionally is out; instead each one gets an ``.etag``
+    sidecar and is re-fetched only when the server's validator moves. A new month simply arrives under a new name, which
     re-scraping the listing picks up.
 
     A monthly update that fails to download is skipped with a warning, the same
@@ -534,7 +538,7 @@ def _ensure_serfile_file(module: pystow.Module, url: str) -> Path:
     elif republished:
         logger.info("%s was republished; re-fetching it", path.name)
     try:
-        fetched = _validator(download_file(url, path))
+        headers = download_file(url, path)
     except Exception as exc:
         if republished and not wrong_size:
             # The sidecar is left alone, so the next run tries again.
@@ -544,7 +548,7 @@ def _ensure_serfile_file(module: pystow.Module, url: str) -> Path:
     # The GET's own validator describes exactly the bytes written, and it is
     # there even when the HEAD failed -- without it, a file first fetched
     # during a HEAD outage would have no sidecar and be fetched again next run.
-    validator = fetched or validator
+    validator = _validator(headers) or validator
     if validator is not None:
         stamp.write_text(validator)
     return path
@@ -557,11 +561,15 @@ def _prune_serfile_cache(directory: Path, keep: set[str]) -> None:
     baseline year leaves the previous year's ~890 MB unreachable. Unlike the
     PubMed files `download` keeps (which are the corpus, and the operator's to
     delete), these are a cache only this module reads, so they are pruned here.
-    Only names the serfile patterns match are touched, sidecars included.
+    Only names the serfile patterns match are touched, sidecars included. A
+    ``.part`` goes even for a kept name: it is a transfer a SIGKILL interrupted
+    (`util.download_file` cleans up in a ``finally``, which that skips), and the
+    next fetch starts a fresh one, so it is ~450 MB nothing will read.
     """
     for entry in directory.iterdir():
-        name = entry.name.removesuffix(".etag").removesuffix(".part")
-        if name in keep:
+        partial = entry.name.endswith(".part")
+        name = entry.name.removesuffix(".part").removesuffix(".etag")
+        if name in keep and not partial:
             continue
         if _SERFILE_BASELINE_RE.fullmatch(name) or _SERFILE_UPDATE_RE.fullmatch(name):
             logger.info("removing %s, which the catalog listing no longer names", entry.name)
@@ -663,24 +671,36 @@ def _journal_years() -> dict[str, tuple[int | None, int | None, bool | None]]:
         return {}
 
 
+def _ensure_journal_overview() -> Path:
+    """Fetch NLM's journal overview, ``J_Entrez.txt``, afresh; return its path.
+
+    Fetched on every run: a cached copy would freeze the journal dimension at
+    whatever the first run downloaded while `status` kept reporting a fresh
+    refresh. Not through pubmed_downloader's ``ensure_journal_overview``, which
+    is pystow's ``ensure()``: no timeout on a ~10 MB transfer from the server
+    whose stall hung this very step, and with ``force=True`` it writes straight
+    to the real name, so an interrupted transfer left a truncated file. The
+    path is the one pystow used, so an existing cache is simply replaced.
+    """
+    from pubmed_downloader.catalog import J_ENTREZ_PATH, MODULE
+
+    path = Path(MODULE.join(name=J_ENTREZ_PATH.rsplit("/", 1)[1]))
+    download_file(J_ENTREZ_PATH, path)
+    return path
+
+
 def load_journals(con: duckdb.DuckDBPyConnection) -> int:
     """Load the journal dimension from J_Entrez.txt and NLM's serial catalog.
 
-    Downloads NLM's journal overview (J_Entrez) via ``pubmed_downloader`` and
-    replaces the ``journal`` / ``journal_issn`` tables. Returns the number of
+    Downloads NLM's journal overview (J_Entrez) and replaces the ``journal`` /
+    ``journal_issn`` tables. Returns the number of
     journals loaded.
 
     J_Entrez defines the row set and the titles; the serial catalog only fills
     ``start_year`` / ``end_year`` / ``active``. `docs/JournalCatalog.md` records
     why the titles do not come from the catalog.
     """
-    from pubmed_downloader.catalog import ensure_journal_overview
-
-    # force=True on every call: pystow's ensure() skips the download whenever
-    # the file is already there, so without it the journal dimension would stay
-    # frozen at whatever the first run fetched while `status` kept reporting a
-    # fresh refresh. It is one small text file.
-    path = Path(ensure_journal_overview(force=True))
+    path = _ensure_journal_overview()
     years = _journal_years()
 
     journals: dict[str, dict] = {}
