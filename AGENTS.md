@@ -28,6 +28,7 @@ explains its part; this table is only a map.
 | `src/pubmed2db/util.py` | Shared helpers for the long steps: progress/ETA, durations, peak RSS. |
 | `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`, `status`, `validate`. |
 | `slurm/` | One `sbatch` script per pipeline step, `config.sh`, and `submit.sh`. See [`slurm/README.md`](./slurm/README.md). |
+| `docs/` | Longer write-ups, named in CamelCase (`JournalCatalog.md`). |
 
 ## Decisions that are not visible from the code
 
@@ -50,7 +51,7 @@ explains its part; this table is only a map.
   dimension — for 11× the download, MARCXML-only since 2024, and the same catalog
   titles. All of it, with the
   sample sizes and the redo recipe, is in
-  [`docs/journal-catalog.md`](./docs/journal-catalog.md) — written to be
+  [`docs/JournalCatalog.md`](./docs/JournalCatalog.md) — written to be
   shareable outside this repo, which is also why it is not restated here. Three
   traps it records: ~1,600 catalog years are MARC wildcards (`19uu`, `uuuu`) that
   `int()` raises on; those wildcards split two ways for `active` (`uuuu` is
