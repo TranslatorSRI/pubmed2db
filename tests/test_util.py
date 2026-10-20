@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import urllib3
 
 from pubmed2db.util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
 
@@ -71,7 +74,12 @@ class _StreamedResponse:
         if self.status >= 400:
             raise requests.HTTPError(f"{self.status} Server Error")
 
-    def iter_content(self, chunk_size):
+    @property
+    def raw(self):
+        return self
+
+    def stream(self, amt, decode_content):
+        assert decode_content is False
         for chunk in self.chunks:
             if isinstance(chunk, Exception):
                 raise chunk
@@ -114,7 +122,9 @@ def test_download_file_never_leaves_a_partial_file(monkeypatch, tmp_path):
     with pytest.raises(requests.HTTPError):
         util_mod.download_file("https://x", target)
 
-    stalled = requests.ConnectionError("Read timed out")
+    # urllib3's own exception, as the raw stream raises it: it must surface as
+    # requests' so `download.sync` can catch one stalled file and carry on.
+    stalled = urllib3.exceptions.ReadTimeoutError(None, "https://x", "Read timed out")
     monkeypatch.setattr(
         util_mod.requests, "get", lambda url, **k: _StreamedResponse(200, [b"<NLM", stalled])
     )
@@ -123,3 +133,83 @@ def test_download_file_never_leaves_a_partial_file(monkeypatch, tmp_path):
 
     assert target.read_text() == "previous good copy"
     assert list(tmp_path.iterdir()) == [target]  # no .part left behind
+
+
+def test_download_file_reuses_the_callers_session(monkeypatch, tmp_path):
+    """`sync` fetches ~1,300 files from one host; a fresh TCP+TLS handshake per
+    file is what its shared session exists to avoid."""
+    import pubmed2db.util as util_mod
+
+    def no_bare_get(*a, **k):
+        raise AssertionError("bypassed the session")
+
+    calls = []
+
+    class Session:
+        def get(self, url, **kwargs):
+            calls.append(url)
+            return _StreamedResponse(200, [b"data"])
+
+    monkeypatch.setattr(util_mod.requests, "get", no_bare_get)
+    util_mod.download_file("https://x/a.xml.gz", tmp_path / "a.xml.gz", session=Session())
+    assert calls == ["https://x/a.xml.gz"]
+
+
+def test_download_file_keeps_the_bytes_as_served(monkeypatch, tmp_path):
+    """A `.xml.gz` labelled `Content-Encoding: gzip` -- Apache's `AddEncoding`
+    does this -- must be saved still compressed. `iter_content` would have
+    decoded it, leaving plain XML under the `.gz` name to fail every MD5 check."""
+    import gzip
+    import io
+
+    import requests
+
+    import pubmed2db.util as util_mod
+
+    published = gzip.compress(b"<PubmedArticleSet/>")
+    sent = []
+
+    def fake_get(url, **kwargs):
+        sent.append(kwargs["headers"])
+        response = requests.Response()
+        response.status_code = 200
+        response.headers["Content-Encoding"] = "gzip"
+        response.raw = urllib3.HTTPResponse(
+            body=io.BytesIO(published),
+            headers={"Content-Encoding": "gzip"},
+            status=200,
+            preload_content=False,
+        )
+        return response
+
+    monkeypatch.setattr(util_mod.requests, "get", fake_get)
+    target = tmp_path / "pubmed26n0001.xml.gz"
+    util_mod.download_file("https://x/pubmed26n0001.xml.gz", target)
+
+    assert target.read_bytes() == published
+    # And a well-behaved server is asked not to compress in transit at all.
+    assert sent == [{"Accept-Encoding": "identity"}]
+
+
+def test_nothing_is_fetched_with_pystow_ensure():
+    """Every download goes through `download_file`: pystow's ``ensure()`` has no
+    timeout, and a stall in it hung a live `journals` run. The download tests'
+    fakes have no ``ensure()``, but that only catches a call on the module they
+    stand in for -- not one through a pubmed-downloader helper such as
+    ``ensure_journal_overview``, which is how J_Entrez.txt was once fetched. So
+    look for any ``ensure``/``ensure_*`` call in the package itself."""
+    import ast
+
+    import pubmed2db
+
+    allowed = {"ensure_object"}  # click's Context.ensure_object, not a download
+    offenders = []
+    for path in sorted(Path(pubmed2db.__file__).parent.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if (name == "ensure" or name.startswith("ensure_")) and name not in allowed:
+                offenders.append(f"{path.name}:{node.lineno} {name}()")
+    assert offenders == []

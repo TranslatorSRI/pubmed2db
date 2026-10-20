@@ -31,7 +31,9 @@
 -- (`load` inserts BY POSITION). Adding a column is a minor version bump;
 -- renaming or dropping one is a major bump, which `datamodel.check_compatible`
 -- answers by refusing the old database rather than migrating it. Databases from
--- before 1.0 are refused the same way.
+-- before 1.0 are refused the same way. Rows loaded before a column was added
+-- read NULL in it until `load --force` re-parses their file; say so in the
+-- migration's comment.
 
 -- The data model version and who built the database (see datamodel.py). Written
 -- when the database is created and checked every time it is opened.
@@ -198,6 +200,8 @@ COMMENT ON COLUMN author_affiliation.author_position IS 'The author: joins autho
 COMMENT ON COLUMN author_affiliation.position IS '0-based order among this author''s affiliations.';
 COMMENT ON COLUMN author_affiliation.affiliation IS 'The affiliation as free text.';
 
+-- Names are verbatim from each record's XML, never reconciled across records
+-- (one UI can carry different names). See AGENTS.md, "MeSH labels".
 CREATE TABLE IF NOT EXISTS mesh_heading (
     pmid          BIGINT NOT NULL,
     source_file   TEXT   NOT NULL,
