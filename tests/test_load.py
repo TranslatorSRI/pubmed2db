@@ -64,7 +64,7 @@ def test_child_tables_populated(loaded_con):
     baseline = "pubmed25n0001.xml.gz"
 
     assert loaded_con.execute(
-        "SELECT grant_id, acronym, agency, country FROM grant_ WHERE pmid = 1001"
+        "SELECT grant_id, acronym, agency, country FROM article_grant WHERE pmid = 1001"
     ).fetchall() == [("R01 GM123456", "GM", "NIGMS NIH HHS", "United States")]
 
     assert loaded_con.execute(
@@ -84,10 +84,10 @@ def test_child_tables_populated(loaded_con):
 
     # Affiliations attach to the named author only, never the collective.
     assert loaded_con.execute(
-        "SELECT position, affiliation FROM author_affiliation WHERE pmid = 1001 "
-        "AND source_file = ?",
+        "SELECT author_position, position, affiliation FROM author_affiliation "
+        "WHERE pmid = 1001 AND source_file = ?",
         [baseline],
-    ).fetchall() == [(1, "Department of Testing, Example University.")]
+    ).fetchall() == [(0, 0, "Department of Testing, Example University.")]
 
 
 def test_no_reference_citation_table(con):
@@ -211,41 +211,6 @@ def test_registry_records_the_skip_counts(con, gz_fixture, tmp_path):
     assert summarize(con)["skipped_records"] == 1
 
 
-def test_schema_migrates_a_database_without_the_skip_columns(tmp_path):
-    """`CREATE TABLE IF NOT EXISTS` leaves an existing database at its old shape,
-    so the columns added after the first release need their own migration."""
-    import duckdb
-
-    from pubmed2db.db import connect, init_schema
-
-    db_path = tmp_path / "old.duckdb"
-    old = duckdb.connect(db_path)
-    old.execute(
-        """
-        CREATE TABLE source_file (
-            file_name TEXT PRIMARY KEY, kind TEXT NOT NULL, year_yy INTEGER NOT NULL,
-            file_number INTEGER NOT NULL, file_order_key BIGINT NOT NULL,
-            published_md5 TEXT, downloaded_at TIMESTAMP, processed_at TIMESTAMP,
-            n_articles INTEGER, n_deletions INTEGER
-        )
-        """
-    )
-    old.execute(
-        "INSERT INTO source_file VALUES "
-        "('pubmed25n0001.xml.gz', 'baseline', 25, 1, 25000001, NULL, NULL, NULL, NULL, NULL)"
-    )
-    old.close()
-
-    con = connect(db_path)
-    try:
-        init_schema(con)  # idempotent: the migration must survive a second run
-        assert con.execute(
-            "SELECT n_failed, n_book_records FROM source_file"
-        ).fetchall() == [(None, None)]
-    finally:
-        con.close()
-
-
 def test_publication_types_are_stored_with_names_and_order(loaded_con):
     """Direct DuckDB queries are a first-class consumer: the name and PubMed's
     order are columns, so filtering for "Review" needs no MeSH lookup."""
@@ -259,39 +224,6 @@ def test_publication_types_are_stored_with_names_and_order(loaded_con):
         (1, "D013485", "Research Support, Non-U.S. Gov't"),
         (2, "D016420", "Comment"),
     ]
-
-
-def test_schema_migrates_publication_type_to_names_and_positions(tmp_path, gz_fixture):
-    """A database loaded before names were parsed has the 3-column table. The
-    migration must append the columns in the order `load` inserts them BY
-    POSITION, and old rows read NULL -- "not yet reloaded", not "no name"."""
-    import duckdb
-
-    from pubmed2db.db import connect
-    from pubmed2db.load import load_file
-
-    db_path = tmp_path / "old.duckdb"
-    old = duckdb.connect(db_path)
-    old.execute(
-        "CREATE TABLE publication_type (pmid BIGINT NOT NULL, source_file TEXT NOT NULL, type_ui TEXT)"
-    )
-    old.execute("INSERT INTO publication_type VALUES (1, 'pubmed24n0001.xml.gz', 'D016428')")
-    old.close()
-
-    con = connect(db_path)
-    try:
-        assert [c[0] for c in con.execute("DESCRIBE publication_type").fetchall()] == [
-            "pmid", "source_file", "type_ui", "type_name", "position"
-        ]
-        load_file(con, gz_fixture("pubmed25n0002"), kind="update")
-        assert con.execute(
-            "SELECT type_name, position FROM publication_type WHERE pmid = 1 "
-        ).fetchall() == [(None, None)]
-        assert ("D016420", "Comment", 2) in con.execute(
-            "SELECT type_ui, type_name, position FROM publication_type WHERE pmid = 1001"
-        ).fetchall()
-    finally:
-        con.close()
 
 
 def test_load_progress_line_reports_rate_and_elapsed(con, gz_fixture, caplog):
@@ -329,3 +261,59 @@ def test_load_logs_current_rss_alongside_the_peak(con, gz_fixture, caplog):
 
     line = next(m for m in (r.getMessage() for r in caplog.records) if "loaded " in m)
     assert "RSS " in line and "peak " in line, line
+
+
+def test_corpus_provenance_names_the_cutoff(loaded_con):
+    """The cutoff is the last *loaded* file, and when NCBI posted it (#57)."""
+    from pubmed2db.status import corpus_provenance
+
+    loaded_con.execute(
+        "UPDATE source_file SET published_at = TIMESTAMPTZ '2025-06-01 14:05:00+00' "
+        "WHERE file_name = 'pubmed25n0002.xml.gz'"
+    )
+    # Downloaded but not loaded: not part of this build, so not its cutoff.
+    from pubmed2db.db import register_source_file
+
+    register_source_file(loaded_con, "pubmed25n0003.xml.gz", kind="update")
+
+    provenance = corpus_provenance(loaded_con)
+    assert provenance == {
+        "build_name": "2025jun01",
+        "baseline_year": 2025,
+        "first_file": "pubmed25n0001.xml.gz",
+        "cutoff_file": "pubmed25n0002.xml.gz",
+        "cutoff_published_at": "2025-06-01T14:05:00+00:00",
+        "files_loaded": 2,
+        "article_versions_loaded": 4,
+        "deletions_loaded": 1,
+        "records_failed": 0,
+        "book_records_skipped": 0,
+    }
+
+
+def test_corpus_provenance_has_no_date_when_the_cutoff_has_none(loaded_con):
+    """A cutoff file with no posting time (copied in by rsync) names no build,
+    rather than borrowing an earlier file's date: `arg_max` skips NULLs."""
+    from pubmed2db.status import corpus_provenance
+
+    loaded_con.execute(
+        "UPDATE source_file SET published_at = TIMESTAMPTZ '2025-06-01 14:05:00+00' "
+        "WHERE file_name = 'pubmed25n0001.xml.gz'"
+    )
+    provenance = corpus_provenance(loaded_con)
+    assert provenance["cutoff_file"] == "pubmed25n0002.xml.gz"
+    assert provenance["cutoff_published_at"] is None
+    assert provenance["build_name"] is None
+
+
+def test_build_name_is_the_utc_posting_date_of_the_cutoff():
+    from datetime import datetime, timedelta, timezone
+
+    from pubmed2db.status import build_name
+
+    # pubmed26n1636 was posted at 14:05 US Eastern: the 24th, in UTC too.
+    eastern = timezone(timedelta(hours=-4))
+    assert build_name(datetime(2026, 9, 24, 14, 5, tzinfo=eastern)) == "2026sep24"
+    # Late enough in the US evening to be the next day in UTC: UTC decides.
+    assert build_name(datetime(2026, 9, 24, 21, 0, tzinfo=eastern)) == "2026sep25"
+    assert build_name(None) is None

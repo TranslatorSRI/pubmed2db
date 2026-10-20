@@ -144,8 +144,8 @@ def test_json_export_uses_spec_fields(loaded_con, tmp_path):
     assert one == {
         "id": "PMID:1001",
         # v2's PMCID (PMC7654321), not v1's PMC1234567, and no `pii`. Sorted,
-        # so uppercase "PMCID:" precedes lowercase "doi:", with the PMID first.
-        "identifiers": ["PMID:1001", "PMCID:PMC7654321", "doi:10.1038/example1001"],
+        # so uppercase "PMC:" precedes lowercase "doi:", with the PMID first.
+        "identifiers": ["PMID:1001", "PMC:PMC7654321", "doi:10.1038/example1001"],
         "journal_name": "Nature",
         "journal_abbrev": "Nature",
         "article_title": "Revised title for article one.",
@@ -182,6 +182,33 @@ def test_curie_sql_is_derived_from_id_prefixes():
     assert f"'{MESH_PREFIX}:'" in _LATEST_METADATA_SQL
 
 
+def test_docs_spell_pmc_ids_with_the_exported_prefix():
+    """Every PMC ID example in the docs uses ID_PREFIXES' current prefix.
+
+    The prefix waits on Translator (issue #33; biolink-model#1366, Babel#1044).
+    When it is decided, the change is one value in ID_PREFIXES, and this test
+    is what finds every doc example still written the old way.
+    """
+    import re
+    from pathlib import Path
+
+    from pubmed2db.export import ID_PREFIXES
+
+    root = Path(__file__).resolve().parent.parent
+    expected = f"{ID_PREFIXES['pmc']}:PMC"
+    stale = [
+        f"{name}: {m.group(0)}"
+        # Not docs/data-model/Changelog.md: naming old spellings is its job.
+        for name in (
+            "README.md", "AGENTS.md", "FUTURE.md",
+            "docs/data-model/README.md", "docs/data-model/Reference.md",
+        )
+        for m in re.finditer(r"\bPMC(?:ID)?:PMC", (root / name).read_text())
+        if m.group(0) != expected
+    ]
+    assert not stale, f"PMC IDs are exported as {expected}…, but the docs say: {stale}"
+
+
 def test_json_export_empty_string_not_null(loaded_con, tmp_path):
     from pubmed2db.export import export_json
 
@@ -203,40 +230,6 @@ def test_json_export_empty_string_not_null(loaded_con, tmp_path):
     # No <PublicationTypeList>: an empty list, like `identifiers`, never null.
     assert three["publication_types"] == []
     assert all(value is not None for value in three.values())
-
-
-def test_publication_types_loaded_before_names_export_blank_and_warn(loaded_con, tmp_path):
-    """A database loaded before names were parsed has NULL names. It must still
-    export valid records -- and say loudly that a reload is needed, because
-    `"name": ""` on every type is otherwise indistinguishable from success.
-
-    The warning lives in `export_readiness`, not `export_json`, so `status` and
-    the Parquet export report it too.
-    """
-    from pubmed2db.export import export_json
-    from pubmed2db.status import export_readiness
-
-    loaded_con.execute("UPDATE publication_type SET type_name = NULL, position = NULL")
-    docs = _read_ndjson(export_json(loaded_con, tmp_path / "json"))
-
-    # Ordered by UI when no position is known, so the output stays stable.
-    assert docs["PMID:1001"]["publication_types"] == [
-        {"id": "MESH:D013485", "name": ""},
-        {"id": "MESH:D016420", "name": ""},
-        {"id": "MESH:D016422", "name": ""},
-    ]
-    error, warnings = export_readiness(loaded_con)
-    assert error is None
-    [warning] = [w for w in warnings if "publication-type names" in w]
-    assert warning.startswith("2 loaded file(s)")  # both fixtures carry types
-    assert "load --force" in warning
-
-
-def test_publication_types_with_names_do_not_warn(loaded_con):
-    from pubmed2db.status import export_readiness
-
-    _, warnings = export_readiness(loaded_con)
-    assert not [w for w in warnings if "publication-type names" in w]
 
 
 def test_json_sharding(loaded_con, tmp_path):
@@ -290,7 +283,9 @@ def test_reexport_removes_stale_shards(loaded_con, tmp_path):
     # The COPY writer names shards from FILENAME_PATTERN '{i}', so the exact
     # stem is DuckDB's business -- what matters is that exactly one shard is
     # left and it is the gzipped one this run wrote.
-    survivors = sorted(path.name for path in out.iterdir())
+    survivors = sorted(
+        path.name for path in out.iterdir() if path.name not in ("metadata.json", "SHA256SUMS")
+    )
     assert len(survivors) == 1, survivors
     assert survivors[0].endswith(".ndjson.gz")
 
@@ -401,6 +396,66 @@ def test_parquet_exports_every_table(loaded_con, tmp_path):
         ).fetchall()
     }
     assert {path.stem for path in written} == tables
+
+    # Parquet is the same data model as the database, column for column: a
+    # consumer can switch between the two without rewriting a query.
+    for path in written:
+        exported = loaded_con.execute(
+            f"SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM '{path.as_posix()}')"
+        ).fetchall()
+        assert exported == loaded_con.execute(
+            f"SELECT column_name, column_type FROM (DESCRIBE {path.stem})"
+        ).fetchall(), path.stem
+
+
+def test_exports_describe_themselves_in_metadata_json(loaded_con, tmp_path):
+    """An export travels without its database: metadata.json carries the data
+    model version, the corpus cutoff, the record count and a checksum per file."""
+    from pubmed2db.datamodel import DATA_MODEL_VERSION
+    from pubmed2db.export import export_json, export_parquet, file_sha256
+
+    for fmt, export in (
+        ("ndjson", lambda out: export_json(loaded_con, out)),
+        ("parquet-latest", lambda out: export_parquet(loaded_con, out)),
+        ("parquet-all", lambda out: export_parquet(loaded_con, out, latest=False)),
+    ):
+        out = tmp_path / fmt
+        files = export(out)
+        meta = json.loads((out / "metadata.json").read_text())
+        assert meta["data_model_version"] == DATA_MODEL_VERSION
+        assert meta["format"] == fmt
+        # PMIDs 1001 and 1003; 1002 was deleted. The same in every format, so
+        # the history export counts its versions separately.
+        assert meta["records"] == 2
+        assert meta.get("article_versions") == (4 if fmt == "parquet-all" else None)
+        assert meta["corpus"]["cutoff_file"] == "pubmed25n0002.xml.gz"
+        assert meta["database"]["data_model_version"] == DATA_MODEL_VERSION
+        assert [(f["name"], f["sha256"]) for f in meta["files"]] == [
+            (path.name, file_sha256(path)) for path in sorted(files)
+        ]
+        # The same hashes, as `sha256sum -c` reads them: "<hex>  <name>".
+        assert (out / "SHA256SUMS").read_text().splitlines() == [
+            f"{f['sha256']}  {f['name']}" for f in meta["files"]
+        ]
+
+
+def test_a_failed_re_export_does_not_look_finished(loaded_con, tmp_path, monkeypatch):
+    """metadata.json marks a finished export, so a re-export removes the old one
+    before it writes anything: dying partway must not leave the mark behind."""
+    from pubmed2db import export
+
+    for run in (
+        lambda: export.export_json(loaded_con, tmp_path / "json"),
+        lambda: export.export_parquet(loaded_con, tmp_path / "parquet"),
+    ):
+        run()
+        with monkeypatch.context() as patch:
+            patch.setattr(export, "write_export_metadata", lambda *a, **k: 1 / 0)
+            with pytest.raises(ZeroDivisionError):
+                run()
+    for out in (tmp_path / "json", tmp_path / "parquet"):
+        assert not (out / "metadata.json").exists()
+        assert not (out / "SHA256SUMS").exists()
 
 
 def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog):
@@ -686,3 +741,50 @@ def test_the_heartbeat_thread_never_dies_on_an_error(tmp_path, caplog, monkeypat
     assert still_running, "the heartbeat died on the first error"
     assert not thread.is_alive()
     assert any("could not log export progress" in r.getMessage() for r in caplog.records)
+
+
+def test_a_damaged_gzip_shard_fails_to_decompress(loaded_con, tmp_path):
+    """Why metadata.json's hashes are documented as identity, not integrity:
+    gzip already catches damage. That holds only while DuckDB writes each shard
+    as a single gzip member. A multi-member file truncated at a member boundary
+    is still valid gzip, just shorter, and only the record count would notice."""
+    import gzip
+    import zlib
+
+    from pubmed2db.export import export_json
+
+    (shard,) = export_json(loaded_con, tmp_path / "json", shards=1)
+    data = shard.read_bytes()
+
+    members, rest = 0, data
+    while rest:
+        decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        decompressor.decompress(rest)
+        rest = decompressor.unused_data
+        members += 1
+    assert members == 1
+
+    with pytest.raises(EOFError):
+        gzip.decompress(data[:-1])
+    flipped = bytearray(data)
+    flipped[len(data) // 2] ^= 0x01
+    with pytest.raises((gzip.BadGzipFile, zlib.error)):
+        gzip.decompress(bytes(flipped))
+
+
+def test_sha256sums_verifies_with_the_standard_tool(loaded_con, tmp_path):
+    """The file exists for consumers without a JSON parser, so check it with the
+    tool they would use: `sha256sum` (GNU) or `shasum -a 256` (macOS)."""
+    import shutil
+    import subprocess
+
+    from pubmed2db.export import export_json
+
+    out = tmp_path / "json"
+    export_json(loaded_con, out)
+    tool = (["sha256sum"] if shutil.which("sha256sum")
+            else ["shasum", "-a", "256"] if shutil.which("shasum") else None)
+    if tool is None:
+        pytest.skip("no sha256sum or shasum on this machine")
+    checked = subprocess.run([*tool, "-c", "SHA256SUMS"], cwd=out, capture_output=True, text=True)
+    assert checked.returncode == 0, checked.stdout + checked.stderr

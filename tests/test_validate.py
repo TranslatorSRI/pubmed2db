@@ -46,7 +46,7 @@ _EFETCH = {
             <PubDate><MedlineDate>1998 Spring</MedlineDate></PubDate>
           </JournalIssue>
           <Title>Journal of Examples</Title>
-          <ISOAbbreviation>J. Examples</ISOAbbreviation>
+          <ISOAbbreviation>J Examples</ISOAbbreviation>
         </Journal>
         <ArticleTitle>Article three with a MedlineDate range.</ArticleTitle>
       </Article></MedlineCitation>
@@ -116,7 +116,7 @@ def test_structure_reports_identifier_coverage(export_dir):
     report = validate.run_validation(export_dir, online=False)
     coverage = report["checks"]["structure"]["identifier_coverage"]
     assert coverage["doi"] == {"records": 1, "pct": 50.0}
-    assert coverage["PMCID"] == {"records": 1, "pct": 50.0}
+    assert coverage["PMC"] == {"records": 1, "pct": 50.0}
     assert "50.0% doi" in validate.format_summary(report)
 
 
@@ -244,7 +244,7 @@ def test_coverage_warns_outside_default_band(export_dir, loaded_con, monkeypatch
 
 def test_field_validation_matches(export_dir, loaded_con, monkeypatch):
     """Also guards that identifiers compare as a *set*: the export sorts them
-    (`PMCID:` before `doi:`) while `_EFETCH` lists them in document order
+    (`PMC:` before `doi:`) while `_EFETCH` lists them in document order
     (doi first), so an order-sensitive comparison fails here."""
     monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
     report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
@@ -296,8 +296,8 @@ def test_publication_types_mismatch_is_soft(export_dir, loaded_con, monkeypatch,
 def test_unnamed_publication_types_blame_the_load_not_indexing(
     loaded_con, tmp_path, monkeypatch
 ):
-    """A database migrated in place but not reloaded exports `"name": ""` on
-    every type. That must read as "reload", once, under its own code -- not as
+    """A database loaded before names were parsed exported `"name": ""` on
+    every type. That must read as "rebuild", once, under its own code -- not as
     every sampled record's types having been revised by indexing."""
     from pubmed2db.export import export_json
 
@@ -310,7 +310,7 @@ def test_unnamed_publication_types_blame_the_load_not_indexing(
     assert report["status"] == "warn", report["errors"]
     [warning] = report["warnings"]
     assert warning["code"] == "publication_type_names_missing"
-    assert "load --force" in warning["message"]
+    assert "Rebuild the database" in warning["message"]
     assert report["checks"]["field_validation"]["publication_type_mismatches"] == []
 
 
@@ -349,6 +349,8 @@ def test_malformed_publication_types_fail_structure(export_dir, types):
     _append_to_shard(
         export_dir, json.dumps({**_valid_doc(), "id": "PMID:1200", "publication_types": types})
     )
+    # The append changed the shard's checksum; that error is not under test.
+    (export_dir / "metadata.json").unlink()
     report = validate.run_validation(export_dir, online=False)
     assert [e["code"] for e in report["errors"]] == ["invalid_publication_types"]
 
@@ -439,7 +441,7 @@ def test_efetch_identifiers_exclude_cited_references(monkeypatch):
     monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory({1001: with_refs}))
     docs = validate.efetch_documents([1001], api_key=None, email="me@example.com")
     assert docs[1001]["identifiers"] == [
-        "PMID:1001", "doi:10.1038/example1001", "PMCID:PMC7654321",
+        "PMID:1001", "doi:10.1038/example1001", "PMC:PMC7654321",
     ]
 
 
@@ -1113,3 +1115,58 @@ def test_progress_lines_and_peak_rss_are_logged(export_dir, monkeypatch, caplog)
     assert progress and "remaining" in progress[0]
     assert any(m.startswith("validation finished in") and "peak RSS" in m
                for m in caplog.messages)
+
+
+def test_export_metadata_catches_a_changed_or_missing_shard(loaded_con, tmp_path):
+    """metadata.json lists every shard with its SHA-256. Damage is gzip's to
+    catch (shard-readable); the hash catches a shard that is intact but not the
+    one this export wrote, even one with the right record count."""
+    import gzip
+
+    from pubmed2db.export import export_json
+
+    out = tmp_path / "json"
+    shards = export_json(loaded_con, out, shards=1)
+    # The hashes come from the structure read; a second pass over every shard
+    # would double validate's disk reads on the full corpus.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(validate, "file_sha256", lambda path: 1 / 0)
+        report = validate.run_validation(out, online=False)
+    check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
+    assert check["status"] == "pass", check
+    assert report["data_model_version"] == "1.0.0"
+
+    original = shards[0].read_bytes()
+    lines = gzip.decompress(original).splitlines(keepends=True)
+
+    # Same records, one value changed: valid gzip, valid NDJSON, the right
+    # count. Only the hash can tell this is not the shard the export wrote.
+    shards[0].write_bytes(gzip.compress(b"".join(lines).replace(b"Revised title", b"Other title")))
+    report = validate.run_validation(out, online=False)
+    check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
+    assert check["status"] == "fail"
+    assert check["observed"] == "pubmed_metadata_0.ndjson.gz: checksum differs from metadata.json"
+
+    # Rewritten with one record fewer: the count disagrees too.
+    shards[0].write_bytes(gzip.compress(b"".join(lines[:-1])))
+    report = validate.run_validation(out, online=False)
+    assert report["status"] == "fail"
+    check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
+    assert "checksum differs" in check["observed"]
+    assert "1 record(s) read, 2 exported" in check["observed"]
+
+    # A hand-edited count is reported, not a crash.
+    metadata = json.loads((out / "metadata.json").read_text())
+    (out / "metadata.json").write_text(json.dumps({**metadata, "records": "2"}))
+    report = validate.run_validation(out, online=False)
+    check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
+    assert check["status"] == "fail"
+    assert "not an integer" in check["observed"]
+
+    # No metadata.json: the export's version is unknown, even beside a 1.0
+    # database, which the shards may predate.
+    (out / "metadata.json").unlink()
+    report = validate.run_validation(out, online=False, con=loaded_con)
+    check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
+    assert check["status"] == "skip"
+    assert report["data_model_version"] is None

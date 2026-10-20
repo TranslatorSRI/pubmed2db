@@ -1,0 +1,329 @@
+{
+  "data_model_version": "1.0",
+  "relations": {
+    "abstract_text": {
+      "kind": "table",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "position INTEGER",
+        "label VARCHAR",
+        "nlm_category VARCHAR",
+        "text VARCHAR"
+      ]
+    },
+    "article": {
+      "kind": "table",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "pmid_version INTEGER",
+        "source_file VARCHAR",
+        "file_order_key BIGINT",
+        "article_title VARCHAR",
+        "nlm_catalog_id VARCHAR",
+        "issn_linking VARCHAR",
+        "volume VARCHAR",
+        "issue VARCHAR",
+        "pub_year VARCHAR",
+        "pub_month VARCHAR",
+        "pub_day VARCHAR",
+        "medline_date VARCHAR",
+        "date_completed DATE",
+        "date_revised DATE",
+        "loaded_at TIMESTAMP WITH TIME ZONE"
+      ]
+    },
+    "article_grant": {
+      "kind": "table",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "grant_id VARCHAR",
+        "acronym VARCHAR",
+        "agency VARCHAR",
+        "country VARCHAR"
+      ]
+    },
+    "article_id": {
+      "kind": "table",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "id_type VARCHAR",
+        "id_value VARCHAR"
+      ]
+    },
+    "author": {
+      "kind": "table",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "position INTEGER",
+        "kind VARCHAR",
+        "name VARCHAR",
+        "orcid VARCHAR",
+        "valid BOOLEAN"
+      ]
+    },
+    "author_affiliation": {
+      "kind": "table",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "author_position INTEGER",
+        "position INTEGER",
+        "affiliation VARCHAR"
+      ]
+    },
+    "deleted_pmid": {
+      "kind": "table",
+      "tier": "provenance",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "file_order_key BIGINT"
+      ]
+    },
+    "history": {
+      "kind": "table",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "pub_status VARCHAR",
+        "date DATE"
+      ]
+    },
+    "journal": {
+      "kind": "table",
+      "tier": "stable",
+      "columns": [
+        "nlm_catalog_id VARCHAR",
+        "title VARCHAR",
+        "abbreviation_medline VARCHAR",
+        "start_year INTEGER",
+        "end_year INTEGER",
+        "active BOOLEAN"
+      ]
+    },
+    "journal_issn": {
+      "kind": "table",
+      "tier": "stable",
+      "columns": [
+        "nlm_catalog_id VARCHAR",
+        "issn VARCHAR",
+        "issn_type VARCHAR"
+      ]
+    },
+    "latest_abstract_text": {
+      "kind": "view",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "position INTEGER",
+        "label VARCHAR",
+        "nlm_category VARCHAR",
+        "text VARCHAR"
+      ]
+    },
+    "latest_article": {
+      "kind": "view",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "pmid_version INTEGER",
+        "source_file VARCHAR",
+        "file_order_key BIGINT",
+        "article_title VARCHAR",
+        "nlm_catalog_id VARCHAR",
+        "issn_linking VARCHAR",
+        "volume VARCHAR",
+        "issue VARCHAR",
+        "pub_year VARCHAR",
+        "pub_month VARCHAR",
+        "pub_day VARCHAR",
+        "medline_date VARCHAR",
+        "date_completed DATE",
+        "date_revised DATE",
+        "loaded_at TIMESTAMP WITH TIME ZONE"
+      ]
+    },
+    "latest_article_grant": {
+      "kind": "view",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "grant_id VARCHAR",
+        "acronym VARCHAR",
+        "agency VARCHAR",
+        "country VARCHAR"
+      ]
+    },
+    "latest_article_id": {
+      "kind": "view",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "id_type VARCHAR",
+        "id_value VARCHAR"
+      ]
+    },
+    "latest_author": {
+      "kind": "view",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "position INTEGER",
+        "kind VARCHAR",
+        "name VARCHAR",
+        "orcid VARCHAR",
+        "valid BOOLEAN"
+      ]
+    },
+    "latest_author_affiliation": {
+      "kind": "view",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "author_position INTEGER",
+        "position INTEGER",
+        "affiliation VARCHAR"
+      ]
+    },
+    "latest_history": {
+      "kind": "view",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "pub_status VARCHAR",
+        "date DATE"
+      ]
+    },
+    "latest_mesh_heading": {
+      "kind": "view",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "position INTEGER",
+        "descriptor_ui VARCHAR",
+        "descriptor_name VARCHAR",
+        "major_topic BOOLEAN"
+      ]
+    },
+    "latest_mesh_qualifier": {
+      "kind": "view",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "heading_position INTEGER",
+        "descriptor_ui VARCHAR",
+        "qualifier_ui VARCHAR",
+        "qualifier_name VARCHAR",
+        "major_topic BOOLEAN"
+      ]
+    },
+    "latest_publication_type": {
+      "kind": "view",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "position INTEGER",
+        "type_ui VARCHAR",
+        "type_name VARCHAR"
+      ]
+    },
+    "mesh_heading": {
+      "kind": "table",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "position INTEGER",
+        "descriptor_ui VARCHAR",
+        "descriptor_name VARCHAR",
+        "major_topic BOOLEAN"
+      ]
+    },
+    "mesh_qualifier": {
+      "kind": "table",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "heading_position INTEGER",
+        "descriptor_ui VARCHAR",
+        "qualifier_ui VARCHAR",
+        "qualifier_name VARCHAR",
+        "major_topic BOOLEAN"
+      ]
+    },
+    "publication_type": {
+      "kind": "table",
+      "tier": "stable",
+      "columns": [
+        "pmid BIGINT",
+        "source_file VARCHAR",
+        "position INTEGER",
+        "type_ui VARCHAR",
+        "type_name VARCHAR"
+      ]
+    },
+    "pubmed2db_metadata": {
+      "kind": "table",
+      "tier": "provenance",
+      "columns": [
+        "key VARCHAR",
+        "value VARCHAR"
+      ]
+    },
+    "source_file": {
+      "kind": "table",
+      "tier": "provenance",
+      "columns": [
+        "file_name VARCHAR",
+        "kind VARCHAR",
+        "year_yy INTEGER",
+        "file_number INTEGER",
+        "file_order_key BIGINT",
+        "published_md5 VARCHAR",
+        "published_at TIMESTAMP WITH TIME ZONE",
+        "downloaded_at TIMESTAMP WITH TIME ZONE",
+        "processed_at TIMESTAMP WITH TIME ZONE",
+        "n_articles INTEGER",
+        "n_deletions INTEGER",
+        "n_failed INTEGER",
+        "n_book_records INTEGER"
+      ]
+    }
+  },
+  "ndjson_fields": [
+    "id",
+    "identifiers",
+    "journal_name",
+    "journal_abbrev",
+    "article_title",
+    "volume",
+    "issue",
+    "pub_year",
+    "pub_month",
+    "pub_day",
+    "pub_date",
+    "publication_types",
+    "abstract"
+  ]
+}

@@ -112,19 +112,6 @@ def test_cli_status_reports_pipeline_state(loaded_db):
     assert "Export:    ready" in result.output
 
 
-def test_cli_status_flags_publication_types_without_names(tmp_path, loaded_con):
-    """A database migrated in place but not reloaded is visible from `status`,
-    not only from a JSON export's log -- the Parquet path writes NULL names too."""
-    loaded_con.execute("UPDATE publication_type SET type_name = NULL")
-    loaded_con.close()
-
-    result = CliRunner().invoke(main, ["--db", str(tmp_path / "test.duckdb"), "status"])
-    assert result.exit_code == 0, result.output
-    assert "Export:    ready, but:" in result.output
-    assert "predate publication-type names" in result.output
-    assert "load --force" in result.output
-
-
 def test_cli_status_flags_a_second_baseline_year(loaded_db):
     """A new baseline year stores every PMID twice; `status` should say so."""
     from pubmed2db.db import connect, register_source_file
@@ -325,6 +312,13 @@ def test_cli_export_then_validate_needs_no_flags(staged_download):
     assert validate.returncode == 0, validate.stdout + validate.stderr
     assert "Validation PASS" in validate.stdout
     assert "2 record(s)" in validate.stdout
+    # The export's metadata.json was found and checked, and the report says
+    # which data model the export follows.
+    report = json.loads((out_dir / "validation_report.json").read_text())
+    assert report["data_model_version"] == "1.0.0"
+    assert any(
+        c["name"] == "export-metadata" and c["status"] == "pass" for c in report["checks_run"]
+    )
 
 
 def test_cli_rejects_a_non_positive_shard_count(tmp_path):
@@ -444,3 +438,15 @@ def test_every_command_logs_the_duckdb_settings_it_runs_with(tmp_path, caplog):
     assert "memory_limit=953.6 MiB" in line
     assert "threads=" in line
     assert f"temp_directory={tmp_path / 'x.duckdb'}.tmp" in line
+
+
+def test_version_is_pyprojects():
+    """`__version__` is read from the installed metadata, so it is pyproject's;
+    it sat at a hand-copied 0.1.0 through two releases before that."""
+    import tomllib
+    from pathlib import Path
+
+    from pubmed2db import __version__
+
+    pyproject = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())
+    assert __version__ == pyproject["project"]["version"]

@@ -5,7 +5,7 @@ is deliberate:
 
 | Column | Source | Why |
 | --- | --- | --- |
-| `title`, `abbreviation_medline`, `abbreviation_iso` | `J_Entrez.txt` | It **is** PubMed's own rendering — `esummary.fulljournalname` byte for byte. The NLM Catalog cannot reproduce it. |
+| `title`, `abbreviation_medline` | `J_Entrez.txt` | It **is** PubMed's own rendering — `esummary.fulljournalname` byte for byte. The NLM Catalog cannot reproduce it. |
 | `start_year`, `end_year`, `active` | serfile (NLM serial catalog) | `J_Entrez.txt` does not carry them at all. |
 
 This document records the measurements behind that, because the obvious move —
@@ -221,10 +221,11 @@ gave them a `None` default and was merged and released on 2026-10-08.
 
 `CatalogRecord` also has no ISO abbreviation field, which is moot for us for a
 separate measured reason: in `J_Entrez.txt`, `IsoAbbr` equals `MedAbbr` in
-**42,056 / 42,056** records, so `export.py`'s
-`COALESCE(j.abbreviation_iso, j.abbreviation_medline, '')` is a distinction
-without a difference. `journal.abbreviation_iso` could be dropped — that is a
-Parquet schema change for downstream consumers, so it is its own decision.
+**42,056 / 42,056** records, so the export's old
+`COALESCE(j.abbreviation_iso, j.abbreviation_medline, '')` was a distinction
+without a difference. Data model 1.0 dropped `journal.abbreviation_iso` for
+that reason (#48); the export reads `abbreviation_medline`, with the same
+values.
 
 ### Why `process_journal_overview()` was worth fixing upstream
 

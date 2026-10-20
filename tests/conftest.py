@@ -20,8 +20,8 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 #: A small journal dimension matching the fixture articles.
 SAMPLE_JOURNALS = [
-    ("0410462", "Nature", "Nature", "Nature", 1869, None, True),
-    ("9999991", "Journal of Examples", "J Examples", "J. Examples", 1990, None, True),
+    ("0410462", "Nature", "Nature", 1869, None, True),
+    ("9999991", "Journal of Examples", "J Examples", 1990, None, True),
 ]
 
 
@@ -66,7 +66,7 @@ def loaded_con(con, gz_fixture):
 
     load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
     load_file(con, gz_fixture("pubmed25n0002"), kind="update")
-    con.executemany("INSERT INTO journal VALUES (?,?,?,?,?,?,?)", SAMPLE_JOURNALS)
+    con.executemany("INSERT INTO journal VALUES (?,?,?,?,?,?)", SAMPLE_JOURNALS)
     return con
 
 

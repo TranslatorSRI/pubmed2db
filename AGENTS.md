@@ -8,8 +8,9 @@ Parquet (PubMed field names, for downloadable queries).
 Everything a user needs — commands, options, operational notes, the year-boundary
 rebuild — is in [`README.md`](./README.md); deferred work and known limitations
 are in [`FUTURE.md`](./FUTURE.md); how a release and its data build are cut is in
-[`docs/Releases.md`](./docs/Releases.md). This file is the map plus the handful
-of decisions you cannot see from the code.
+[`docs/Releases.md`](./docs/Releases.md); what the outputs *mean*, for the
+people who consume them, is in [`docs/data-model/`](./docs/data-model/README.md). This
+file is the map plus the handful of decisions you cannot see from the code.
 
 ## Layout
 
@@ -19,7 +20,8 @@ explains its part; this table is only a map.
 | File | Responsibility |
 | --- | --- |
 | `src/pubmed2db/db.py` | Connection, schema init, `source_file` registry, `parse_file_name`. |
-| `src/pubmed2db/schema.sql` | Normalized tables + `latest_article` view. **Read its header before editing.** |
+| `src/pubmed2db/schema.sql` | Normalized tables, `latest_*` views, and the `COMMENT ON` data dictionary. **Read its header before editing.** |
+| `src/pubmed2db/datamodel.py` | `DATA_MODEL_VERSION`, the `pubmed2db_metadata` table, the version check on open, and the shape/doc generators. |
 | `src/pubmed2db/download.py` | Fetches baseline/update files; adds `.md5` sidecar tracking. |
 | `src/pubmed2db/parse.py` | Self-driven XML iteration over each file. |
 | `src/pubmed2db/load.py` | Loads parsed files (full history, provenance-tagged), delete logic, journal dimension. |
@@ -29,9 +31,65 @@ explains its part; this table is only a map.
 | `src/pubmed2db/util.py` | Shared helpers for the long steps: progress/ETA, durations, peak RSS. |
 | `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`, `status`, `validate`. |
 | `slurm/` | One `sbatch` script per pipeline step, `config.sh`, and `submit.sh`. See [`slurm/README.md`](./slurm/README.md). |
-| `docs/` | Longer write-ups, named in CamelCase (`JournalCatalog.md`). |
+| `docs/` | Longer write-ups, named in CamelCase (`JournalCatalog.md`). `data-model/` is the exception: the data model's contract (`README.md`), its `Changelog.md` and its generated `Reference.md`. |
 
 ## Decisions that are not visible from the code
+
+- **The outputs follow a versioned data model, separate from the code
+  version.** The code version (`v1.2`) says how the code changed;
+  `datamodel.DATA_MODEL_VERSION` (1.0.0, standard semver) says how consumers
+  are affected, and `docs/Releases.md` defines both. It covers the database,
+  the Parquet export and the NDJSON record together. One number, because the
+  NDJSON fields are SQL over the tables, so documenting one documents the other.
+  Changing the shape fails `tests/test_data_model.py` until you bump it:
+  - **minor** only appends (a column at a table's end, a table, a view, an
+    NDJSON field);
+  - **major** for anything else.
+  - **Patch** is for value fixes, and no test can detect that you owe one.
+
+  Then write `tests/data_model/<MAJOR.MINOR>.json` with
+  `python -m pubmed2db.datamodel --golden`; there is one file per
+  `MAJOR.MINOR`, because a patch cannot change the shape. Every bump, patch
+  included, also needs an entry in `docs/data-model/Changelog.md` saying, per
+  output, what consumers must do; a test checks that it exists. That per-output
+  table is the deliberate alternative to an extra version level for "breaks
+  some consumers but not others". **Never edit an existing version's
+  golden file:** `test_minor_versions_only_add` compares consecutive files, and
+  rewriting one erases the evidence it checks. Things that are easy to get
+  wrong:
+  - **Tiers live in the comments.** Each table comment starts with `Stable.`,
+    `Provenance.` or `Internal.`; `datamodel.describe` reads the tier from
+    there. Only internal tables (`pipeline_run`) are outside the contract.
+  - **The comments are the data dictionary, and the doc is generated from
+    them.** `docs/data-model/Reference.md` is `datamodel.render_reference`;
+    edit the `COMMENT ON` in `schema.sql`, then run
+    `python -m pubmed2db.datamodel --docs docs/data-model/Reference.md`. A test
+    fails on a stale block, so don't hand-edit it. It and the changelog are
+    separate from the README so the contract prose stays short enough to read
+    whole; the three link each other by absolute URL on `main`, and
+    `test_links_between_the_data_model_docs_resolve` checks those links.
+  - **Pre-1.0 databases are refused, not migrated.** `check_compatible` runs
+    *before* `schema.sql`, so a refused file is untouched. That is why the old
+    `ALTER TABLE` migrations, and the NULL-`type_name` export warning they
+    needed, are gone. From 1.0 on, the "only ever adds" rule in `schema.sql`'s
+    header is back in force for minor versions.
+  - **Timestamps are `TIMESTAMPTZ`, which DuckDB's Python client cannot fetch
+    without `pytz`.** That is the only reason `pytz` is a dependency. The
+    pre-1.0 naive `TIMESTAMP`s stored the loading machine's local wall-clock
+    time: `now()` and a bound UTC datetime are both cast through the session's
+    time zone.
+  - **The exports don't read the `latest_*` views.** Each view re-evaluates
+    `latest_article`, a window over every version, so the exports materialize
+    one snapshot and filter against it. A test holds the views to exactly the
+    exports' rows.
+  - **`metadata.json` is written last**, after every file it checksums, and
+    `validate` fails on any shard that differs from it. **The SHA-256s are for
+    identity, not damage**, so don't justify them, or drop them, on integrity
+    grounds. gzip already catches damage: DuckDB writes each shard as one gzip
+    member, so truncation anywhere raises `EOFError` and a flipped bit fails
+    the CRC (measured 2026-10-19). Only a hash catches an intact shard that
+    isn't the one this export wrote (a leftover from another build) or damage
+    to a `--no-gzip` export.
 
 - **Reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
   as-is, no upstream changes.** We take its file listings, its cache layout and
@@ -68,7 +126,8 @@ explains its part; this table is only a map.
   land in the normalized `article_id` table on every load, so the JSON export
   aggregates them there (`export._LATEST_METADATA_SQL`'s `ids` CTE says how, and
   `export.ID_PREFIXES` is the single place the Babel-compatible CURIE casing is
-  written down, including the unsettled `PMCID` casing that issue #33 tracks).
+  written down, including the interim `PMC` prefix for PMCIDs, which follows
+  Babel until biolink-model#1366 and Babel#1044 rule; issue #33 tracks it).
   A denormalized `article.identifiers` column would have duplicated the data
   *and* forced a full corpus reload to backfill it, which is the reason not to,
   and the reason is not visible from the query. `validate`'s `EXPECTED_FIELDS`
@@ -86,15 +145,7 @@ explains its part; this table is only a map.
   not alphabetical and equals `esummary`'s `pubtype` (8/8 sampled multi-type
   records), so `publication_type.position` is what makes the export match NCBI.
   `parse._publication_types` reads the exact path, and `validate` reuses it for
-  the efetch side, so the two cannot diverge. Two things to keep:
-  - **A NULL `type_name` means "loaded before names were parsed".**
-    `status.export_readiness` warns (so `status`, JSON and Parquet all say it),
-    because `"name": ""` on every type is valid JSON and otherwise silent. It
-    counts *files*, not latest-version rows: a file's rows are all named or all
-    NULL, so that answers "reload?" without a join against `_latest_snapshot`
-    on every export. `validate` reports the blank names under their own code
-    and compares such records on ids alone, so a stale database is not misread
-    as tens of thousands of indexing revisions.
+  the efetch side, so the two cannot diverge. One thing to keep:
   - **The field is SOFT, under its own check.** NLM revises types when MEDLINE
     indexing completes, so live efetch can be ahead of our last update file.
     `validate._SOFT_GROUPS` gives every soft reason its own check and warning

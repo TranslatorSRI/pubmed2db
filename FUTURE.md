@@ -93,8 +93,6 @@ The dependency is pinned `<0.1` because we call private APIs (`_extract_article`
   would have been the largest table in the database, and no consumer wants it.
   `parse._cited_pmids` is parked (uncalled) with re-enabling instructions in its
   docstring, and `test_no_reference_citation_table` keeps it from creeping back.
-  A database built before the removal keeps a stale, populated table; `DROP TABLE
-  reference_citation` clears it.
 
 ### TODO: investigate the two reference bugs before reporting them upstream (#34)
 
@@ -133,21 +131,6 @@ Still open:
 - [ ] **Then decide: report upstream, or keep the workaround local.** Only after
   the above. Also worth deciding at that point whether our other additions (raw
   `PubDate` components, `DeleteCitation` handling) are worth contributing.
-
-### TODO: existing databases carry the bad rows
-
-`article_id` rows written before the fix are still wrong in any database loaded
-with the previous code, and that is not corrected by a normal incremental run —
-`needs_load` only re-parses files whose checksum moved. Such a database also
-still has a populated `reference_citation` table, which nothing will clear.
-
-- [x] **Rebuild from scratch, don't `load --force`.** Decided and written into
-  the README's "Re-running after a gap". `load --force` applies a parsing change
-  to the whole corpus, but `schema.sql` only ever adds — `CREATE TABLE IF NOT
-  EXISTS` plus `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` — so a table dropped
-  from the schema keeps its rows through any number of forced reloads, and
-  `reference_citation` is exactly that case. Both cost one full `load`; only the
-  rebuild is guaranteed to leave the shape the schema describes.
 
 ## Scale & performance (full PubMed is ~38M articles, ~1500+ files)
 
@@ -221,24 +204,34 @@ still has a populated `reference_citation` table, which nothing will clear.
   NCBI's own answer for an unparseable range is to fall back to January of the
   leading year (`"1998 Dec-1999 Jan"` → `1998/01/01`), i.e. it drops precision
   rather than guessing.
-- **The PMCID CURIE prefix is not settled** ([#33](https://github.com/TranslatorSRI/pubmed2db/issues/33)).
-  We emit `PMCID:PMC1234567`. Babel's `src/prefixes.py` says `PMC`, and neither
+- **The PMCID CURIE prefix is interim** ([#33](https://github.com/TranslatorSRI/pubmed2db/issues/33)).
+  We emit `PMC:PMC1234567`, following Babel: `src/prefixes.py` says `PMC`, and
+  Babel's published compendia use `PMC:` throughout. Translator has not decided.
+  Biolink registers `PMC` on `biolink:Publication` and `PMCID` on
+  `biolink:JournalArticle`
+  ([biolink-model#1366](https://github.com/biolink/biolink-model/issues/1366)),
+  Babel's own choice is open in
+  [Babel#1044](https://github.com/NCATSTranslator/Babel/issues/1044), and neither
   the Core Components specification
   ([CCWG#15](https://github.com/NCATSTranslator/Core-Components-Working-Group/issues/15))
-  nor the DocumentMetadataAPI README carries a PMC example to arbitrate; the
-  production endpoint resolves PMCIDs under neither form. To be settled
-  alongside [Babel#1044](https://github.com/NCATSTranslator/Babel/issues/1044) —
-  a change is a one-line edit to `export.ID_PREFIXES` plus a re-export, since
-  `identifiers` is derived at export and never stored.
+  nor the DocumentMetadataAPI README carries a PMC example. The production
+  endpoint resolves PMCIDs under neither form. When they rule, the change is
+  one value in `export.ID_PREFIXES` plus a re-export, since `identifiers` is
+  derived at export and never stored. `test_docs_spell_pmc_ids_with_the_exported_prefix`
+  then lists every doc example left to update. After data model 1.0, that is a
+  major bump affecting only the NDJSON.
 - **`ELocationID` DOIs are not read** (#35). The exported `identifiers` come from
   `PubmedData/ArticleIdList` only — the same place Babel reads, and the
   authoritative one. A DOI can also appear as
   `Article/ELocationID[@EIdType="doi"]`, normally as a duplicate; parse it as a
   fallback if records ever turn up with the latter but not the former.
-- **Grounding is off.** We call `pubmed_downloader`'s parser with `ground=False`
-  (no MeSH/ROR/ORCID lookups), so `author_affiliation.ror` etc. are unpopulated.
-  The library's `[process]` extra (pyobo/orcid-downloader) could enable grounding
-  if needed — at significant dependency + runtime cost.
+- **Grounding is off.** We call `pubmed_downloader`'s parser with every grounder
+  `None` (no MeSH/ROR/ORCID lookups). Data model 1.0 dropped the always-NULL
+  `author_affiliation.ror` column rather than ship it empty, so grounding would
+  return as new columns (a minor version bump). The library's `[process]` extra
+  (pyobo/orcid-downloader) could enable it if needed — at significant dependency
+  + runtime cost. Note that PubMed's own `AffiliationInfo/Identifier` (ROR, GRID,
+  ISNI) is not read either; that needs no grounding at all.
 
 ## Misc
 

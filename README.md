@@ -12,6 +12,13 @@ plus four fields of our own: `id`, [`identifiers`](#identifiers-in-the-json-expo
 [`publication_types`](#publication-types-in-the-json-export). The database itself
 uses PubMed's own field names.
 
+All three outputs — the database, the Parquet export and the NDJSON export —
+follow one versioned **data model**, currently 1.0.0, documented for consumers in
+[`docs/data-model/`](./docs/data-model/README.md): what every table and field means,
+what PubMed data is left out, and how the design was decided. Each output carries
+its version, and the database documents its own columns
+(`SELECT table_name, column_name, comment FROM duckdb_columns()`).
+
 ## How it works
 
 File listing and XML parsing reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
@@ -98,6 +105,14 @@ uv run pubmed2db --data-dir data validate data/json --email you@example.com
 
 `--data-dir data` is the default, so omitting it gives the same result.
 The DuckDB database is stored as `<data-dir>/pubmed.duckdb`; override with `--db`.
+
+Both exports finish by writing `metadata.json` into the output directory: the
+data model version, the record count, the corpus cutoff (the last file loaded,
+and when NCBI posted it), and a SHA-256 per file. The same hashes go into
+`SHA256SUMS`, so `sha256sum -c SHA256SUMS` checks a download with no JSON parser.
+Both files are deleted when an export starts, so a directory holding a
+`metadata.json` is one whose export finished. `validate` checks the shards
+against `metadata.json`, and `status` prints the same cutoff.
 
 ### How the JSON export is written
 
@@ -188,14 +203,6 @@ JOIN publication_type pt USING (pmid, source_file)
 WHERE pt.type_name = 'Review';
 ```
 
-> **Names need a reload.** They are parsed at load time, and a database loaded
-> before this field existed stored only the MeSH ids. There, `export` writes
-> `"name": ""` for every type (a NULL `type_name` in Parquet) until the corpus is
-> re-parsed; `status` and `export` warn with the number of files affected, and
-> `validate` reports it as `publication_type_names_missing`. `load --force` is
-> enough, because this change only adds columns; see
-> [`load --force` or a fresh database?](#load---force-or-a-fresh-database).
-
 ### Identifiers in the JSON export
 
 Alongside the DocumentMetadataAPI fields, each JSON record carries an
@@ -205,23 +212,26 @@ published them:
 ```json
 {
   "id": "PMID:30690000",
-  "identifiers": ["PMID:30690000", "PMCID:PMC6423490", "doi:10.1016/j.ejphar.2019.01.030"],
+  "identifiers": ["PMID:30690000", "PMC:PMC6423490", "doi:10.1016/j.ejphar.2019.01.030"],
   "journal_name": "European journal of pharmacology",
   "...": "..."
 }
 ```
 
-`PMID` and the lowercase `doi` deliberately match Babel's `src/prefixes.py`, so
-those CURIEs join directly against the Babel publication compendium. PubMed's
-PMCID values already begin with `PMC`, hence the doubled `PMCID:PMC6423490`. A
-record with neither a DOI nor a PMCID still gets its own `["PMID:<id>"]`; the
-array is never empty and never null.
+All three prefixes (`PMID`, `PMC`, and the lowercase `doi`) deliberately match
+Babel's `src/prefixes.py`, so these CURIEs join directly against the Babel
+publication compendium. PubMed's PMCID values already begin with `PMC`, hence
+the doubled `PMC:PMC6423490`. A record with neither a DOI nor a PMCID still gets
+its own `["PMID:<id>"]`; the array is never empty and never null.
 
-> **The PMCID prefix may still change.** Babel uses `PMC`, this export uses
-> `PMCID`, and neither the Core Components specification nor the
-> DocumentMetadataAPI README has a PMC example to settle it; the production
-> endpoint does not resolve PMCIDs under either prefix. See
-> [#33](https://github.com/TranslatorSRI/pubmed2db/issues/33).
+> **The PMCID prefix may still change.** `PMC` follows Babel for now. Biolink
+> registers `PMC` on `biolink:Publication` and `PMCID` on
+> `biolink:JournalArticle`, and Translator has not chosen between them: see
+> [biolink-model#1366](https://github.com/biolink/biolink-model/issues/1366) and
+> [Babel#1044](https://github.com/NCATSTranslator/Babel/issues/1044). This export
+> follows whatever they decide
+> ([#33](https://github.com/TranslatorSRI/pubmed2db/issues/33)). The production
+> DocumentMetadataAPI endpoint does not resolve PMCIDs under either prefix.
 
 > **Consumers must match identifiers case-insensitively.** Values are stored and
 > exported exactly as PubMed published them, with no case normalization (Babel
@@ -232,24 +242,6 @@ array is never empty and never null.
 Only DOIs and PMCIDs are promoted into this field. Any other `ArticleId` type
 PubMed supplies (`pii`, `mid`, …) is still loaded and is available in the
 `article_id` table and the Parquet export.
-
-> **Databases loaded before 2026-08-04 need rebuilding before this field is
-> trustworthy.** `identifiers` reads the `article_id` table, and until
-> "Extract cited PMIDs and article IDs ourselves" that table was populated by an
-> upstream parser that also swept up every *cited reference's* DOI and PMCID (see
-> `CLAUDE.md`). A database loaded after that is unaffected — this feature changed
-> nothing about how `article_id` is written. Nothing detects the stale rows
-> automatically, because the source files have not changed. `load --force`
-> re-parses the whole corpus and does replace those rows, but it cannot undo a
-> table that left the schema — a database that old still carries a populated
-> `reference_citation`, which no reload clears (see
-> [`load --force` or a fresh database?](#load---force-or-a-fresh-database)).
-> Load into a fresh one:
->
-> ```bash
-> rm data/pubmed.duckdb
-> uv run pubmed2db --data-dir data load
-> ```
 
 Three more group-level options tune DuckDB itself, which matters on a cluster:
 
@@ -411,6 +403,14 @@ A normal incremental run only re-parses files whose published checksum moved, so
 neither a parser fix nor a schema change reaches data that is already loaded.
 Two ways to apply one, and they are not interchangeable:
 
+> **A database from before data model 1.0 must be rebuilt.** Every command
+> refuses one, naming the problem and leaving the file untouched: 1.0 renamed and
+> dropped columns (see
+> [the data model changelog](./docs/data-model/Changelog.md)),
+> which no migration can do in place. The same holds for a database from another
+> major version. An older *minor* version is upgraded on open, since it only
+> lacks columns.
+
 - **`load --force`** re-parses every local file and replaces its rows, so it
   applies a *parsing* change to the whole corpus: roughly a full load's worth of
   time (about a day at corpus scale — see [`slurm/README.md`](./slurm/README.md#running-load-how-long---time)),
@@ -419,15 +419,13 @@ Two ways to apply one, and they are not interchangeable:
   `load`) is the answer whenever the schema *removed or redefined* something,
   and the safer default if you are unsure.
 
-The asymmetry is that `schema.sql` only ever adds: `CREATE TABLE IF NOT EXISTS`
-plus explicit `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations. So a schema
-change that only adds — a new table, or a new column such as
-`publication_type.type_name` — is applied on the next connect and filled by
-`load --force`. Nothing drops a table or a column, though, so a forced reload
-refreshes the rows of tables that still exist while a table removed from the
-schema keeps its rows forever — `reference_citation`, dropped during
-development, is exactly that case. A forced reload also leaves any pre-existing
-wrong rows in place for files it re-parses identically.
+The asymmetry is that within a major version `schema.sql` only ever adds:
+`CREATE TABLE IF NOT EXISTS` plus explicit `ALTER TABLE ... ADD COLUMN IF NOT
+EXISTS` migrations. So a column added in a minor version is applied on the
+next connect and filled by `load --force`. A forced reload refreshes the rows a
+parser change affects, but it leaves any pre-existing wrong rows in place for
+files it re-parses identically, and only a rebuild is guaranteed to leave
+exactly the shape and rows the current code would write.
 
 Rebuilding costs a full `load` and a `journals` refresh, and nothing else — the
 downloaded files are not touched — so unless the corpus is already loaded on a
