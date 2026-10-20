@@ -13,9 +13,10 @@ own field names.
 
 ## How it works
 
-Downloading and XML parsing reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
-(bulk download of the PubMed baseline + daily update files, plus the rich `Article`
-data model). On top of it, pubmed2db adds:
+File listing and XML parsing reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
+(the PubMed baseline + daily update file listings and cache layout, plus the rich
+`Article` data model); the transfers themselves use pubmed2db's own download,
+which times out a stalled connection. On top of it, pubmed2db adds:
 
 - **MD5 tracking** — each `<file>.xml.gz.md5` sidecar is fetched and the checksum stored;
   a new or changed checksum triggers a (re)load. PubMed files are normally immutable, so
@@ -229,6 +230,10 @@ have not been loaded yet, and warns if the journal dimension is empty (journal
 names would be blank). When in doubt, `uv run pubmed2db update` runs the whole pipeline
 (`download → journals → load`) in order.
 
+A PubMed file that fails to download (an HTTP error, or no data for 120 seconds)
+is skipped while the rest are still fetched; `download` then exits non-zero
+naming the failures, and a re-run fetches only those.
+
 `journals` reads two NLM sources: `J_Entrez.txt` (10 MB, refetched every run) for
 the titles and abbreviations the export ships, and the serial catalog
 (`serfilebase.YYYY.xml`, ~449 MB, plus that year's monthly updates — usually
@@ -433,7 +438,7 @@ still fetched, so a changed published checksum is always detected.
 
 ## Notes
 
-- We reuse `pubmed-downloader` **as-is** for downloading and XML parsing, but work
+- We reuse `pubmed-downloader` **as-is** for file listings and XML parsing, but work
   around three bugs in it (≤ 0.0.14), all tracked in [`FUTURE.md`](./FUTURE.md):
   `catalog.process_journal_overview()` requires `start_year`/`end_year` fields the
   real `J_Entrez.txt` does not contain, so it raises on live data (fixed by

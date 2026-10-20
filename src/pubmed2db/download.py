@@ -1,8 +1,10 @@
 """Download PubMed baseline and update files, with MD5 sidecar tracking.
 
 We reuse the `pubmed_downloader library
-<https://github.com/cthoyt/pubmed-downloader>`_ for the actual file transfers
-(pystow-backed, HTTP, skip-by-name). On top of that we fetch each
+<https://github.com/cthoyt/pubmed-downloader>`_ for the file listing and the
+cache layout (its pystow modules), but not for the transfers themselves:
+pystow's ``ensure()`` sets no timeout, so :func:`pubmed2db.util.download_file`
+fetches each file instead. On top of that we fetch each
 ``<file>.md5`` sidecar, store the published checksum in the ``source_file``
 registry, and bump ``downloaded_at`` whenever a file is new or its checksum
 changed — which is what later triggers a reload in :func:`pubmed2db.load.needs_load`.
@@ -32,6 +34,7 @@ from pubmed_downloader.api import (
 from tqdm import tqdm
 
 from .db import register_source_file
+from .util import download_file
 
 logger = logging.getLogger(__name__)
 
@@ -54,17 +57,54 @@ def file_md5(path: Path) -> str:
         return hashlib.file_digest(fh, "md5").hexdigest()
 
 
+class DownloadError(RuntimeError):
+    """Raised by :func:`sync` when some files could not be downloaded."""
+
+
+def _fetch(url: str, path: Path, session: requests.Session, failed: list[str]) -> bool:
+    """Download one file, recording it in ``failed`` rather than raising.
+
+    A full sync is ~1,300 files, and the read timeout turns a stalled transfer
+    into an exception: letting it escape would abandon every file after the one
+    that stalled, costing a resubmission per blip. The file is left
+    unregistered, so the next sync sees it as new or changed and tries again;
+    `sync` raises once the rest are done so the step still fails.
+    """
+    try:
+        download_file(url, path, session=session)
+    except requests.RequestException as exc:
+        logger.error("could not download %s (%s); skipping it", path.name, exc)
+        failed.append(path.name)
+        return False
+    return True
+
+
+def _remove_partial_downloads(directory: Path) -> None:
+    """Delete the ``.part`` files of transfers that were killed outright.
+
+    `util.download_file` removes its ``.part`` in a ``finally``, which a SIGKILL
+    (Slurm's ``--time`` limit) skips. `local_files` ignores them, so nothing
+    else would ever reclaim the space; a transfer of that file always starts a
+    fresh ``.part``, so none of them is worth resuming. Not safe against a
+    second sync running into the same directory, which is unsafe anyway.
+    """
+    for part in directory.glob("*.xml.gz.part"):
+        logger.info("removing %s, left by an interrupted transfer", part.name)
+        part.unlink(missing_ok=True)
+
+
 def _sync_kind(
     con: duckdb.DuckDBPyConnection,
     *,
     kind: str,
     base_url: str,
     list_cache: Path,
-    ensure_module,
+    cache_module,
     registry: dict[str, str | None],
     limit: int | None,
     verify: bool,
     session: requests.Session,
+    failed: list[str],
 ) -> list[tuple[Path, str]]:
     # Always refresh the remote listing so newly published updatefiles appear.
     # _ensure_urls sorts it newest-first, so the newest N — what's useful for
@@ -98,25 +138,25 @@ def _sync_kind(
         # downloaded_at on every sync and re-parse the file every run.
         changed = file_name not in registry or prior != published_md5
 
-        # ensure() skips by file name, so a file republished under its old name
-        # would keep its stale bytes on disk: we would record the new checksum
+        # We skip any file already on disk, so a file republished under its old
+        # name would keep its stale bytes: we would record the new checksum
         # against the old content and never look again. Drop the local copy
         # before fetching, whether or not we go on to hash it. Only when we had
         # a prior checksum to compare — a first sync over an existing cache must
         # not re-download the whole corpus.
-        local_path = Path(ensure_module.join(name=file_name))
+        local_path = Path(cache_module.join(name=file_name))
         if prior is not None and published_md5 is not None and prior != published_md5:
             logger.info("published md5 changed for %s; re-downloading", file_name)
             local_path.unlink(missing_ok=True)
 
-        # Whether ensure() will actually transfer bytes: it skips by file name,
-        # so a file already on disk is left alone. One that vanished locally —
+        # A file already on disk is left alone. One that vanished locally —
         # pruned to reclaim disk, or an interrupted earlier transfer — is
         # fetched again even when its published checksum never moved, and those
         # bytes have never been hashed.
-        fetched = not local_path.exists()
-
-        path = Path(ensure_module.ensure(url=url))
+        path = local_path
+        fetched = not path.exists()
+        if fetched and not _fetch(url, path, session, failed):
+            continue
 
         # Only hash files we just fetched or whose published checksum moved:
         # re-hashing an unchanged, already-verified corpus costs tens of GiB of
@@ -132,7 +172,8 @@ def _sync_kind(
                     published_md5,
                 )
                 path.unlink(missing_ok=True)
-                path = Path(ensure_module.ensure(url=url))
+                if not _fetch(url, path, session, failed):
+                    continue
                 # A retry that is also corrupt must not be registered as good.
                 # Delete it too: `load` globs the download directories rather
                 # than reading sync()'s return value, so a corrupt file left on
@@ -190,31 +231,43 @@ def sync(
     """Download baseline and/or update files, tracking MD5 checksums.
 
     Returns the list of ``(local_path, kind)`` for all files now present, which
-    can be passed straight to :func:`pubmed2db.load.load_files`.
+    can be passed straight to :func:`pubmed2db.load.load_files`. A file that
+    fails to download is skipped and the rest are still fetched; then
+    :class:`DownloadError` names the failures, so the step does not report
+    success over a partial corpus.
     """
     registry = {
         r[0]: r[1]
         for r in con.execute("SELECT file_name, published_md5 FROM source_file").fetchall()
     }
 
-    # One session for the ~2,600 sidecar fetches: without keep-alive each one
-    # pays a fresh TCP+TLS handshake, which is most of a no-op sync's runtime.
+    # One session for the ~2,600 sidecar fetches and the files themselves:
+    # without keep-alive each request pays a fresh TCP+TLS handshake, which is
+    # most of a no-op sync's runtime.
     session = requests.Session()
     results: list[tuple[Path, str]] = []
-    for kind, wanted, base_url, list_cache, ensure_module in (
+    failed: list[str] = []
+    for kind, wanted, base_url, list_cache, cache_module in (
         ("baseline", baseline, BASELINE_URL, BASELINE_PATH, BASELINE_MODULE),
         ("update", updates, UPDATES_URL, UPDATES_PATH, UPDATES_MODULE),
     ):
         if wanted:
+            _remove_partial_downloads(Path(cache_module.base))
             results += _sync_kind(
                 con,
                 kind=kind,
                 base_url=base_url,
                 list_cache=list_cache,
-                ensure_module=ensure_module,
+                cache_module=cache_module,
                 registry=registry,
                 limit=limit,
                 verify=verify,
                 session=session,
+                failed=failed,
             )
+    if failed:
+        raise DownloadError(
+            f"{len(failed)} file(s) failed to download and will be retried on the "
+            f"next sync: {', '.join(failed)}"
+        )
     return results
