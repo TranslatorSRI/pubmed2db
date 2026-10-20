@@ -426,9 +426,11 @@ def _serfile_head(url: str) -> tuple[str | None, int | None]:
     NLM publishes no ``.md5`` sidecars for these files, unlike the PubMed
     baseline where :mod:`pubmed2db.download` uses them to notice a republished
     file. The ETag is the validator this server does offer, and a HEAD does the
-    same job for a few hundred bytes instead of ~450 MB. The size is ``None``
-    when the response is compressed, since the file on disk is the decoded
-    bytes (NLM serves these uncompressed today). Both are ``None`` on any
+    same job for a few hundred bytes instead of ~450 MB. It asks for
+    ``identity``, as `util.download_file` does, so the length is the size of
+    the file that download writes. A server that compresses anyway gets
+    ``None`` for the size: a length compressed on the fly need not match the
+    next GET's (NLM serves these uncompressed today). Both are ``None`` on any
     network trouble — the caller then keeps whatever is already cached rather
     than failing.
 
@@ -438,7 +440,9 @@ def _serfile_head(url: str) -> tuple[str | None, int | None]:
     freeze the cached copy forever.
     """
     try:
-        response = requests.head(url, timeout=60, allow_redirects=True)
+        response = requests.head(
+            url, timeout=60, allow_redirects=True, headers={"Accept-Encoding": "identity"}
+        )
         response.raise_for_status()
     except requests.RequestException as exc:
         logger.debug("could not read a validator for %s (%s); keeping the cached copy", url, exc)

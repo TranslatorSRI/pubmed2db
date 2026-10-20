@@ -419,13 +419,15 @@ def test_serfile_head_falls_back_and_survives_network_trouble(monkeypatch):
     # requests.head does not follow redirects by default, and raise_for_status
     # passes a 3xx: without this the headers would describe the redirect.
     assert calls[0]["allow_redirects"] is True
+    # The same encoding download_file asks for, so the length is the file's.
+    assert calls[0]["headers"] == {"Accept-Encoding": "identity"}
 
     monkeypatch.setattr(
         load_mod.requests, "head", lambda *a, **k: Response({"Last-Modified": "Tue, 01 Sep 2026"})
     )
     assert load_mod._serfile_head("https://x") == ("Tue, 01 Sep 2026", None)
 
-    # A compressed length is not the size of the decoded file on disk.
+    # A length compressed on the fly need not match the next GET's.
     monkeypatch.setattr(
         load_mod.requests,
         "head",

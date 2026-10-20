@@ -25,6 +25,9 @@ dependencies = [
     "pyarrow>=25",
     "click>=8.4",
     "requests>=2.34",
+    # Imported directly: util.download_file reads the undecoded body through
+    # urllib3 and translates its exceptions.
+    "urllib3>=2",
     "pystow>=0.9",
     "tqdm>=4.70",
     "lxml>=6.1",
