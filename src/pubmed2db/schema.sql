@@ -73,8 +73,10 @@ CREATE TABLE IF NOT EXISTS article (
     loaded_at      TIMESTAMP
 );
 
--- Journal dimension, sourced from the NLM Catalog (J_Entrez/J_Medline), not
--- versioned. Joined to articles on nlm_catalog_id.
+-- Journal dimension, not versioned. Joined to articles on nlm_catalog_id.
+-- Titles, abbreviations and ISSNs come from NLM's J_Entrez.txt; start_year,
+-- end_year and active from the serial catalog (serfile). docs/journal-catalog.md
+-- says why it takes two sources.
 CREATE TABLE IF NOT EXISTS journal (
     nlm_catalog_id       TEXT PRIMARY KEY,
     title                TEXT,
