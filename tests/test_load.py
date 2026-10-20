@@ -246,6 +246,54 @@ def test_schema_migrates_a_database_without_the_skip_columns(tmp_path):
         con.close()
 
 
+def test_publication_types_are_stored_with_names_and_order(loaded_con):
+    """Direct DuckDB queries are a first-class consumer: the name and PubMed's
+    order are columns, so filtering for "Review" needs no MeSH lookup."""
+    rows = loaded_con.execute(
+        "SELECT pt.position, pt.type_ui, pt.type_name FROM latest_article la"
+        " JOIN publication_type pt USING (pmid, source_file)"
+        " WHERE la.pmid = 1001 ORDER BY pt.position"
+    ).fetchall()
+    assert rows == [
+        (0, "D016422", "Letter"),
+        (1, "D013485", "Research Support, Non-U.S. Gov't"),
+        (2, "D016420", "Comment"),
+    ]
+
+
+def test_schema_migrates_publication_type_to_names_and_positions(tmp_path, gz_fixture):
+    """A database loaded before names were parsed has the 3-column table. The
+    migration must append the columns in the order `load` inserts them BY
+    POSITION, and old rows read NULL -- "not yet reloaded", not "no name"."""
+    import duckdb
+
+    from pubmed2db.db import connect
+    from pubmed2db.load import load_file
+
+    db_path = tmp_path / "old.duckdb"
+    old = duckdb.connect(db_path)
+    old.execute(
+        "CREATE TABLE publication_type (pmid BIGINT NOT NULL, source_file TEXT NOT NULL, type_ui TEXT)"
+    )
+    old.execute("INSERT INTO publication_type VALUES (1, 'pubmed24n0001.xml.gz', 'D016428')")
+    old.close()
+
+    con = connect(db_path)
+    try:
+        assert [c[0] for c in con.execute("DESCRIBE publication_type").fetchall()] == [
+            "pmid", "source_file", "type_ui", "type_name", "position"
+        ]
+        load_file(con, gz_fixture("pubmed25n0002"), kind="update")
+        assert con.execute(
+            "SELECT type_name, position FROM publication_type WHERE pmid = 1 "
+        ).fetchall() == [(None, None)]
+        assert ("D016420", "Comment", 2) in con.execute(
+            "SELECT type_ui, type_name, position FROM publication_type WHERE pmid = 1001"
+        ).fetchall()
+    finally:
+        con.close()
+
+
 def test_load_progress_line_reports_rate_and_elapsed(con, gz_fixture, caplog):
     """The progress line must carry what sizes the next srun, not just an ETA.
 

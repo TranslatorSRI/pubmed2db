@@ -104,8 +104,8 @@ def _article_rows(parsed: ParsedArticle, source_file: str, order_key: int) -> di
                 (pmid, source_file, heading.mesh_id, qualifier.mesh_id, qualifier.name, qualifier.major)
             )
 
-    for type_ui in a.type_mesh_ids:
-        rows["publication_type"].append((pmid, source_file, type_ui))
+    for position, (type_ui, type_name) in enumerate(parsed.publication_types):
+        rows["publication_type"].append((pmid, source_file, type_ui, type_name, position))
 
     for g in a.grants:
         rows["grant_"].append((pmid, source_file, g.id, g.acronym, g.agency, g.country))

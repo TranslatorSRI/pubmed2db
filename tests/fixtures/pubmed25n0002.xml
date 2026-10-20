@@ -37,7 +37,9 @@
           </Author>
         </AuthorList>
         <PublicationTypeList>
-          <PublicationType UI="D016428">Journal Article</PublicationType>
+          <PublicationType UI="D016422">Letter</PublicationType>
+          <PublicationType UI="D013485">Research Support, Non-U.S. Gov't</PublicationType>
+          <PublicationType UI="D016420">Comment</PublicationType>
         </PublicationTypeList>
       </Article>
       <MedlineJournalInfo>

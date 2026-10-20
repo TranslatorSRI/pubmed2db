@@ -42,6 +42,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 import duckdb
 import requests
@@ -50,6 +51,7 @@ from lxml import etree
 from .export import (
     ID_PREFIXES,
     JSON_FIELDS,
+    MESH_PREFIX,
     _MONTH_ABBR,
     normalize_day,
     normalize_month,
@@ -57,6 +59,7 @@ from .export import (
     pub_date,
     pub_month,
 )
+from .parse import _publication_types
 from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
@@ -75,43 +78,85 @@ EXPECTED_FIELDS = frozenset(JSON_FIELDS)
 CORE_FIELDS = ("article_title", "volume", "issue",
                "pub_year", "pub_month", "pub_day")
 
-#: Fields compared and reported, but never able to fail the run — either because
-#: the two sides have different sources, or because a disagreement is evidence
-#: about efetch's *rendering* rather than about what we parsed.
+class _SoftGroup(NamedTuple):
+    """Soft fields that share a reason for being soft; see :data:`_SOFT_GROUPS`."""
+
+    reason: str  # printed in the run summary
+    fields: tuple[str, ...]
+    check: str  # the report check's name
+    expectation: str  # the check's expectation, short enough for the summary table
+    code: str  # its warning code, and its examples' key under field_validation
+    message: str
+
+
+#: Fields compared and reported, but never able to fail the run. There are three
+#: unrelated reasons a field ends up here, one per group:
 #:
-#: ``journal_name``/``journal_abbrev`` come from the journal dimension, whose
-#: titles and abbreviations are NLM's ``J_Entrez.txt`` (not the serial catalog,
-#: which only supplies years), rather than the article XML, so the two sources
-#: can legitimately differ — though ``JournalTitle`` is byte-identical to what
-#: efetch serves, so they rarely do (#31).
+#: ``journal_name``/``journal_abbrev`` come from a **different source**: the
+#: journal dimension, whose titles and abbreviations are NLM's ``J_Entrez.txt``
+#: (not the serial catalog, which only supplies years), rather than the article
+#: XML, so the two can legitimately differ — though ``JournalTitle`` is
+#: byte-identical to what efetch serves, so they rarely do (#31).
 #:
-#: ``pub_date`` is here for the second reason, and it is worth spelling out
-#: because putting it in CORE_FIELDS looks obviously right.
-#:
-#: The *rendering* half of the problem is handled elsewhere and is not why it
-#: sits here: :func:`_normalize_date` folds the two spellings of one date before
+#: ``pub_date`` is **correlated with CORE_FIELDS**, and it is worth spelling out
+#: because putting it in CORE_FIELDS looks obviously right. The *rendering*
+#: half of the problem is handled elsewhere and is not why it sits here:
+#: :func:`_normalize_date` folds the two spellings of one date before
 #: comparing, so a baseline ``"1998 September"`` meeting a reconstructed
 #: ``"1998 Sep"`` is not reported at all. What remains is that ``pub_date`` is
-#: **correlated** with three fields already in CORE_FIELDS, being derived from
-#: the same three columns. Gating on it would let a single date disagreement —
-#: a genuine one, in the data — contribute four mismatches instead of three,
-#: tightening the FAIL threshold on exactly the records most likely to trip it.
-#: That is the same reasoning that keeps the ``identifiers`` comparison
-#: advisory below, and it is unaffected by how well the two sides are
-#: normalized.
-#: Keyed by *why* each field is soft, because the two reasons are unrelated and
-#: the run summary prints them separately. ``SOFT_FIELDS`` is derived from this
-#: rather than written twice — the summary line used to give the journal reason
-#: for the whole tuple, which stopped being true the moment ``pub_date`` joined
-#: it for an entirely different reason.
-SOFT_FIELD_REASONS: dict[str, tuple[str, ...]] = {
-    "journal dimension, not the article XML": ("journal_name", "journal_abbrev"),
-    "efetch renders a date, we ship the archival string": ("pub_date",),
-}
+#: derived from the same three columns as ``pub_year``/``pub_month``/
+#: ``pub_day``. Gating on it would let a single date disagreement — a genuine
+#: one, in the data — contribute four mismatches instead of three, tightening
+#: the FAIL threshold on exactly the records most likely to trip it. That is
+#: the same reasoning that keeps the ``identifiers`` comparison advisory below,
+#: and it is unaffected by how well the two sides are normalized.
+#:
+#: ``publication_types`` is **revised after publication**: NLM changes a
+#: record's types when MEDLINE indexing completes, so live efetch can be ahead
+#: of our last update file without anything being wrong with the load.
+#:
+#: Grouped by reason because the reasons are unrelated: the run summary prints
+#: them separately, and each group is its own report check with its own warning
+#: code and its own example list. Everything else is derived from this rather
+#: than written twice — the summary line once gave the journal reason for every
+#: soft field, and a single report check still called a ``pub_date``
+#: disagreement a journal mismatch, both long after ``pub_date`` joined for an
+#: entirely different reason. A new soft field with a new reason gets a new
+#: group.
+_SOFT_GROUPS: tuple[_SoftGroup, ...] = (
+    _SoftGroup(
+        "journal dimension, not the article XML", ("journal_name", "journal_abbrev"),
+        "journal-soft", "journal name/abbrev match Entrez (advisory)",
+        "journal_mismatches",
+        "Sampled journal name/abbrev differs from Entrez (different source).",
+    ),
+    _SoftGroup(
+        "derived from pub_year/pub_month/pub_day, already compared", ("pub_date",),
+        "pub-date-soft", "pub_date matches Entrez (advisory)",
+        "pub_date_mismatches",
+        "Sampled pub_date differs from Entrez's rendering of the same record.",
+    ),
+    _SoftGroup(
+        "indexing revises types after our last update file", ("publication_types",),
+        "publication-types-soft", "publication types match Entrez (advisory)",
+        "publication_type_mismatches",
+        "Sampled publication types differ from Entrez "
+        "(may have been revised by indexing since our last update).",
+    ),
+)
 
-SOFT_FIELDS = tuple(f for fields in SOFT_FIELD_REASONS.values() for f in fields)
+SOFT_FIELD_REASONS: dict[str, tuple[str, ...]] = {g.reason: g.fields for g in _SOFT_GROUPS}
+
+SOFT_FIELDS = tuple(f for g in _SOFT_GROUPS for f in g.fields)
 
 _ID_RE = re.compile(r"^PMID:(\d+)$")
+
+#: A publication type's CURIE. Written out rather than built from
+#: ``export.MESH_PREFIX`` on purpose: the efetch side *is* built from it, so a
+#: casing slip there (``MeSH:``) would change both sides of the field comparison
+#: together and pass. The prefix is a contract with Biolink, like the field
+#: names ``test_expected_fields_matches_spec`` pins.
+_PUBLICATION_TYPE_ID_RE = re.compile(r"^MESH:D\d+$")
 
 #: Seasons PubMed uses in ``<Season>`` / ``<MedlineDate>``.
 _SEASONS = ("Spring", "Summer", "Autumn", "Fall", "Winter")
@@ -336,9 +381,52 @@ def _normalize(value: str) -> str:
 _DATE_RENDERED_FIELDS = frozenset({"pub_date"})
 
 
+def _valid_publication_types(types: object) -> bool:
+    """A list of ``{"id": "MESH:D…", "name": str}`` and nothing else."""
+    return isinstance(types, list) and all(
+        isinstance(t, dict)
+        and set(t) == {"id", "name"}
+        and isinstance(t["id"], str) and _PUBLICATION_TYPE_ID_RE.match(t["id"])
+        and isinstance(t["name"], str)
+        for t in types
+    )
+
+
+def _type_ids(record: dict) -> list:
+    """A record's publication-type ids, in order, ignoring the names."""
+    return [t.get("id") for t in record.get("publication_types") or [] if isinstance(t, dict)]
+
+
+def _has_unnamed_type(record: dict) -> bool:
+    return any(
+        isinstance(t, dict) and not t.get("name")
+        for t in record.get("publication_types") or []
+    )
+
+
+def _soft_differs(field: str, exported: dict, entrez: dict) -> bool:
+    """Whether a soft field disagrees with Entrez.
+
+    A publication type exported without a name comes from a database loaded
+    before names were parsed. ``check_structure`` reports that once, with its
+    cause and its fix, so here such a record is compared on its ids alone:
+    comparing the names too would put every sampled record of a stale
+    database under ``publication_type_mismatches``, blamed on indexing.
+    """
+    if field == "publication_types" and _has_unnamed_type(exported):
+        return _type_ids(exported) != _type_ids(entrez)
+    return _compare_value(field, exported) != _compare_value(field, entrez)
+
+
 def _compare_value(field: str, record: dict) -> str:
     """One side of a field comparison, normalized for rendering differences."""
-    value = _normalize(str(record.get(field, "")))
+    raw = record.get(field, "")
+    if isinstance(raw, list):
+        # `str()` of a list would compare Python reprs -- quoting and key order
+        # included. Canonical JSON compares the values, in order: order is part
+        # of `publication_types`, which ships PubMed's own.
+        return json.dumps(raw, sort_keys=True, ensure_ascii=False)
+    value = _normalize(str(raw))
     return _normalize_date(value) if field in _DATE_RENDERED_FIELDS else value
 
 
@@ -438,6 +526,8 @@ def check_structure(
     #: — nothing about one export in isolation says 96.7% is right and 6% is
     #: not — so record the rate and let a reader compare it to the last run.
     with_prefix: Counter[str] = Counter()
+    invalid_types = _Examples()
+    unnamed_types = _Examples()
 
     # Progress is measured in *bytes of shard consumed*, the one denominator we
     # know before reading: the record total is what this pass is computing, and
@@ -510,6 +600,19 @@ def check_structure(
                         {c.split(":", 1)[0] for c in doc.get("identifiers") or []}
                     )
 
+                    # Absent or null is already `record-fields`/`no-nulls`.
+                    types = doc.get("publication_types")
+                    if types is not None:
+                        if not _valid_publication_types(types):
+                            invalid_types.append({
+                                "shard": path.name, "line": lineno,
+                                "publication_types": _clip(json.dumps(types), 200),
+                            })
+                        elif any(t["name"] == "" for t in types):
+                            unnamed_types.append(
+                                {"shard": path.name, "line": lineno, "id": doc.get("id")}
+                            )
+
                     if doc.get("pub_month") not in _VALID_MONTHS:
                         invalid_months.append(
                             {"shard": path.name, "line": lineno, "pub_month": doc.get("pub_month")}
@@ -567,6 +670,8 @@ def check_structure(
         "invalid_months": invalid_months.examples,
         "unreadable_shards": unreadable.examples,
         "duplicate_pmids": duplicates.examples,
+        "invalid_publication_types": invalid_types.examples,
+        "unnamed_publication_types": unnamed_types.examples,
         "identifier_coverage": {
             prefix: {
                 "records": with_prefix[prefix],
@@ -606,12 +711,22 @@ def check_structure(
         ("pmid-unique", "no PMID is exported twice", "duplicated PMID(s)",
          duplicates, "duplicate_pmids", "duplicate_pmids",
          "PMIDs appearing in more than one record.", FAIL),
+        ("publication-types", "publication_types is a list of {id: MESH:D…, name}",
+         "invalid publication_types", invalid_types, "invalid_publication_types",
+         "invalid_publication_types",
+         "Records whose publication_types is not a list of {id, name} with a MESH: id.",
+         FAIL),
         ("no-extra-fields", "no record carries an unexpected field",
          "record(s) with extra fields", extra_fields, "extra_fields", "extra_fields",
          "Records carrying unexpected extra fields.", WARN),
         ("month-format", 'pub_month is a month, season, range of those, or ""',
          "invalid pub_month value(s)", invalid_months, "invalid_months", "invalid_months",
          "Records whose pub_month is not a month/season, a range of two, or empty.", WARN),
+        ("publication-type-names", "every publication type has a name",
+         "record(s) with an unnamed type", unnamed_types, "unnamed_publication_types",
+         "publication_type_names_missing",
+         "Publication types exported without a name: the database was loaded before "
+         "names were parsed. Run `pubmed2db load --force`, then export again.", WARN),
     )
     for name, expectation, noun, findings, key, code, message, severity in rows:
         # dict findings (field -> n) count occurrences; _Examples counts its own.
@@ -813,6 +928,12 @@ def efetch_documents(
                     _text(pub, "Day"),
                     _text(pub, "MedlineDate"),
                 ) if pub is not None else "",
+                # The loader's own parser, so both sides read the same exact
+                # path and keep PubMed's order.
+                "publication_types": [
+                    {"id": f"{MESH_PREFIX}:{ui}", "name": name}
+                    for ui, name in _publication_types(art)
+                ],
                 "abstract": _normalize(abstract),
             }
     return docs
@@ -1019,7 +1140,7 @@ def check_fields(
         "sample-fetched": "PubMed still serves every sampled record",
         "core-fields": f"<{_FIELD_MISMATCH_RATE:.0%} of compared fields differ from Entrez",
         "abstract": f"abstracts at least {abstract_threshold:.0%} similar to Entrez",
-        "journal-soft": "journal name/abbrev match Entrez (advisory)",
+        **{g.check: g.expectation for g in _SOFT_GROUPS},
         "identifiers-soft": "DOIs and PMCIDs match Entrez (advisory)",
     }
     if not online:
@@ -1053,7 +1174,10 @@ def check_fields(
         return
 
     mismatches: list[dict] = []
-    soft_mismatches: list[dict] = []
+    #: One list per soft group, keyed by its code: a shared list capped at
+    #: `_MAX_EXAMPLES` let one busy group (publication types, which indexing
+    #: revises often) crowd out the examples another group's check points to.
+    soft_mismatches: dict[str, list[dict]] = {g.code: [] for g in _SOFT_GROUPS}
     identifier_mismatches: list[dict] = []
     missing_from_api: list[int] = []
     similarities: list[float] = []
@@ -1113,11 +1237,12 @@ def check_fields(
                     {"pmid": pmid, "field": "abstract", "similarity": round(ratio, 3)}
                 )
 
-        for f in SOFT_FIELDS:
-            if _compare_value(f, exported) != _compare_value(f, entrez):
-                soft_mismatches.append(
-                    {"pmid": pmid, "field": f, "exported": exported.get(f), "entrez": entrez.get(f)}
-                )
+        for group in _SOFT_GROUPS:
+            for f in group.fields:
+                if _soft_differs(f, exported, entrez):
+                    soft_mismatches[group.code].append(
+                        {"pmid": pmid, "field": f, "exported": exported.get(f), "entrez": entrez.get(f)}
+                    )
 
     rate = core_mismatch / core_comparisons if core_comparisons else 0.0
     grouped = group_mismatches(mismatches)
@@ -1132,7 +1257,7 @@ def check_fields(
         "mismatches": _capped(mismatches),
         "mismatches_by_field": grouped["by_field"],
         "mismatches_by_kind": grouped["by_kind"],
-        "soft_mismatches": _capped(soft_mismatches),
+        **{code: _capped(found) for code, found in soft_mismatches.items()},
         "identifier_mismatches": _capped(identifier_mismatches),
         "missing_from_api": _capped(missing_from_api),
         "abstract_similarity": {
@@ -1182,14 +1307,15 @@ def check_fields(
             f"min {min_similarity:.3f}, mean {mean:.3f} over {len(similarities):,} record(s)",
         )
 
-    report.record(
-        "journal-soft", "field accuracy", expectations["journal-soft"],
-        WARN if soft_mismatches else PASS,
-        f"{len(soft_mismatches):,} of {checked:,} record(s) differ",
-        code="journal_mismatches",
-        message="Sampled journal name/abbrev differs from Entrez (different source).",
-        count=len(soft_mismatches), see="checks.field_validation.soft_mismatches",
-    )
+    for group in _SOFT_GROUPS:
+        differing = {m["pmid"] for m in soft_mismatches[group.code]}
+        report.record(
+            group.check, "field accuracy", expectations[group.check],
+            WARN if differing else PASS,
+            f"{len(differing):,} of {checked:,} record(s) differ",
+            code=group.code, message=group.message,
+            count=len(differing), see=f"checks.field_validation.{group.code}",
+        )
 
     report.record(
         "identifiers-soft", "field accuracy", expectations["identifiers-soft"],
@@ -1583,13 +1709,20 @@ _KIND_READING = {
 
 
 def _rows(checks: list[dict], section: str) -> list[str]:
-    """One line per check, with any detail block directly beneath its own row."""
+    """One line per check, with any detail block directly beneath its own row.
+
+    Columns are sized to the widest name and expectation across *all* checks,
+    not this section's, so every section lines up with the others; fixed widths
+    went ragged as soon as a check name outgrew them.
+    """
+    name_width = max((len(c["name"]) for c in checks), default=0)
+    expectation_width = max((len(c["expectation"]) for c in checks), default=0)
     lines = []
     for check in (c for c in checks if c["section"] == section):
         marker = _MARKERS.get(check["status"], check["status"])
         lines.append(
-            f"  [{marker}] {check['name']:<15} {check['expectation']:<44} "
-            f"{check['observed']}".rstrip()
+            f"  [{marker}] {check['name']:<{name_width}} "
+            f"{check['expectation']:<{expectation_width}} {check['observed']}".rstrip()
         )
         if check.get("detail"):
             lines += _mismatch_detail(check)

@@ -7,9 +7,10 @@ queries).
 
 The JSON export follows the field names of the NCATS Translator
 [DocumentMetadataAPI](https://github.com/NCATSTranslator/DocumentMetadataAPI),
-plus three fields of our own: `id`, [`identifiers`](#identifiers-in-the-json-export)
-and [`pub_date`](#pub_date-in-the-json-export). The database itself uses PubMed's
-own field names.
+plus four fields of our own: `id`, [`identifiers`](#identifiers-in-the-json-export),
+[`pub_date`](#pub_date-in-the-json-export) and
+[`publication_types`](#publication-types-in-the-json-export). The database itself
+uses PubMed's own field names.
 
 ## How it works
 
@@ -149,7 +150,51 @@ own `sortpubdate` does. A consumer that needs the trailing year reads it out of
 `pub_date`.
 
 > **`pub_date` is new, and a re-export is required to ship it.** An export made
-> before this field existed has eleven fields, not twelve.
+> before this field existed has no `pub_date` field.
+
+### Publication types in the JSON export
+
+Each record carries `publication_types`, PubMed's publication types. Each entry
+has the type's MeSH descriptor as a CURIE and PubMed's name for it. They are in
+PubMed's own order, the order NCBI's `esummary` serves as `pubtype`:
+
+```json
+{
+  "id": "PMID:22456213",
+  "publication_types": [
+    {"id": "MESH:D002363", "name": "Case Reports"},
+    {"id": "MESH:D016428", "name": "Journal Article"},
+    {"id": "MESH:D016454", "name": "Review"}
+  ],
+  "...": "..."
+}
+```
+
+- **Verbatim.** Every type PubMed lists is included, funding labels such as
+  `Research Support, Non-U.S. Gov't` too (about a fifth of records carry one).
+  Filter on `name` or `id` to pick out reviews, trials, errata and so on.
+- **Usually more than one.** In a sample of 3,600 random PMIDs, about half
+  carried two or more types and 89% carried `Journal Article`. A record with no
+  types gets `[]`, never null.
+- `id` uses the `MESH:` prefix, Biolink's casing.
+
+The same data is in the database's `publication_type` table (`type_ui`,
+`type_name`, and `position` for PubMed's order), so a direct query needs no MeSH
+lookup:
+
+```sql
+SELECT count(*) FROM latest_article la
+JOIN publication_type pt USING (pmid, source_file)
+WHERE pt.type_name = 'Review';
+```
+
+> **Names need a reload.** They are parsed at load time, and a database loaded
+> before this field existed stored only the MeSH ids. There, `export` writes
+> `"name": ""` for every type (a NULL `type_name` in Parquet) until the corpus is
+> re-parsed; `status` and `export` warn with the number of files affected, and
+> `validate` reports it as `publication_type_names_missing`. `load --force` is
+> enough, because this change only adds columns; see
+> [`load --force` or a fresh database?](#load---force-or-a-fresh-database).
 
 ### Identifiers in the JSON export
 
@@ -369,16 +414,18 @@ Two ways to apply one, and they are not interchangeable:
   applies a *parsing* change to the whole corpus: roughly a baseline's worth of
   time (~2–3 h), no re-download, and the database keeps its history.
 - **A fresh database** (delete `<data-dir>/pubmed.duckdb`, then `journals` and
-  `load`) is the answer whenever the *schema* changed, and the safer default if
-  you are unsure.
+  `load`) is the answer whenever the schema *removed or redefined* something,
+  and the safer default if you are unsure.
 
 The asymmetry is that `schema.sql` only ever adds: `CREATE TABLE IF NOT EXISTS`
-plus explicit `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations. Nothing
-drops a table or a column, so a forced reload refreshes the rows of tables that
-still exist while a table removed from the schema keeps its rows forever —
-`reference_citation`, dropped during development, is exactly that case. A forced
-reload also leaves any pre-existing wrong rows in place for files it re-parses
-identically.
+plus explicit `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations. So a schema
+change that only adds — a new table, or a new column such as
+`publication_type.type_name` — is applied on the next connect and filled by
+`load --force`. Nothing drops a table or a column, though, so a forced reload
+refreshes the rows of tables that still exist while a table removed from the
+schema keeps its rows forever — `reference_citation`, dropped during
+development, is exactly that case. A forced reload also leaves any pre-existing
+wrong rows in place for files it re-parses identically.
 
 Rebuilding costs a full `load` and a `journals` refresh, and nothing else — the
 downloaded files are not touched — so unless the corpus is already loaded on a machine where 2–3 hours of
@@ -454,6 +501,15 @@ still fetched, so a changed published checksum is always detected.
   and takes all 83 monthly deltas instead; that costs 2.52 GiB rather than 872 MiB
   and returns 80% duplicate records for the same coverage, which is why `journals`
   enumerates NLM's listing itself.
+- **MeSH names are PubMed's, not MeSH's.** The descriptor, qualifier and
+  publication-type names come from each record's own XML. They are never looked
+  up in the MeSH vocabulary or reconciled across records, so if PubMed names a
+  descriptor differently in two records, both names are kept. Each version of a
+  PMID keeps the names its file gave it, and exports read the latest version.
+  This keeps the data identical to PubMed's files. Any drift between older and
+  newer records is cleared by the
+  [year-boundary rebuild](#load---force-or-a-fresh-database), which reloads
+  every record from the new baseline.
 - This tool is intended to eventually replace the PubMed download in
   [Babel](https://github.com/NCATSTranslator/Babel) (`createcompendia/publications.py`).
 

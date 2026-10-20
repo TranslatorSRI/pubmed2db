@@ -155,6 +155,13 @@ def test_json_export_uses_spec_fields(loaded_con, tmp_path):
         "pub_month": "Mar",
         "pub_day": "16",
         "pub_date": "2020 Mar 16",
+        # v2's types, not v1's "Journal Article", in PubMed's (non-alphabetical)
+        # order -- the order esummary's `pubtype` serves.
+        "publication_types": [
+            {"id": "MESH:D016422", "name": "Letter"},
+            {"id": "MESH:D013485", "name": "Research Support, Non-U.S. Gov't"},
+            {"id": "MESH:D016420", "name": "Comment"},
+        ],
         "abstract": "The revised abstract for article one.",
     }
 
@@ -167,11 +174,12 @@ def test_curie_sql_is_derived_from_id_prefixes():
     reach the validator alone — reporting every sampled record as a mismatch
     against a correct export.
     """
-    from pubmed2db.export import ID_PREFIXES, _LATEST_METADATA_SQL
+    from pubmed2db.export import ID_PREFIXES, MESH_PREFIX, _LATEST_METADATA_SQL
 
     for id_type, prefix in ID_PREFIXES.items():
         assert f"'{id_type}'" in _LATEST_METADATA_SQL
         assert f"'{prefix}:'" in _LATEST_METADATA_SQL
+    assert f"'{MESH_PREFIX}:'" in _LATEST_METADATA_SQL
 
 
 def test_json_export_empty_string_not_null(loaded_con, tmp_path):
@@ -192,7 +200,43 @@ def test_json_export_empty_string_not_null(loaded_con, tmp_path):
     assert three["pub_date"] == "1998 Spring"
     assert three["issue"] == ""
     assert three["abstract"] == ""
+    # No <PublicationTypeList>: an empty list, like `identifiers`, never null.
+    assert three["publication_types"] == []
     assert all(value is not None for value in three.values())
+
+
+def test_publication_types_loaded_before_names_export_blank_and_warn(loaded_con, tmp_path):
+    """A database loaded before names were parsed has NULL names. It must still
+    export valid records -- and say loudly that a reload is needed, because
+    `"name": ""` on every type is otherwise indistinguishable from success.
+
+    The warning lives in `export_readiness`, not `export_json`, so `status` and
+    the Parquet export report it too.
+    """
+    from pubmed2db.export import export_json
+    from pubmed2db.status import export_readiness
+
+    loaded_con.execute("UPDATE publication_type SET type_name = NULL, position = NULL")
+    docs = _read_ndjson(export_json(loaded_con, tmp_path / "json"))
+
+    # Ordered by UI when no position is known, so the output stays stable.
+    assert docs["PMID:1001"]["publication_types"] == [
+        {"id": "MESH:D013485", "name": ""},
+        {"id": "MESH:D016420", "name": ""},
+        {"id": "MESH:D016422", "name": ""},
+    ]
+    error, warnings = export_readiness(loaded_con)
+    assert error is None
+    [warning] = [w for w in warnings if "publication-type names" in w]
+    assert warning.startswith("2 loaded file(s)")  # both fixtures carry types
+    assert "load --force" in warning
+
+
+def test_publication_types_with_names_do_not_warn(loaded_con):
+    from pubmed2db.status import export_readiness
+
+    _, warnings = export_readiness(loaded_con)
+    assert not [w for w in warnings if "publication-type names" in w]
 
 
 def test_json_sharding(loaded_con, tmp_path):
@@ -266,6 +310,12 @@ def test_parquet_latest_filters_versions(loaded_con, tmp_path):
     # Latest set: articles 1001 (v2) and 1003; only 1001 v2's single abstract section.
     assert n_article == 2
     assert n_abstract == 1
+
+    # The Parquet table carries names and PubMed's order too, not just UIs.
+    assert loaded_con.execute(
+        "SELECT type_name FROM read_parquet"
+        f"('{(out / 'publication_type.parquet').as_posix()}') ORDER BY position"
+    ).fetchall() == [("Letter",), ("Research Support, Non-U.S. Gov't",), ("Comment",)]
 
 
 def test_parquet_all_keeps_history(loaded_con, tmp_path):

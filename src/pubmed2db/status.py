@@ -47,6 +47,21 @@ def last_run(con: duckdb.DuckDBPyConnection, step: str) -> datetime | None:
     return row[0] if row else None
 
 
+def unnamed_publication_type_files(con: duckdb.DuckDBPyConnection) -> int:
+    """Loaded files whose publication types predate the name column.
+
+    A file loaded before names were parsed has a NULL ``type_name`` on every
+    row (``load`` replaces a file's rows wholesale, and a fresh parse never
+    writes NULL), so counting *files* answers "does this need a reload?"
+    without the latest-version join: one filtered pass over ``publication_type``,
+    which is cheap beside the export it guards. It counts superseded versions
+    too, which is right for ``export --format parquet --all``, which ships them.
+    """
+    return con.execute(
+        "SELECT count(DISTINCT source_file) FROM publication_type WHERE type_name IS NULL"
+    ).fetchone()[0]
+
+
 def export_readiness(con: duckdb.DuckDBPyConnection) -> tuple[str | None, list[str]]:
     """Whether ``export`` can run: ``(blocking error or None, warnings)``.
 
@@ -66,6 +81,15 @@ def export_readiness(con: duckdb.DuckDBPyConnection) -> tuple[str | None, list[s
         warnings.append(
             "journal table is empty, so journal names will be blank; "
             "run `pubmed2db journals` to populate them."
+        )
+    unnamed = unnamed_publication_type_files(con)
+    if unnamed:
+        # `"name": ""` on every type is valid JSON, so nothing downstream of
+        # here would notice; `validate` blames indexing revisions otherwise.
+        warnings.append(
+            f"{unnamed} loaded file(s) predate publication-type names, so their "
+            'types export as "name": "" (NULL type_name in Parquet); '
+            "run `pubmed2db load --force` to fill them."
         )
     return None, warnings
 

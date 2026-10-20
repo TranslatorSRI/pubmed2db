@@ -79,6 +79,37 @@ explains its part; this table is only a map.
   efetch side too. `_MONTH_ABBR` rather than `calendar.month_abbr`, which is
   `LC_TIME`-dependent — under a non-English locale the `month-format` check
   would have warned on every record.
+- **`publication_types` comes from our own parse, not upstream's
+  `type_mesh_ids`.** Upstream keeps only the MeSH UI and *sorts* it, losing the
+  name ("Review" is what consumers filter on) and PubMed's order. That order is
+  not alphabetical and equals `esummary`'s `pubtype` (8/8 sampled multi-type
+  records), so `publication_type.position` is what makes the export match NCBI.
+  `parse._publication_types` reads the exact path, and `validate` reuses it for
+  the efetch side, so the two cannot diverge. Two things to keep:
+  - **A NULL `type_name` means "loaded before names were parsed".**
+    `status.export_readiness` warns (so `status`, JSON and Parquet all say it),
+    because `"name": ""` on every type is valid JSON and otherwise silent. It
+    counts *files*, not latest-version rows: a file's rows are all named or all
+    NULL, so that answers "reload?" without a join against `_latest_snapshot`
+    on every export. `validate` reports the blank names under their own code
+    and compares such records on ids alone, so a stale database is not misread
+    as tens of thousands of indexing revisions.
+  - **The field is SOFT, under its own check.** NLM revises types when MEDLINE
+    indexing completes, so live efetch can be ahead of our last update file.
+    `validate._SOFT_GROUPS` gives every soft reason its own check and warning
+    code. Add a new soft field there, not to an existing group: a single shared
+    check reported every `pub_date` disagreement as `journal_mismatches` from
+    the day `pub_date` became soft.
+- **MeSH labels are PubMed's, per record, and never reconciled.** Every MeSH
+  UI/name pair (`mesh_heading`, `mesh_qualifier`, `publication_type`) is read
+  from the record's own XML and stored against `(pmid, source_file)`. Nothing
+  looks names up in the MeSH vocabulary, and there is no dimension keyed by
+  UI, so one UI can carry different names in different records, or in
+  different versions of the same record. This is deliberate: matching the
+  PubMed downloads exactly comes first. The database is expected to be deleted
+  and rebuilt from a fresh baseline once or twice a year (README, "Prefer a
+  fresh database at the year boundary"), and that re-issue resets any drift.
+  Don't add a MeSH descriptor table to "fix" the names.
 - **DuckDB writes the JSON, Python does not.** `export_json` is one
   `COPY (...) TO <dir> (FORMAT JSON, PER_THREAD_OUTPUT true)`, not a `fetchmany`
   loop calling `json.dumps` per row: the old loop spent ~80% of the export's
