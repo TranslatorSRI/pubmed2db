@@ -91,8 +91,10 @@ explains its part; this table is only a map.
     isn't the one this export wrote (a leftover from another build) or damage
     to a `--no-gzip` export.
   - **`metadata.json` is also the "finished" mark the between-runs scripts
-    key on.** `04-export.sbatch` refuses to run while one exists in
-    `EXPORT_DIR` (export deletes the previous shards first, #24), and
+    key on.** `export` refuses to run while one exists in its output
+    directory unless given `--overwrite` (it deletes the previous shards
+    first, #24; the check is in `export.py`, not the Slurm script, so a
+    hand-run export gets it too), and
     `scripts/archive_build.py` moves the directory to `data/builds/<build>/`
     named from its `corpus.build_name`. Two things there are deliberate:
     `data/manifests/` is copied and never moved, because the dated files are
@@ -108,8 +110,16 @@ explains its part; this table is only a map.
     it. Judged by `deleted_pmid` alone, the first run after every rebuild
     failed, wrote no manifest, and so failed again the next time. A drop PubMed
     still serves is the error; one it no longer serves is the
-    `drops_retired_upstream` warning. The lookup is capped at
-    `_DROP_CONFIRM_LIMIT`.
+    `drops_retired_upstream` warning, **but only on a database created after
+    the previous manifest** (`pubmed2db_metadata.created_at` against the
+    manifest's mtime). On a continuing database the same drop means an update
+    file was missed, and stays a `missed_deletions` error. The lookup is
+    `pmids_served`, on esummary rather than efetch, because esummary names
+    every ID it was asked about (a missing one with `"error"`): efetch's
+    recovering parser skips what it cannot read, which made a degraded
+    response read as "retired". It is capped at `_DROP_CONFIRM_LIMIT`, and a
+    run over the cap fails, so the cap has to sit well above a year's
+    deletions or the chain never recovers.
 
 - **Reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
   as-is, no upstream changes.** We take its file listings, its cache layout and

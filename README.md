@@ -111,8 +111,8 @@ data model version, the record count, the corpus cutoff (the last file loaded,
 and when NCBI posted it), and a SHA-256 per file. The same hashes go into
 `SHA256SUMS`, so `sha256sum -c SHA256SUMS` checks a download with no JSON parser.
 Both files are deleted when an export starts, so a directory holding a
-`metadata.json` is one whose export finished: the Slurm export step refuses to
-run over one until it has been archived (see
+`metadata.json` is one whose export finished: `export` refuses to run over one
+until it has been archived, unless given `--overwrite` (see
 [Between runs](#between-runs-what-to-keep-archive-and-delete)). `validate`
 checks the shards against `metadata.json`, and `status` prints the same cutoff.
 
@@ -370,12 +370,16 @@ A dropped PMID is fine if the database recorded a `DeleteCitation` for it, or
 if PubMed no longer serves it either (asked online, for the drops the database
 cannot explain). One that PubMed *still* serves is an **error**, since it means
 records were lost rather than retired. Drops PubMed has retired but no loaded
-file deleted are a **warning** (`drops_retired_upstream`): that is the expected
-result of the first run after a [fresh database](#load---force-or-a-fresh-database),
-which never loads the update files that carried those deletions, and on a
-continuing database it means an update file was missed. Offline, or with no
-database available, the drops can't be attributed: offline they stay errors,
-and without a database they downgrade to a warning to review.
+file deleted are a **warning** (`drops_retired_upstream`) only on a database
+created since the previous manifest: that is the expected result of the first
+run after a [fresh database](#load---force-or-a-fresh-database), which never
+loads the update files that carried those deletions. On a continuing database
+they are an **error** (`missed_deletions`), because it means an update file
+was skipped. Offline, or with no database available, the drops can't be
+attributed: offline they stay errors, and without a database they downgrade to
+a warning to review. More than 200,000 unexplained drops are not looked up and
+fail the run; the message says how to restart the manifest chain if that much
+really changed.
 
 The coverage check expects the export to be within ±5% of the live PubMed total
 (the 2026-07-30 full run came in at 99.90% of it). A **partial** export — from a
@@ -509,7 +513,7 @@ build. Everything the pipeline writes, and what to do with it:
 | `pubmed-archive/<year>/` | `fresh_database.py` | The kept XML; nothing reads it. `rm -r` it if you do not want it. |
 | `pubmed.duckdb` (+ `.wal`, `.tmp/`) | every command | Months: one database per baseline year, or until a major data-model bump. Deleted by `fresh_database.py`. |
 | `pubmed2db/serfile/`, `pubmed/J_Entrez.txt` | `journals` | Caches. The catalog prunes itself and `J_Entrez.txt` is refetched every run; nothing to do. |
-| `json/` | `export` | **One build.** `metadata.json` marks it finished; `scripts/archive_build.py` moves it to `builds/<build>/`, and the Slurm export step refuses to overwrite it until then. |
+| `json/` | `export` | **One build.** `metadata.json` marks it finished; `scripts/archive_build.py` moves it to `builds/<build>/`, and `export` refuses to overwrite it until then (`--overwrite`, or `EXPORT_OVERWRITE=1` under Slurm). |
 | `builds/<build>/` | `archive_build.py` | Until published (and after, as long as you like). Laid out as on stars: shards, `metadata.json` and `SHA256SUMS` at the top, `manifests/`, `logs/`, `source_file.csv`. |
 | `manifests/` | `validate` (via Slurm) | **Permanent, in place.** The dated PMID manifests and reports are the chain each `validate` diffs against. Never move or delete them; `archive_build.py` copies, not moves. |
 | `logs/` | `submit.sh` | Permanent. Step logs are copied into each build; `submit.log` is the record of every submission. |
