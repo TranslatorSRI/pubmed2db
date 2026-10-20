@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS article (
 
 -- Journal dimension, not versioned. Joined to articles on nlm_catalog_id.
 -- Titles, abbreviations and ISSNs come from NLM's J_Entrez.txt; start_year,
--- end_year and active from the serial catalog (serfile). docs/journal-catalog.md
+-- end_year and active from the serial catalog (serfile). docs/JournalCatalog.md
 -- says why it takes two sources.
 CREATE TABLE IF NOT EXISTS journal (
     nlm_catalog_id       TEXT PRIMARY KEY,
