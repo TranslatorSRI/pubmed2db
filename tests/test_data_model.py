@@ -1,6 +1,6 @@
 """The data model contract: its version, its shape, and what it promises.
 
-`docs/DataModel.md` is the consumer-facing description; these tests are what
+`docs/data-model/` is the consumer-facing description; these tests are what
 stops the database drifting away from it. A failure here usually means the
 shape changed — which is fine, but only together with a version bump.
 """
@@ -109,6 +109,45 @@ def test_an_older_minor_version_is_raised_to_ours(tmp_path, monkeypatch):
         assert datamodel.stored_version(con) == newer
     finally:
         con.close()
+
+
+def test_a_migration_missing_a_column_is_refused_and_not_stamped(tmp_path, monkeypatch):
+    """A minor version whose CREATE TABLE gained a column without the matching
+    ALTER TABLE leaves a migrated database short of it; `load` inserts by
+    position, so opening it must fail before the version is raised. Simulated
+    by code one minor ahead and a table whose columns differ from schema.sql's
+    (dropping one instead trips schema.sql's own COMMENT ON first)."""
+    path = tmp_path / "db.duckdb"
+    connect(path).close()
+    raw = duckdb.connect(str(path))
+    raw.execute("ALTER TABLE source_file ADD COLUMN stray INTEGER")
+    raw.close()
+    major, minor, _ = datamodel.parse_version(DATA_MODEL_VERSION)
+    monkeypatch.setattr(datamodel, "DATA_MODEL_VERSION", f"{major}.{minor + 1}.0")
+
+    with pytest.raises(IncompatibleDatabase, match="source_file"):
+        connect(path)
+    raw = duckdb.connect(str(path))
+    try:
+        assert datamodel.stored_version(raw) == DATA_MODEL_VERSION
+    finally:
+        raw.close()
+
+
+def test_a_read_only_open_writes_nothing(tmp_path):
+    """`validate` opens read-only, so it works on a read-only mount and never
+    rewrites a database's views or version."""
+    path = tmp_path / "db.duckdb"
+    connect(path).close()
+    path.chmod(0o444)
+    try:
+        con = connect(path, read_only=True)
+        try:
+            assert datamodel.stored_version(con) == DATA_MODEL_VERSION
+        finally:
+            con.close()
+    finally:
+        path.chmod(0o644)
 
 
 def test_cli_explains_an_incompatible_database(tmp_path):
@@ -239,7 +278,7 @@ GOLDEN_DIR = Path(__file__).parent / "data_model"
 _BUMP_HELP = (
     "The data model's shape changed. If that was deliberate, bump "
     "datamodel.DATA_MODEL_VERSION (minor if this only adds, major otherwise; "
-    "docs/DataModel.md says which), then write tests/data_model/<MAJOR.MINOR>.json "
+    "docs/data-model/README.md says which), then write tests/data_model/<MAJOR.MINOR>.json "
     "with `uv run python -m pubmed2db.datamodel --golden tests/data_model/<MAJOR.MINOR>.json` "
     "and regenerate the doc. Never overwrite an existing version's file."
 )
@@ -393,9 +432,12 @@ def test_closed_vocabularies_hold(edge_con, table, column, domain):
     assert _rows(edge_con, f"SELECT count(*) FROM {table} WHERE {column} IS NULL") == [(0,)]
 
 
-# --- docs/DataModel.md ------------------------------------------------------------
+# --- docs/data-model/ -------------------------------------------------------------
 
-DOC = Path(__file__).parent.parent / "docs" / "DataModel.md"
+DOCS = Path(__file__).parent.parent / "docs" / "data-model"
+DOC = DOCS / "README.md"
+CHANGELOG = DOCS / "Changelog.md"
+REFERENCE = DOCS / "Reference.md"
 
 
 def _doc_section(heading: str) -> str:
@@ -409,24 +451,22 @@ def test_the_docs_column_reference_is_generated_from_the_database(con):
     """The reference half of the doc is the database's own comments, rendered.
     Hand-editing it, or changing a comment without regenerating, fails here."""
     expected = datamodel.render_reference(datamodel.describe(con))
-    assert expected in DOC.read_text(), (
-        "docs/DataModel.md is stale: run "
-        "`uv run python -m pubmed2db.datamodel --docs docs/DataModel.md`"
+    assert expected in REFERENCE.read_text(), (
+        "docs/data-model/Reference.md is stale: run "
+        "`uv run python -m pubmed2db.datamodel --docs docs/data-model/Reference.md`"
     )
 
 
 def test_the_doc_names_only_columns_that_exist(con):
-    """Prose like `author.position` must name a real column. The changelog is
-    exempt: naming what no longer exists is its job."""
+    """Prose like `author.position` must name a real column. The changelog,
+    a separate file, is exempt: naming what no longer exists is its job."""
     import re
 
     columns = {
         (r["name"], c["name"]) for r in datamodel.describe(con) for c in r["columns"]
     }
     relations = {r["name"] for r in datamodel.describe(con)}
-    text = DOC.read_text()
-    prose = text[: text.index("\n## Changelog\n")]
-    named = set(re.findall(r"`([a-z_]+)\.([a-z_]+)`", prose))
+    named = set(re.findall(r"`([a-z_]+)\.([a-z_]+)`", DOC.read_text()))
     unknown = {pair for pair in named if pair[0] in relations and pair not in columns}
     assert not unknown
 
@@ -491,4 +531,28 @@ def test_patch_levels_neither_refuse_nor_downgrade(tmp_path, monkeypatch):
 def test_the_changelog_has_an_entry_for_this_version():
     """Every bump, patch included, tells consumers what changed and what each
     output's consumers must do; a version with no entry has told them nothing."""
-    assert f"\n### {DATA_MODEL_VERSION}\n" in _doc_section("Changelog")
+    assert f"\n## {DATA_MODEL_VERSION}\n" in CHANGELOG.read_text()
+
+
+def test_links_between_the_data_model_docs_resolve():
+    """The three files link each other by absolute URL on `main`, so the doc
+    reads the same without the repository. GitHub cannot check those links
+    before the branch merges; this does, against the files and their headings."""
+    import re
+
+    base = "https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/"
+
+    def anchors(path: Path) -> set[str]:
+        # GitHub's slug: lower-case, drop punctuation but `-` and `_`, spaces to `-`.
+        return {
+            re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+            for heading in re.findall(r"^#+ (.+)$", path.read_text(), re.M)
+        }
+
+    broken = []
+    for source in (DOC, CHANGELOG, REFERENCE):
+        for name, anchor in re.findall(re.escape(base) + r"([\w.]+)(?:#([\w-]+))?", source.read_text()):
+            target = DOCS / name
+            if not target.is_file() or (anchor and anchor not in anchors(target)):
+                broken.append(f"{source.name}: {name}#{anchor}")
+    assert not broken

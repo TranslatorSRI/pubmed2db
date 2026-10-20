@@ -179,7 +179,7 @@ def corpus_provenance(con: duckdb.DuckDBPyConnection) -> dict:
         SELECT
             arg_min(file_name, file_order_key),
             arg_max(file_name, file_order_key),
-            arg_max(published_at, file_order_key),
+            arg_max_null(published_at, file_order_key),
             count(*),
             max(year_yy) FILTER (WHERE kind = 'baseline'),
             sum(n_articles),

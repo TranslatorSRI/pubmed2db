@@ -198,7 +198,11 @@ def test_docs_spell_pmc_ids_with_the_exported_prefix():
     expected = f"{ID_PREFIXES['pmc']}:PMC"
     stale = [
         f"{name}: {m.group(0)}"
-        for name in ("README.md", "AGENTS.md", "FUTURE.md", "docs/DataModel.md")
+        # Not docs/data-model/Changelog.md: naming old spellings is its job.
+        for name in (
+            "README.md", "AGENTS.md", "FUTURE.md",
+            "docs/data-model/README.md", "docs/data-model/Reference.md",
+        )
         for m in re.finditer(r"\bPMC(?:ID)?:PMC", (root / name).read_text())
         if m.group(0) != expected
     ]
@@ -413,13 +417,17 @@ def test_exports_describe_themselves_in_metadata_json(loaded_con, tmp_path):
     for fmt, export in (
         ("ndjson", lambda out: export_json(loaded_con, out)),
         ("parquet-latest", lambda out: export_parquet(loaded_con, out)),
+        ("parquet-all", lambda out: export_parquet(loaded_con, out, latest=False)),
     ):
         out = tmp_path / fmt
         files = export(out)
         meta = json.loads((out / "metadata.json").read_text())
         assert meta["data_model_version"] == DATA_MODEL_VERSION
         assert meta["format"] == fmt
-        assert meta["records"] == 2  # PMIDs 1001 and 1003; 1002 was deleted
+        # PMIDs 1001 and 1003; 1002 was deleted. The same in every format, so
+        # the history export counts its versions separately.
+        assert meta["records"] == 2
+        assert meta.get("article_versions") == (4 if fmt == "parquet-all" else None)
         assert meta["corpus"]["cutoff_file"] == "pubmed25n0002.xml.gz"
         assert meta["database"]["data_model_version"] == DATA_MODEL_VERSION
         assert [(f["name"], f["sha256"]) for f in meta["files"]] == [
@@ -429,6 +437,25 @@ def test_exports_describe_themselves_in_metadata_json(loaded_con, tmp_path):
         assert (out / "SHA256SUMS").read_text().splitlines() == [
             f"{f['sha256']}  {f['name']}" for f in meta["files"]
         ]
+
+
+def test_a_failed_re_export_does_not_look_finished(loaded_con, tmp_path, monkeypatch):
+    """metadata.json marks a finished export, so a re-export removes the old one
+    before it writes anything: dying partway must not leave the mark behind."""
+    from pubmed2db import export
+
+    for run in (
+        lambda: export.export_json(loaded_con, tmp_path / "json"),
+        lambda: export.export_parquet(loaded_con, tmp_path / "parquet"),
+    ):
+        run()
+        with monkeypatch.context() as patch:
+            patch.setattr(export, "write_export_metadata", lambda *a, **k: 1 / 0)
+            with pytest.raises(ZeroDivisionError):
+                run()
+    for out in (tmp_path / "json", tmp_path / "parquet"):
+        assert not (out / "metadata.json").exists()
+        assert not (out / "SHA256SUMS").exists()
 
 
 def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog):

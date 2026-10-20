@@ -1228,7 +1228,11 @@ def test_export_metadata_catches_a_changed_or_missing_shard(loaded_con, tmp_path
 
     out = tmp_path / "json"
     shards = export_json(loaded_con, out, shards=1)
-    report = validate.run_validation(out, online=False)
+    # The hashes come from the structure read; a second pass over every shard
+    # would double validate's disk reads on the full corpus.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(validate, "file_sha256", lambda path: 1 / 0)
+        report = validate.run_validation(out, online=False)
     check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
     assert check["status"] == "pass", check
     assert report["data_model_version"] == "1.0.0"
@@ -1252,8 +1256,18 @@ def test_export_metadata_catches_a_changed_or_missing_shard(loaded_con, tmp_path
     assert "checksum differs" in check["observed"]
     assert "1 record(s) read, 2 exported" in check["observed"]
 
-    (out / "metadata.json").unlink()
+    # A hand-edited count is reported, not a crash.
+    metadata = json.loads((out / "metadata.json").read_text())
+    (out / "metadata.json").write_text(json.dumps({**metadata, "records": "2"}))
     report = validate.run_validation(out, online=False)
+    check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
+    assert check["status"] == "fail"
+    assert "not an integer" in check["observed"]
+
+    # No metadata.json: the export's version is unknown, even beside a 1.0
+    # database, which the shards may predate.
+    (out / "metadata.json").unlink()
+    report = validate.run_validation(out, online=False, con=loaded_con)
     check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
     assert check["status"] == "skip"
     assert report["data_model_version"] is None
