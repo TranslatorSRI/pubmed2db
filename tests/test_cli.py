@@ -359,6 +359,21 @@ def test_cli_update_survives_a_failed_journal_refresh(staged_download, monkeypat
     con.close()
 
 
+def test_cli_download_reports_failed_files(tmp_path, monkeypatch):
+    """Files that failed to download are an error, not a traceback: the step
+    exits non-zero (so an afterok chain stops) and names what to retry."""
+    from pubmed2db import download
+
+    def partial(con, **kwargs):
+        raise download.DownloadError("1 file(s) failed to download: pubmed25n0001.xml.gz")
+
+    monkeypatch.setattr(download, "sync", partial)
+    result = CliRunner().invoke(main, ["--db", str(tmp_path / "cli.duckdb"), "download"])
+    assert result.exit_code == 1
+    assert "Error: 1 file(s) failed to download: pubmed25n0001.xml.gz" in result.output
+    assert "Traceback" not in result.output
+
+
 #: The three group-level DuckDB knobs, and the environment variable each reads.
 #: `show_envvar=True` is what puts these names in `--help`; --memory-limit
 #: originally spelled its own out in prose instead, which is a second copy that

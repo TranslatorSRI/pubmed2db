@@ -229,6 +229,10 @@ have not been loaded yet, and warns if the journal dimension is empty (journal
 names would be blank). When in doubt, `uv run pubmed2db update` runs the whole pipeline
 (`download → journals → load`) in order.
 
+A PubMed file that fails to download (an HTTP error, or no data for 120 seconds)
+is skipped while the rest are still fetched; `download` then exits non-zero
+naming the failures, and a re-run fetches only those.
+
 `journals` reads two NLM sources: `J_Entrez.txt` (10 MB, refetched every run) for
 the titles and abbreviations the export ships, and the serial catalog
 (`serfilebase.YYYY.xml`, ~449 MB, plus that year's monthly updates — usually
