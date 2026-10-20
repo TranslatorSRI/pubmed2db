@@ -198,7 +198,7 @@ def test_docs_spell_pmc_ids_with_the_exported_prefix():
     expected = f"{ID_PREFIXES['pmc']}:PMC"
     stale = [
         f"{name}: {m.group(0)}"
-        for name in ("README.md", "AGENTS.md", "FUTURE.md", "docs/data-model.md")
+        for name in ("README.md", "AGENTS.md", "FUTURE.md", "docs/DataModel.md")
         for m in re.finditer(r"\bPMC(?:ID)?:PMC", (root / name).read_text())
         if m.group(0) != expected
     ]

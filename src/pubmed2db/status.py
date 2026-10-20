@@ -146,7 +146,7 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
 def build_name(cutoff_published_at: datetime | None) -> str | None:
     """A data build's name: the UTC date NCBI posted its cutoff file, as ``2026sep24``.
 
-    `docs/releasing.md` tags builds with this. The cutoff fixes what a build
+    `docs/Releases.md` tags builds with this. The cutoff fixes what a build
     contains, whereas the day its export happened to finish depends on how long
     the cluster queue took. Builds before data model 1.0 (``2026aug21``,
     ``2026sep26``) were named the old way. ``None`` when the posting time is

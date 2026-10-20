@@ -22,7 +22,7 @@ it, and both tags are cut from it.
 - **Y** for a release with substantial changes or improvements. This is the usual release, one per milestone (`v1.1`, `v1.2`).
 - **Z** for smaller improvements and fixes that shouldn't significantly change the output (`v1.1.1`).
 
-**The data model version** (`datamodel.DATA_MODEL_VERSION`, 1.0.0 since the build after `2026sep26`) is what consumers pin. It is standard semantic versioning, defined in [`docs/data-model.md`](./data-model.md#versioning-and-stability):
+**The data model version** (`datamodel.DATA_MODEL_VERSION`, 1.0.0 since the build after `2026sep26`) is what consumers pin. It is standard semantic versioning, defined in [`docs/DataModel.md`](./DataModel.md#versioning-and-stability):
 - **patch:** values fixed, shape and meaning unchanged;
 - **minor:** only additions;
 - **major:** anything renamed, removed or changed in meaning.
