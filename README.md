@@ -70,7 +70,8 @@ adds that much again — see [Re-running after a gap](#re-running-after-a-gap).
 # Download the baseline + update files to data/ (MD5-checked, incremental).
 uv run pubmed2db --data-dir data download
 
-# Refresh the journal dimension from the NLM Catalog (~890 MB on a first run).
+# Refresh the journal dimension from J_Entrez.txt and NLM's serial catalog
+# (~890 MB on a first run).
 uv run pubmed2db --data-dir data journals
 
 # Parse downloaded files into the database (full history).
