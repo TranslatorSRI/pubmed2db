@@ -170,7 +170,7 @@ def download(ctx: click.Context, baseline: bool, updates: bool, limit: int | Non
 @main.command()
 @click.pass_context
 def journals(ctx: click.Context) -> None:
-    """Refresh the journal dimension from the NLM Catalog."""
+    """Refresh the journal dimension from J_Entrez.txt and NLM's serial catalog."""
     from .load import load_journals
 
     with closing(_connect(ctx)) as con:
@@ -474,7 +474,7 @@ def update(
         results = sync(con, baseline=baseline, updates=updates, limit=limit, verify=verify)
         click.echo(f"Synced {len(results)} file(s).")
         # The journal refresh is the least critical of the three steps: don't
-        # let an NLM Catalog outage throw away a completed download and skip the
+        # let an NLM outage throw away a completed download and skip the
         # load. The previous journal dimension stays in place.
         try:
             n = load_journals(con)
