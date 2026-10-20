@@ -35,6 +35,19 @@ cd "${SLURM_SUBMIT_DIR:-$PWD}"
 source slurm/config.sh
 log_run_settings
 
+# export_json deletes the previous run's shards before it writes anything, so
+# running it over a finished export destroys the only local copy of that build
+# (#24). metadata.json is written last, so its presence is the finished mark:
+# archive the build first (scripts/archive_build.py moves it to
+# $DATA_DIR/builds/<build>/), or say explicitly that it should be replaced. A
+# partial export -- shards but no metadata.json -- is swept as before.
+if [[ -f "$EXPORT_DIR/metadata.json" && "${EXPORT_OVERWRITE:-0}" != "1" ]]; then
+    echo "error: $EXPORT_DIR holds a finished export ($EXPORT_DIR/metadata.json exists)." >&2
+    echo "Archive it first:  uv run python scripts/archive_build.py --data-dir $DATA_DIR" >&2
+    echo "or replace it:     EXPORT_OVERWRITE=1 ./slurm/submit.sh export" >&2
+    exit 64
+fi
+
 temp_args=()
 if [[ -n "$DUCKDB_TEMP_DIR" ]]; then
     # DuckDB errors rather than falling back if the spill directory is missing,

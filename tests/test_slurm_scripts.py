@@ -692,3 +692,44 @@ def test_export_and_manifest_dirs_follow_an_overridden_data_dir(sandbox: Path) -
     assert result.returncode == 0, result.stderr
     assert f"validate {elsewhere}/json" in result.stdout
     assert f"--manifest {elsewhere}/manifests/pmids-" in result.stdout
+
+
+def run_export(sandbox: Path, **env: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "slurm/04-export.sbatch"],
+        cwd=sandbox,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": f"{sandbox / 'bin'}:/usr/bin:/bin",
+            "HOME": str(sandbox),
+            "SLURM_SUBMIT_DIR": str(sandbox),
+            **env,
+        },
+    )
+
+
+def test_export_refuses_to_overwrite_a_finished_export(sandbox: Path) -> None:
+    """A finished export is the only local copy of its build; archive it first.
+
+    export_json deletes the previous shards before it writes (#24), and
+    metadata.json is written last, so its presence is what marks the export as
+    finished rather than a partial run worth sweeping.
+    """
+    (sandbox / "data" / "json" / "metadata.json").write_text("{}")
+    result = run_export(sandbox)
+    assert result.returncode == 64
+    assert "UV_ARGS" not in result.stdout
+    assert "archive_build.py" in result.stderr
+
+    result = run_export(sandbox, EXPORT_OVERWRITE="1")
+    assert result.returncode == 0, result.stderr
+    assert "UV_ARGS" in result.stdout
+
+
+def test_export_sweeps_a_partial_export_without_being_told(sandbox: Path) -> None:
+    """Shards without metadata.json are a run that died; nothing to protect."""
+    (sandbox / "data" / "json" / "pubmed_metadata_0.ndjson.gz").touch()
+    result = run_export(sandbox)
+    assert result.returncode == 0, result.stderr
+    assert "UV_ARGS" in result.stdout
