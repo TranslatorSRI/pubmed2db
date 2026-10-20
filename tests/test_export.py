@@ -205,17 +205,19 @@ def test_json_export_empty_string_not_null(loaded_con, tmp_path):
     assert all(value is not None for value in three.values())
 
 
-def test_publication_types_loaded_before_names_export_blank_and_warn(
-    loaded_con, tmp_path, caplog
-):
+def test_publication_types_loaded_before_names_export_blank_and_warn(loaded_con, tmp_path):
     """A database loaded before names were parsed has NULL names. It must still
     export valid records -- and say loudly that a reload is needed, because
-    `"name": ""` on every type is otherwise indistinguishable from success."""
+    `"name": ""` on every type is otherwise indistinguishable from success.
+
+    The warning lives in `export_readiness`, not `export_json`, so `status` and
+    the Parquet export report it too.
+    """
     from pubmed2db.export import export_json
+    from pubmed2db.status import export_readiness
 
     loaded_con.execute("UPDATE publication_type SET type_name = NULL, position = NULL")
-    with caplog.at_level("WARNING", logger="pubmed2db.export"):
-        docs = _read_ndjson(export_json(loaded_con, tmp_path / "json"))
+    docs = _read_ndjson(export_json(loaded_con, tmp_path / "json"))
 
     # Ordered by UI when no position is known, so the output stays stable.
     assert docs["PMID:1001"]["publication_types"] == [
@@ -223,16 +225,18 @@ def test_publication_types_loaded_before_names_export_blank_and_warn(
         {"id": "MESH:D016420", "name": ""},
         {"id": "MESH:D016422", "name": ""},
     ]
-    assert "3 publication type(s) have no name" in caplog.text
-    assert "load --force" in caplog.text
+    error, warnings = export_readiness(loaded_con)
+    assert error is None
+    [warning] = [w for w in warnings if "publication-type names" in w]
+    assert warning.startswith("2 loaded file(s)")  # both fixtures carry types
+    assert "load --force" in warning
 
 
-def test_publication_types_with_names_do_not_warn(loaded_con, tmp_path, caplog):
-    from pubmed2db.export import export_json
+def test_publication_types_with_names_do_not_warn(loaded_con):
+    from pubmed2db.status import export_readiness
 
-    with caplog.at_level("WARNING", logger="pubmed2db.export"):
-        export_json(loaded_con, tmp_path / "json")
-    assert "publication type(s) have no name" not in caplog.text
+    _, warnings = export_readiness(loaded_con)
+    assert not [w for w in warnings if "publication-type names" in w]
 
 
 def test_json_sharding(loaded_con, tmp_path):

@@ -8,7 +8,7 @@ Parquet (PubMed field names, for downloadable queries).
 Everything a user needs — commands, options, operational notes, the year-boundary
 rebuild — is in [`README.md`](./README.md); deferred work and known limitations
 are in [`FUTURE.md`](./FUTURE.md); how a release and its data build are cut is in
-[`docs/releasing.md`](./docs/releasing.md). This file is the map plus the handful
+[`docs/Releases.md`](./docs/Releases.md). This file is the map plus the handful
 of decisions you cannot see from the code.
 
 ## Layout
@@ -34,8 +34,9 @@ explains its part; this table is only a map.
 ## Decisions that are not visible from the code
 
 - **Reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
-  as-is, no upstream changes.** We take its bulk download and its `Article` data
-  model, but not its `iterate_process_*`/JSONL cache — DuckDB is our store, and
+  as-is, no upstream changes.** We take its file listings, its cache layout and
+  its `Article` data model, but not its transfers (see below) or its
+  `iterate_process_*`/JSONL cache — DuckDB is our store, and
   `parse.py` drives the XML itself for the fields that pipeline drops (its
   docstring says which). Pinned `<0.1` because we call private APIs
   (`_extract_article`, `_ensure_urls`).
@@ -87,14 +88,29 @@ explains its part; this table is only a map.
   `parse._publication_types` reads the exact path, and `validate` reuses it for
   the efetch side, so the two cannot diverge. Two things to keep:
   - **A NULL `type_name` means "loaded before names were parsed".**
-    `export_json` warns with the count, because `"name": ""` on every type is
-    valid JSON and otherwise silent.
+    `status.export_readiness` warns (so `status`, JSON and Parquet all say it),
+    because `"name": ""` on every type is valid JSON and otherwise silent. It
+    counts *files*, not latest-version rows: a file's rows are all named or all
+    NULL, so that answers "reload?" without a join against `_latest_snapshot`
+    on every export. `validate` reports the blank names under their own code
+    and compares such records on ids alone, so a stale database is not misread
+    as tens of thousands of indexing revisions.
   - **The field is SOFT, under its own check.** NLM revises types when MEDLINE
     indexing completes, so live efetch can be ahead of our last update file.
     `validate._SOFT_GROUPS` gives every soft reason its own check and warning
     code. Add a new soft field there, not to an existing group: a single shared
     check reported every `pub_date` disagreement as `journal_mismatches` from
     the day `pub_date` became soft.
+- **MeSH labels are PubMed's, per record, and never reconciled.** Every MeSH
+  UI/name pair (`mesh_heading`, `mesh_qualifier`, `publication_type`) is read
+  from the record's own XML and stored against `(pmid, source_file)`. Nothing
+  looks names up in the MeSH vocabulary, and there is no dimension keyed by
+  UI, so one UI can carry different names in different records, or in
+  different versions of the same record. This is deliberate: matching the
+  PubMed downloads exactly comes first. The database is expected to be deleted
+  and rebuilt from a fresh baseline once or twice a year (README, "Prefer a
+  fresh database at the year boundary"), and that re-issue resets any drift.
+  Don't add a MeSH descriptor table to "fix" the names.
 - **DuckDB writes the JSON, Python does not.** `export_json` is one
   `COPY (...) TO <dir> (FORMAT JSON, PER_THREAD_OUTPUT true)`, not a `fetchmany`
   loop calling `json.dumps` per row: the old loop spent ~80% of the export's
@@ -276,13 +292,18 @@ explains its part; this table is only a map.
   so a republished one keeps stale bytes unless its checksum moved); both are
   pinned by tests in `tests/test_db_download.py`, whose docstrings say what they
   hold in place.
-- **Nothing large is fetched with pystow's `ensure()`.** Its urllib backend sets
-  no timeout, and a stalled NLM connection hung a live `journals` run with the
-  socket still open; its requests backend never checks the status. Both
-  `download.py` and the serial catalog go through `util.download_file` (timeout,
-  `raise_for_status`, `.part` then rename), while pubmed-downloader and pystow
-  still supply the listing and the cache paths. The test fakes have no
-  `ensure()`, so a call creeping back fails.
+- **Nothing is fetched with pystow's `ensure()`, directly or through a
+  pubmed-downloader helper.** Its urllib backend sets no timeout, and a stalled
+  NLM connection hung a live `journals` run with the socket still open; its
+  requests backend never checks the status. The PubMed files, `J_Entrez.txt`
+  and the serial catalog all go through `util.download_file` (timeout,
+  `raise_for_status`, `.part` then rename, bytes written undecoded), while
+  pubmed-downloader and pystow still supply the listings and the cache paths.
+  `test_nothing_is_fetched_with_pystow_ensure` scans the package for any
+  `ensure`/`ensure_*` call, because the download fakes only catch one on the
+  module they replace. A file that fails is skipped and the sync carries on,
+  then `download` exits non-zero naming it; a SIGKILL skips `download_file`'s
+  cleanup, so `download` and the catalog prune each sweep stale `.part` files.
 
 - **The `#SBATCH` headers in `slurm/` are the only place an allocation is
   written down**, and `slurm/README.md` deliberately does not repeat them — it

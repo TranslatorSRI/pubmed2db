@@ -14,9 +14,10 @@ uses PubMed's own field names.
 
 ## How it works
 
-Downloading and XML parsing reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
-(bulk download of the PubMed baseline + daily update files, plus the rich `Article`
-data model). On top of it, pubmed2db adds:
+File listing and XML parsing reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
+(the PubMed baseline + daily update file listings and cache layout, plus the rich
+`Article` data model); the transfers themselves use pubmed2db's own download,
+which times out a stalled connection. On top of it, pubmed2db adds:
 
 - **MD5 tracking** — each `<file>.xml.gz.md5` sidecar is fetched and the checksum stored;
   a new or changed checksum triggers a (re)load. PubMed files are normally immutable, so
@@ -189,9 +190,11 @@ WHERE pt.type_name = 'Review';
 
 > **Names need a reload.** They are parsed at load time, and a database loaded
 > before this field existed stored only the MeSH ids. There, `export` writes
-> `"name": ""` for every type and logs a warning with the count until the corpus
-> is re-parsed. See [`load --force` or a fresh database?](#load---force-or-a-fresh-database);
-> `load --force` is enough, since the new columns are added automatically.
+> `"name": ""` for every type (a NULL `type_name` in Parquet) until the corpus is
+> re-parsed; `status` and `export` warn with the number of files affected, and
+> `validate` reports it as `publication_type_names_missing`. `load --force` is
+> enough, because this change only adds columns; see
+> [`load --force` or a fresh database?](#load---force-or-a-fresh-database).
 
 ### Identifiers in the JSON export
 
@@ -271,6 +274,10 @@ and `export` errors if nothing has been loaded, warns if some downloaded files
 have not been loaded yet, and warns if the journal dimension is empty (journal
 names would be blank). When in doubt, `uv run pubmed2db update` runs the whole pipeline
 (`download → journals → load`) in order.
+
+A PubMed file that fails to download (an HTTP error, or no data for 120 seconds)
+is skipped while the rest are still fetched; `download` then exits non-zero
+naming the failures, and a re-run fetches only those.
 
 `journals` reads two NLM sources: `J_Entrez.txt` (10 MB, refetched every run) for
 the titles and abbreviations the export ships, and the serial catalog
@@ -409,16 +416,18 @@ Two ways to apply one, and they are not interchangeable:
   time (about a day at corpus scale — see [`slurm/README.md`](./slurm/README.md#running-load-how-long---time)),
   no re-download, and the database keeps its history.
 - **A fresh database** (delete `<data-dir>/pubmed.duckdb`, then `journals` and
-  `load`) is the answer whenever the *schema* changed, and the safer default if
-  you are unsure.
+  `load`) is the answer whenever the schema *removed or redefined* something,
+  and the safer default if you are unsure.
 
 The asymmetry is that `schema.sql` only ever adds: `CREATE TABLE IF NOT EXISTS`
-plus explicit `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations. Nothing
-drops a table or a column, so a forced reload refreshes the rows of tables that
-still exist while a table removed from the schema keeps its rows forever —
-`reference_citation`, dropped during development, is exactly that case. A forced
-reload also leaves any pre-existing wrong rows in place for files it re-parses
-identically.
+plus explicit `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations. So a schema
+change that only adds — a new table, or a new column such as
+`publication_type.type_name` — is applied on the next connect and filled by
+`load --force`. Nothing drops a table or a column, though, so a forced reload
+refreshes the rows of tables that still exist while a table removed from the
+schema keeps its rows forever — `reference_citation`, dropped during
+development, is exactly that case. A forced reload also leaves any pre-existing
+wrong rows in place for files it re-parses identically.
 
 Rebuilding costs a full `load` and a `journals` refresh, and nothing else — the
 downloaded files are not touched — so unless the corpus is already loaded on a
@@ -478,7 +487,7 @@ still fetched, so a changed published checksum is always detected.
 
 ## Notes
 
-- We reuse `pubmed-downloader` **as-is** for downloading and XML parsing, but work
+- We reuse `pubmed-downloader` **as-is** for file listings and XML parsing, but work
   around three bugs in it (≤ 0.0.14), all tracked in [`FUTURE.md`](./FUTURE.md):
   `catalog.process_journal_overview()` requires `start_year`/`end_year` fields the
   real `J_Entrez.txt` does not contain, so it raises on live data (fixed by
@@ -494,6 +503,15 @@ still fetched, so a changed published checksum is always detected.
   and takes all 83 monthly deltas instead; that costs 2.52 GiB rather than 872 MiB
   and returns 80% duplicate records for the same coverage, which is why `journals`
   enumerates NLM's listing itself.
+- **MeSH names are PubMed's, not MeSH's.** The descriptor, qualifier and
+  publication-type names come from each record's own XML. They are never looked
+  up in the MeSH vocabulary or reconciled across records, so if PubMed names a
+  descriptor differently in two records, both names are kept. Each version of a
+  PMID keeps the names its file gave it, and exports read the latest version.
+  This keeps the data identical to PubMed's files. Any drift between older and
+  newer records is cleared by the
+  [year-boundary rebuild](#load---force-or-a-fresh-database), which reloads
+  every record from the new baseline.
 - This tool is intended to eventually replace the PubMed download in
   [Babel](https://github.com/NCATSTranslator/Babel) (`createcompendia/publications.py`).
 
@@ -537,7 +555,7 @@ Tests gzip the readable XML fixtures under `tests/fixtures/` into temporary
 (gitignored).
 
 Releases, and the dated data builds they produce, follow
-[`docs/releasing.md`](./docs/releasing.md).
+[`docs/Releases.md`](./docs/Releases.md).
 
 Helper scripts live in `scripts/` and document themselves — run one with
 `--help` for its usage and options. `benchmark_load.py` times parsing against

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pubmed_downloader.catalog as catalog
 
+import pubmed2db.load as load_mod
+
 # Captured at import time, before conftest's autouse fixture rebinds the module
 # attribute to keep the suite offline: the test below is the test *of* this
 # function, so it needs the real one.
@@ -34,7 +36,7 @@ def test_load_journals(con, monkeypatch):
     from pubmed2db.load import load_journals
 
     monkeypatch.setattr(
-        catalog, "ensure_journal_overview", lambda **_: FIXTURES / "J_Entrez_sample.txt"
+        load_mod, "_ensure_journal_overview", lambda: FIXTURES / "J_Entrez_sample.txt"
     )
     n = load_journals(con)
     assert n == 2
@@ -53,33 +55,42 @@ def test_load_journals_keeps_data_when_overview_is_empty(con, monkeypatch, tmp_p
     from pubmed2db.load import load_journals
 
     monkeypatch.setattr(
-        catalog, "ensure_journal_overview", lambda **_: FIXTURES / "J_Entrez_sample.txt"
+        load_mod, "_ensure_journal_overview", lambda: FIXTURES / "J_Entrez_sample.txt"
     )
     assert load_journals(con) == 2
 
     empty = tmp_path / "J_Entrez_error.txt"
     empty.write_text("<html>Service temporarily unavailable</html>\n")
-    monkeypatch.setattr(catalog, "ensure_journal_overview", lambda **_: empty)
+    monkeypatch.setattr(load_mod, "_ensure_journal_overview", lambda: empty)
 
     assert load_journals(con) == 0
     assert con.execute("SELECT count(*) FROM journal").fetchone()[0] == 2
 
 
-def test_load_journals_always_refetches(con, monkeypatch):
-    """pystow's ensure() skips a file that already exists, so without force=True
-    the journal dimension freezes at whatever the very first run downloaded --
-    while `status` keeps reporting a fresh refresh."""
+def test_load_journals_always_refetches(con, monkeypatch, tmp_path):
+    """A cached J_Entrez.txt is replaced on every run, or the journal dimension
+    freezes at whatever the very first run downloaded -- while `status` keeps
+    reporting a fresh refresh. And it goes through `download_file`, whose
+    timeout pystow's ensure() lacks: this step is the one a stall hung."""
     from pubmed2db.load import load_journals
 
+    class FakeModule:
+        def join(self, *, name):
+            return tmp_path / name
+
+    cached = tmp_path / "J_Entrez.txt"
+    cached.write_text("stale copy from an earlier run")
     calls = []
 
-    def fake_ensure(**kwargs):
-        calls.append(kwargs)
-        return FIXTURES / "J_Entrez_sample.txt"
+    def fake_download(url, path):
+        calls.append((url, path))
+        path.write_text((FIXTURES / "J_Entrez_sample.txt").read_text())
+        return {}
 
-    monkeypatch.setattr(catalog, "ensure_journal_overview", fake_ensure)
-    load_journals(con)
-    assert calls == [{"force": True}]
+    monkeypatch.setattr(catalog, "MODULE", FakeModule())
+    monkeypatch.setattr(load_mod, "download_file", fake_download)
+    assert load_journals(con) == 2
+    assert calls == [(catalog.J_ENTREZ_PATH, cached)]
 
 
 def test_catalog_year_rejects_marc_wildcards():
@@ -187,7 +198,7 @@ def test_load_journals_takes_years_from_the_catalog_and_titles_from_j_entrez(con
     from pubmed2db.load import load_journals
 
     monkeypatch.setattr(
-        catalog, "ensure_journal_overview", lambda **_: FIXTURES / "J_Entrez_sample.txt"
+        load_mod, "_ensure_journal_overview", lambda: FIXTURES / "J_Entrez_sample.txt"
     )
     monkeypatch.setattr(
         "pubmed2db.load._ensure_serfile", lambda: [FIXTURES / "serfile_sample.xml"]
@@ -212,7 +223,7 @@ def test_load_journals_keeps_journals_the_catalog_does_not_cover(con, monkeypatc
     from pubmed2db.load import load_journals
 
     monkeypatch.setattr(
-        catalog, "ensure_journal_overview", lambda **_: FIXTURES / "J_Entrez_sample.txt"
+        load_mod, "_ensure_journal_overview", lambda: FIXTURES / "J_Entrez_sample.txt"
     )
     empty = tmp_path / "empty_serfile.xml"
     empty.write_text("<?xml version='1.0'?><NLMCatalogRecordSet/>")
@@ -232,7 +243,7 @@ def test_load_journals_survives_an_unreachable_catalog(con, monkeypatch):
     from pubmed2db.load import load_journals
 
     monkeypatch.setattr(
-        catalog, "ensure_journal_overview", lambda **_: FIXTURES / "J_Entrez_sample.txt"
+        load_mod, "_ensure_journal_overview", lambda: FIXTURES / "J_Entrez_sample.txt"
     )
 
     def boom():
@@ -253,7 +264,7 @@ def test_load_journals_keeps_loaded_years_when_the_catalog_is_unreachable(con, m
     from pubmed2db.load import load_journals
 
     monkeypatch.setattr(
-        catalog, "ensure_journal_overview", lambda **_: FIXTURES / "J_Entrez_sample.txt"
+        load_mod, "_ensure_journal_overview", lambda: FIXTURES / "J_Entrez_sample.txt"
     )
     monkeypatch.setattr(
         "pubmed2db.load._ensure_serfile", lambda: [FIXTURES / "serfile_sample.xml"]
@@ -419,13 +430,15 @@ def test_serfile_head_falls_back_and_survives_network_trouble(monkeypatch):
     # requests.head does not follow redirects by default, and raise_for_status
     # passes a 3xx: without this the headers would describe the redirect.
     assert calls[0]["allow_redirects"] is True
+    # The same encoding download_file asks for, so the length is the file's.
+    assert calls[0]["headers"] == {"Accept-Encoding": "identity"}
 
     monkeypatch.setattr(
         load_mod.requests, "head", lambda *a, **k: Response({"Last-Modified": "Tue, 01 Sep 2026"})
     )
     assert load_mod._serfile_head("https://x") == ("Tue, 01 Sep 2026", None)
 
-    # A compressed length is not the size of the decoded file on disk.
+    # A length compressed on the fly need not match the next GET's.
     monkeypatch.setattr(
         load_mod.requests,
         "head",
@@ -523,6 +536,7 @@ def test_ensure_serfile_prunes_files_the_listing_no_longer_names(monkeypatch, tm
         "serfilebase.2025.xml.etag",
         "serfile.20251201.xml",
         "serfile.20251201.xml.part",
+        "serfilebase.2026.xml.part",  # a kept name's transfer a SIGKILL cut short
         "unrelated.txt",
     ):
         (tmp_path / name).write_text("x")
@@ -606,7 +620,7 @@ def test_load_journals_keeps_loaded_years_when_the_baseline_is_broken(con, monke
     from pubmed2db.load import load_journals
 
     monkeypatch.setattr(
-        catalog, "ensure_journal_overview", lambda **_: FIXTURES / "J_Entrez_sample.txt"
+        load_mod, "_ensure_journal_overview", lambda: FIXTURES / "J_Entrez_sample.txt"
     )
     monkeypatch.setattr(
         "pubmed2db.load._ensure_serfile", lambda: [FIXTURES / "serfile_sample.xml"]

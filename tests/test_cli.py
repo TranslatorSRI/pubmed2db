@@ -112,6 +112,19 @@ def test_cli_status_reports_pipeline_state(loaded_db):
     assert "Export:    ready" in result.output
 
 
+def test_cli_status_flags_publication_types_without_names(tmp_path, loaded_con):
+    """A database migrated in place but not reloaded is visible from `status`,
+    not only from a JSON export's log -- the Parquet path writes NULL names too."""
+    loaded_con.execute("UPDATE publication_type SET type_name = NULL")
+    loaded_con.close()
+
+    result = CliRunner().invoke(main, ["--db", str(tmp_path / "test.duckdb"), "status"])
+    assert result.exit_code == 0, result.output
+    assert "Export:    ready, but:" in result.output
+    assert "predate publication-type names" in result.output
+    assert "load --force" in result.output
+
+
 def test_cli_status_flags_a_second_baseline_year(loaded_db):
     """A new baseline year stores every PMID twice; `status` should say so."""
     from pubmed2db.db import connect, register_source_file
@@ -357,6 +370,21 @@ def test_cli_update_survives_a_failed_journal_refresh(staged_download, monkeypat
     con = connect(db_path)
     assert con.execute("SELECT count(*) FROM article").fetchone()[0] > 0
     con.close()
+
+
+def test_cli_download_reports_failed_files(tmp_path, monkeypatch):
+    """Files that failed to download are an error, not a traceback: the step
+    exits non-zero (so an afterok chain stops) and names what to retry."""
+    from pubmed2db import download
+
+    def partial(con, **kwargs):
+        raise download.DownloadError("1 file(s) failed to download: pubmed25n0001.xml.gz")
+
+    monkeypatch.setattr(download, "sync", partial)
+    result = CliRunner().invoke(main, ["--db", str(tmp_path / "cli.duckdb"), "download"])
+    assert result.exit_code == 1
+    assert "Error: 1 file(s) failed to download: pubmed25n0001.xml.gz" in result.output
+    assert "Traceback" not in result.output
 
 
 #: The three group-level DuckDB knobs, and the environment variable each reads.
