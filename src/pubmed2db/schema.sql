@@ -122,6 +122,8 @@ CREATE TABLE IF NOT EXISTS author_affiliation (
     ror         TEXT                            -- grounded ROR curie, if present
 );
 
+-- Names are verbatim from each record's XML, never reconciled across records
+-- (one UI can carry different names). See AGENTS.md, "MeSH labels".
 CREATE TABLE IF NOT EXISTS mesh_heading (
     pmid          BIGINT NOT NULL,
     source_file   TEXT   NOT NULL,

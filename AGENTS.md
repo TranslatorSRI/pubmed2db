@@ -100,6 +100,16 @@ explains its part; this table is only a map.
     code. Add a new soft field there, not to an existing group: a single shared
     check reported every `pub_date` disagreement as `journal_mismatches` from
     the day `pub_date` became soft.
+- **MeSH labels are PubMed's, per record, and never reconciled.** Every MeSH
+  UI/name pair (`mesh_heading`, `mesh_qualifier`, `publication_type`) is read
+  from the record's own XML and stored against `(pmid, source_file)`. Nothing
+  looks names up in the MeSH vocabulary, and there is no dimension keyed by
+  UI, so one UI can carry different names in different records, or in
+  different versions of the same record. This is deliberate: matching the
+  PubMed downloads exactly comes first. The database is expected to be deleted
+  and rebuilt from a fresh baseline once or twice a year (README, "Prefer a
+  fresh database at the year boundary"), and that re-issue resets any drift.
+  Don't add a MeSH descriptor table to "fix" the names.
 - **DuckDB writes the JSON, Python does not.** `export_json` is one
   `COPY (...) TO <dir> (FORMAT JSON, PER_THREAD_OUTPUT true)`, not a `fetchmany`
   loop calling `json.dumps` per row: the old loop spent ~80% of the export's

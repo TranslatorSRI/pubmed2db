@@ -501,6 +501,15 @@ still fetched, so a changed published checksum is always detected.
   and takes all 83 monthly deltas instead; that costs 2.52 GiB rather than 872 MiB
   and returns 80% duplicate records for the same coverage, which is why `journals`
   enumerates NLM's listing itself.
+- **MeSH names are PubMed's, not MeSH's.** The descriptor, qualifier and
+  publication-type names come from each record's own XML. They are never looked
+  up in the MeSH vocabulary or reconciled across records, so if PubMed names a
+  descriptor differently in two records, both names are kept. Each version of a
+  PMID keeps the names its file gave it, and exports read the latest version.
+  This keeps the data identical to PubMed's files. Any drift between older and
+  newer records is cleared by the
+  [year-boundary rebuild](#load---force-or-a-fresh-database), which reloads
+  every record from the new baseline.
 - This tool is intended to eventually replace the PubMed download in
   [Babel](https://github.com/NCATSTranslator/Babel) (`createcompendia/publications.py`).
 
