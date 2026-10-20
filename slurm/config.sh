@@ -11,13 +11,13 @@
 : "${DATA_DIR:=data}"
 
 # Where the JSON export is written, and where validate looks for it.
-: "${EXPORT_DIR:=data/json}"
+: "${EXPORT_DIR:=$DATA_DIR/json}"
 
 # Where PMID manifests accumulate. Deliberately *outside* EXPORT_DIR: one shared
 # name would mean a run overwrites the manifest it is diffing against, and a
 # manifest inside the export directory survives the next export while
 # describing the previous corpus. See slurm/README.md.
-: "${MANIFEST_DIR:=data/manifests}"
+: "${MANIFEST_DIR:=$DATA_DIR/manifests}"
 
 # JSON shard count. Since the COPY rewrite this is also the export's *thread*
 # count -- PER_THREAD_OUTPUT gives one file per writer thread, so export_json

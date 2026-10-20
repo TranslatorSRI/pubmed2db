@@ -677,3 +677,18 @@ def test_a_dry_run_writes_no_submit_log(tmp_path: Path) -> None:
     result = _submit_with_stub_sbatch(tmp_path, "--dry-run", "all")
     assert result.returncode == 0, result.stderr
     assert not (tmp_path / "data" / "logs" / "submit.log").exists()
+
+
+def test_export_and_manifest_dirs_follow_an_overridden_data_dir(sandbox: Path) -> None:
+    """EXPORT_DIR and MANIFEST_DIR default *under* DATA_DIR, not under ./data.
+
+    They were literal `data/json` and `data/manifests`, so
+    `DATA_DIR=/scratch/me ./slurm/submit.sh all` downloaded and loaded under
+    /scratch/me but exported into, and validated, ./data/json.
+    """
+    elsewhere = sandbox / "elsewhere"
+    (elsewhere / "json").mkdir(parents=True)
+    result = run_validate(sandbox, NCBI_EMAIL="me@example.org", DATA_DIR=str(elsewhere))
+    assert result.returncode == 0, result.stderr
+    assert f"validate {elsewhere}/json" in result.stdout
+    assert f"--manifest {elsewhere}/manifests/pmids-" in result.stdout
