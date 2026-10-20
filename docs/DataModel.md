@@ -465,8 +465,9 @@ methods are reusable.
 - **Check every XPath's scope.** pubmed2db reuses
   [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)'s parser,
   whose descendant (`.//`) searches reach into `<ReferenceList>`. That is how
-  one record gained 426 cited DOIs as its own. `article_id` and
-  `publication_type` use exact paths for that reason.
+  one record gained 426 cited DOIs as its own. `article_id` uses an exact path
+  for that reason. Reporting it upstream is
+  [#34](https://github.com/TranslatorSRI/pubmed2db/issues/34).
 - **Times are instants.** Every timestamp is `TIMESTAMPTZ`. The pre-1.0 naive
   timestamps held the loading machine's local time, so they could not be read
   without knowing that machine's zone.
