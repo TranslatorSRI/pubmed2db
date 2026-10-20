@@ -709,27 +709,16 @@ def run_export(sandbox: Path, **env: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_export_refuses_to_overwrite_a_finished_export(sandbox: Path) -> None:
-    """A finished export is the only local copy of its build; archive it first.
+def test_export_overwrites_only_when_told(sandbox: Path) -> None:
+    """EXPORT_OVERWRITE=1 is the one way a Slurm export replaces a finished one.
 
-    export_json deletes the previous shards before it writes (#24), and
-    metadata.json is written last, so its presence is what marks the export as
-    finished rather than a partial run worth sweeping.
+    The refusal itself is `export`'s (test_export.py), so a hand-run export
+    gets it too; the script only passes the flag through.
     """
-    (sandbox / "data" / "json" / "metadata.json").write_text("{}")
     result = run_export(sandbox)
-    assert result.returncode == 64
-    assert "UV_ARGS" not in result.stdout
-    assert "archive_build.py" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "--overwrite" not in result.stdout
 
     result = run_export(sandbox, EXPORT_OVERWRITE="1")
     assert result.returncode == 0, result.stderr
-    assert "UV_ARGS" in result.stdout
-
-
-def test_export_sweeps_a_partial_export_without_being_told(sandbox: Path) -> None:
-    """Shards without metadata.json are a run that died; nothing to protect."""
-    (sandbox / "data" / "json" / "pubmed_metadata_0.ndjson.gz").touch()
-    result = run_export(sandbox)
-    assert result.returncode == 0, result.stderr
-    assert "UV_ARGS" in result.stdout
+    assert "--overwrite" in result.stdout

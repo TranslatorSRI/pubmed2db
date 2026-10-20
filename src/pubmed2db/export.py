@@ -556,14 +556,25 @@ LEFT JOIN pts ON pts.pmid = la.pmid AND pts.source_file = la.source_file
 )
 
 
-def _remove_finished_mark(out_dir: Path) -> None:
+def _remove_finished_mark(out_dir: Path, overwrite: bool) -> None:
     """Delete a previous export's ``metadata.json`` and ``SHA256SUMS`` before writing.
 
     ``metadata.json`` is the "export finished" mark. Left in place, an export
     that dies after removing the old files would still look finished, with
     checksums for files that are gone or have been replaced. Remove the mark
     first, so a directory without one is one whose export never completed.
+
+    It is also why a finished export is refused unless ``overwrite``: this
+    export is about to delete that one's files, the only local copy of its
+    build until ``scripts/archive_build.py`` has moved it (#24). A partial
+    export, with no mark, is swept without asking. The check is here rather
+    than in ``04-export.sbatch`` so every caller gets it.
     """
+    if not overwrite and (out_dir / METADATA_FILE).exists():
+        raise FileExistsError(
+            f"{out_dir} holds a finished export ({METADATA_FILE} exists). Archive it "
+            "first (scripts/archive_build.py), or pass --overwrite to replace it."
+        )
     for name in (METADATA_FILE, CHECKSUMS_FILE):
         (out_dir / name).unlink(missing_ok=True)
 
@@ -637,6 +648,7 @@ def export_json(
     *,
     shards: int | None = None,
     gzip_output: bool = True,
+    overwrite: bool = False,
 ) -> list[Path]:
     """Export the latest version of every abstract as sharded NDJSON.
 
@@ -661,7 +673,7 @@ def export_json(
         raise ValueError("shards must be >= 1")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    _remove_finished_mark(out_dir)
+    _remove_finished_mark(out_dir, overwrite)
 
     # Clock the whole export, not just the COPY. Materializing the snapshot is a
     # window function over the entire `article` table -- the reason export memory
@@ -805,6 +817,7 @@ def export_parquet(
     out_dir: str | Path,
     *,
     latest: bool = True,
+    overwrite: bool = False,
 ) -> list[Path]:
     """Export the database to one Parquet file per table.
 
@@ -814,7 +827,7 @@ def export_parquet(
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    _remove_finished_mark(out_dir)
+    _remove_finished_mark(out_dir, overwrite)
     written: list[Path] = []
 
     tables = 1 + len(_VERSIONED_CHILDREN) + len(_OTHER_TABLES)

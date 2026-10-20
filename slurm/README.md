@@ -34,7 +34,7 @@ to export, which is the quickest way to confirm a step did what you expected.
 **Between runs**, archive the finished export first:
 `uv run python scripts/archive_build.py` moves `data/json` to
 `data/builds/<build>/` with its validation report, manifest and these logs.
-`04-export.sbatch` refuses to run while `data/json/metadata.json` exists
+`export` refuses to run while `data/json/metadata.json` exists
 (`EXPORT_OVERWRITE=1` to replace it anyway). The README's
 ["Between runs"](../README.md#between-runs-what-to-keep-archive-and-delete)
 has the full inventory of what persists.
