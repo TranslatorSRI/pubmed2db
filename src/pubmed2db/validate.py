@@ -34,6 +34,7 @@ from __future__ import annotations
 import difflib
 from collections import Counter
 import gzip
+import hashlib
 import io
 import json
 import logging
@@ -48,7 +49,6 @@ import duckdb
 import requests
 from lxml import etree
 
-from .datamodel import stored_version
 from .export import (
     ID_PREFIXES,
     JSON_FIELDS,
@@ -353,7 +353,8 @@ def find_shards(export_dir: Path) -> list[Path]:
 
 
 def check_export_metadata(
-    export_dir: Path, shards: list[Path], records_total: int, report: Report
+    export_dir: Path, shards: list[Path], records_total: int, report: Report,
+    sha256: dict[str, str] | None = None,
 ) -> dict | None:
     """Hold the directory to the ``metadata.json`` its export wrote; return that metadata.
 
@@ -363,7 +364,11 @@ def check_export_metadata(
     Damage is caught earlier and without this: a truncated or corrupted gzip
     shard fails ``shard-readable``. An export without the file (one from before
     data model 1.0) is a ``skip``: nothing to check against, not a failure.
+
+    ``sha256`` is the hashes :func:`check_structure` took while it read the
+    shards; a shard missing from it (one that read did not finish) is hashed here.
     """
+    sha256 = sha256 or {}
     path = export_dir / METADATA_FILE
     if not path.is_file():
         report.record(
@@ -375,6 +380,9 @@ def check_export_metadata(
         metadata = json.loads(path.read_text())
         listed = {f["name"]: f for f in metadata["files"]}
         expected_records = metadata["records"]
+        # `bool` is an `int`; neither a string nor `true` is a record count.
+        if not isinstance(expected_records, int) or isinstance(expected_records, bool):
+            raise TypeError(f"records is {expected_records!r}, not an integer")
     except (OSError, ValueError, KeyError, TypeError) as exc:
         report.record(
             "export-metadata", "structure", f"{METADATA_FILE} matches the shards", FAIL,
@@ -389,7 +397,10 @@ def check_export_metadata(
     problems += [f"{name}: present but not listed" for name in sorted(found - set(listed))]
     for shard in shards:
         entry = listed.get(shard.name)
-        if entry is not None and file_sha256(shard) != entry.get("sha256"):
+        if entry is None:
+            continue
+        digest = sha256.get(shard.name) or file_sha256(shard)
+        if digest != entry.get("sha256"):
             problems.append(f"{shard.name}: checksum differs from {METADATA_FILE}")
     if records_total != expected_records:
         problems.append(f"{records_total:,} record(s) read, {expected_records:,} exported")
@@ -585,6 +596,27 @@ class StructureResult:
     all_pmids: set[int] = field(default_factory=set)
     #: pmid -> exported document, for the seeded random sample only.
     sample: dict[int, dict] = field(default_factory=dict)
+    #: shard name -> SHA-256 of its bytes, taken during the same read so the
+    #: metadata check does not read every shard a second time. Absent for a
+    #: shard the read did not finish.
+    sha256: dict[str, str] = field(default_factory=dict)
+
+
+class _HashingReader(io.RawIOBase):
+    """Pass a binary file's bytes through, hashing them as they are read."""
+
+    def __init__(self, raw) -> None:
+        self._raw = raw
+        self.sha256 = hashlib.sha256()
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        n = self._raw.readinto(buffer)
+        if n:
+            self.sha256.update(memoryview(buffer)[:n])
+        return n
 
 
 def check_structure(
@@ -640,106 +672,115 @@ def check_structure(
         try:
             # The raw binary handle rather than `_open_text`, so the progress
             # line below can call `raw.tell()`: for a .gz shard that is the
-            # compressed offset, the scale `total_bytes` is measured in.
-            with path.open("rb") as raw, (
-                gzip.open(raw, "rt", encoding="utf-8") if path.name.endswith(".gz")
-                else io.TextIOWrapper(raw, encoding="utf-8")
-            ) as handle:
-                for lineno, line in enumerate(handle, start=1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        doc = json.loads(line)
-                    except json.JSONDecodeError as exc:
-                        malformed.append(
-                            {"shard": path.name, "line": lineno, "error": str(exc)}
+            # compressed offset, the scale `total_bytes` is measured in. The
+            # bytes are hashed on their way through, for check_export_metadata.
+            with path.open("rb", buffering=0) as raw:
+                hashing = _HashingReader(raw)
+                buffered = io.BufferedReader(hashing)
+                with (
+                    gzip.open(buffered, "rt", encoding="utf-8") if path.name.endswith(".gz")
+                    else io.TextIOWrapper(buffered, encoding="utf-8")
+                ) as handle:
+                    for lineno, line in enumerate(handle, start=1):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            doc = json.loads(line)
+                        except json.JSONDecodeError as exc:
+                            malformed.append(
+                                {"shard": path.name, "line": lineno, "error": str(exc)}
+                            )
+                            continue
+
+                        result.records_total += 1
+                        result.records_by_shard[path.name] = (
+                            result.records_by_shard.get(path.name, 0) + 1
                         )
-                        continue
 
-                    result.records_total += 1
-                    result.records_by_shard[path.name] = (
-                        result.records_by_shard.get(path.name, 0) + 1
-                    )
+                        keys = set(doc)
+                        for missing in EXPECTED_FIELDS - keys:
+                            missing_fields[missing] = missing_fields.get(missing, 0) + 1
+                        for extra in keys - EXPECTED_FIELDS:
+                            extra_fields[extra] = extra_fields.get(extra, 0) + 1
+                        for key, value in doc.items():
+                            if value is None:
+                                null_values.append({"shard": path.name, "line": lineno, "field": key})
 
-                    keys = set(doc)
-                    for missing in EXPECTED_FIELDS - keys:
-                        missing_fields[missing] = missing_fields.get(missing, 0) + 1
-                    for extra in keys - EXPECTED_FIELDS:
-                        extra_fields[extra] = extra_fields.get(extra, 0) + 1
-                    for key, value in doc.items():
-                        if value is None:
-                            null_values.append({"shard": path.name, "line": lineno, "field": key})
-
-                    match = _ID_RE.match(str(doc.get("id", "")))
-                    if match is None:
-                        invalid_ids.append(
-                            {"shard": path.name, "line": lineno, "id": doc.get("id")}
-                        )
-                        pmid = None
-                    else:
-                        pmid = int(match.group(1))
-                        if pmid in result.all_pmids and pmid not in duplicated:
-                            duplicated.add(pmid)
-                            duplicates.append(pmid)
-                        result.all_pmids.add(pmid)
-
-                    with_prefix.update(
-                        {c.split(":", 1)[0] for c in doc.get("identifiers") or []}
-                    )
-
-                    # Absent or null is already `record-fields`/`no-nulls`.
-                    types = doc.get("publication_types")
-                    if types is not None:
-                        if not _valid_publication_types(types):
-                            invalid_types.append({
-                                "shard": path.name, "line": lineno,
-                                "publication_types": _clip(json.dumps(types), 200),
-                            })
-                        elif any(t["name"] == "" for t in types):
-                            unnamed_types.append(
+                        match = _ID_RE.match(str(doc.get("id", "")))
+                        if match is None:
+                            invalid_ids.append(
                                 {"shard": path.name, "line": lineno, "id": doc.get("id")}
                             )
-
-                    if doc.get("pub_month") not in _VALID_MONTHS:
-                        invalid_months.append(
-                            {"shard": path.name, "line": lineno, "pub_month": doc.get("pub_month")}
-                        )
-
-                    # Reservoir sampling (Algorithm R), keyed by valid PMID.
-                    if pmid is not None:
-                        if len(reservoir) < sample_size:
-                            reservoir.append((pmid, doc))
+                            pmid = None
                         else:
-                            j = rng.randint(0, seen_in_shard)
-                            if j < sample_size:
-                                reservoir[j] = (pmid, doc)
-                        seen_in_shard += 1
+                            pmid = int(match.group(1))
+                            if pmid in result.all_pmids and pmid not in duplicated:
+                                duplicated.add(pmid)
+                                duplicates.append(pmid)
+                            result.all_pmids.add(pmid)
 
-                    # Reading the clock every record looks wasteful and is not:
-                    # `time.monotonic()` is ~25 ns against ~2.8 µs of per-record
-                    # work above (json.loads, the two set differences, the null
-                    # scan, the id regex, the reservoir draw), so gating on a
-                    # `records % N` counter instead saves ~1 s of a 7m 38s
-                    # corpus read. It would also cost the property the line is
-                    # for: progress is denominated in bytes, so a record-counted
-                    # gate would space the lines by record size rather than by
-                    # time, and these are meant to be a minute apart in a log.
-                    now = time.monotonic()
-                    if now - last_log >= _PROGRESS_INTERVAL_S and total_bytes:
-                        elapsed = now - start
-                        read = bytes_done + raw.tell()
-                        current = current_rss_gib()
-                        logger.info(
-                            "progress: %s record(s), shard %d/%d, %.1f%% of %.1f GiB "
-                            "read · elapsed %s · RSS %s · ~%s remaining",
-                            f"{result.records_total:,}", shard_index + 1, len(shards),
-                            100 * read / total_bytes, total_bytes / 1024**3,
-                            fmt_duration(elapsed),
-                            "n/a" if current is None else f"{current:.1f} GiB",
-                            eta_str(elapsed, read, total_bytes - read),
+                        with_prefix.update(
+                            {c.split(":", 1)[0] for c in doc.get("identifiers") or []}
                         )
-                        last_log = now
+
+                        # Absent or null is already `record-fields`/`no-nulls`.
+                        types = doc.get("publication_types")
+                        if types is not None:
+                            if not _valid_publication_types(types):
+                                invalid_types.append({
+                                    "shard": path.name, "line": lineno,
+                                    "publication_types": _clip(json.dumps(types), 200),
+                                })
+                            elif any(t["name"] == "" for t in types):
+                                unnamed_types.append(
+                                    {"shard": path.name, "line": lineno, "id": doc.get("id")}
+                                )
+
+                        if doc.get("pub_month") not in _VALID_MONTHS:
+                            invalid_months.append(
+                                {"shard": path.name, "line": lineno, "pub_month": doc.get("pub_month")}
+                            )
+
+                        # Reservoir sampling (Algorithm R), keyed by valid PMID.
+                        if pmid is not None:
+                            if len(reservoir) < sample_size:
+                                reservoir.append((pmid, doc))
+                            else:
+                                j = rng.randint(0, seen_in_shard)
+                                if j < sample_size:
+                                    reservoir[j] = (pmid, doc)
+                            seen_in_shard += 1
+
+                        # Reading the clock every record looks wasteful and is not:
+                        # `time.monotonic()` is ~25 ns against ~2.8 µs of per-record
+                        # work above (json.loads, the two set differences, the null
+                        # scan, the id regex, the reservoir draw), so gating on a
+                        # `records % N` counter instead saves ~1 s of a 7m 38s
+                        # corpus read. It would also cost the property the line is
+                        # for: progress is denominated in bytes, so a record-counted
+                        # gate would space the lines by record size rather than by
+                        # time, and these are meant to be a minute apart in a log.
+                        now = time.monotonic()
+                        if now - last_log >= _PROGRESS_INTERVAL_S and total_bytes:
+                            elapsed = now - start
+                            read = bytes_done + raw.tell()
+                            current = current_rss_gib()
+                            logger.info(
+                                "progress: %s record(s), shard %d/%d, %.1f%% of %.1f GiB "
+                                "read · elapsed %s · RSS %s · ~%s remaining",
+                                f"{result.records_total:,}", shard_index + 1, len(shards),
+                                100 * read / total_bytes, total_bytes / 1024**3,
+                                fmt_duration(elapsed),
+                                "n/a" if current is None else f"{current:.1f} GiB",
+                                eta_str(elapsed, read, total_bytes - read),
+                            )
+                            last_log = now
+                    # Whatever the decoder left unread (trailing padding) is
+                    # still part of the file its checksum covers.
+                    while hashing.read(1 << 20):
+                        pass
+                result.sha256[path.name] = hashing.sha256.hexdigest()
         except (OSError, EOFError) as exc:
             unreadable.append({"shard": path.name, "error": str(exc)})
 
@@ -1693,7 +1734,7 @@ def run_validation(
     )
 
     export_metadata = check_export_metadata(
-        export_dir, shards, structure.records_total, report
+        export_dir, shards, structure.records_total, report, structure.sha256
     )
 
     logger.info("checking coverage...")
@@ -1759,12 +1800,12 @@ def run_validation(
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "duration": fmt_duration(time.monotonic() - start),
         "peak_rss_gib": round(peak_rss_gib(), 3),
-        # The data model the export follows, from its metadata.json, else from
-        # the database it was validated alongside. A consumer checks the major.
+        # The data model the export follows, from its metadata.json. A consumer
+        # checks the major. Never the database's: with no metadata.json the
+        # shards may predate it (a pre-1.0 export beside a rebuilt database),
+        # and borrowing its version would call them compatible.
         "data_model_version": (
-            export_metadata["data_model_version"] if export_metadata
-            else stored_version(con) if con is not None
-            else None
+            export_metadata.get("data_model_version") if export_metadata else None
         ),
         "inputs": {
             "export_dir": str(export_dir),
