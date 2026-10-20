@@ -111,7 +111,9 @@ data model version, the record count, the corpus cutoff (the last file loaded,
 and when NCBI posted it), and a SHA-256 per file. The same hashes go into
 `SHA256SUMS`, so `sha256sum -c SHA256SUMS` checks a download with no JSON parser.
 `validate` checks the shards against `metadata.json`, and `status` prints the
-same cutoff.
+same cutoff. Its presence is also what marks an export as *finished*: the Slurm
+export step refuses to run over one until it has been archived (see
+[Between runs](#between-runs-what-to-keep-archive-and-delete)).
 
 ### How the JSON export is written
 
@@ -494,6 +496,49 @@ costs no local I/O. Corruption happens at download time, which stays covered.
 `--no-verify` skips the hashing entirely; either way the `.md5` sidecars are
 still fetched, so a changed published checksum is always detected.
 
+### Between runs: what to keep, archive and delete
+
+The data directory mixes three lifetimes: files that stay for the life of the
+machine, a database that lives for months, and an export that belongs to one
+build. Everything the pipeline writes, and what to do with it:
+
+| Path (under `--data-dir`) | Written by | Lifetime |
+| --- | --- | --- |
+| `pubmed/baseline/`, `pubmed/updates/` | `download` | Keep. `load` parses every `*.xml.gz` here, so a superseded baseline year must *leave* these two directories before a fresh database is loaded: `scripts/fresh_database.py` moves it to `pubmed-archive/<year>/`. |
+| `pubmed-archive/<year>/` | `fresh_database.py` | The kept XML; nothing reads it. `rm -r` it if you do not want it. |
+| `pubmed.duckdb` (+ `.wal`, `.tmp/`) | every command | Months: one database per baseline year, or until a major data-model bump. Deleted by `fresh_database.py`. |
+| `pubmed2db/serfile/`, `pubmed/J_Entrez.txt` | `journals` | Caches. The catalog prunes itself and `J_Entrez.txt` is refetched every run; nothing to do. |
+| `json/` | `export` | **One build.** `metadata.json` marks it finished; `scripts/archive_build.py` moves it to `builds/<build>/`, and the Slurm export step refuses to overwrite it until then. |
+| `builds/<build>/` | `archive_build.py` | Until published (and after, as long as you like). Laid out as on stars: shards, `metadata.json` and `SHA256SUMS` at the top, `manifests/`, `logs/`, `source_file.csv`. |
+| `manifests/` | `validate` (via Slurm) | **Permanent, in place.** The dated PMID manifests and reports are the chain each `validate` diffs against. Never move or delete them; `archive_build.py` copies, not moves. |
+| `logs/` | `submit.sh` | Permanent. Step logs are copied into each build; `submit.log` is the record of every submission. |
+| `ncbi/`, `README.md` | pystow | Noise; ignore. |
+
+**Before a new run on the same database**
+
+1. If `data/json/metadata.json` exists, archive the build:
+   `uv run python scripts/archive_build.py`. It refuses an export that has not
+   been validated, or whose validation failed.
+2. If you publish the database as well as the export, copy
+   `data/pubmed.duckdb` now — the next `download`/`load` changes it. The script
+   prints both `rsync` lines.
+3. Nothing else. Manifests and logs accumulate by design, and `download`,
+   `journals` and `load` are incremental.
+
+**Before a new run on a fresh database** (a new baseline year, or a major
+data-model bump)
+
+1. Steps 1–2 above.
+2. `uv run python scripts/fresh_database.py`. It shows what it will do and asks:
+   move the superseded year's XML to `data/pubmed-archive/<year>/`, delete the
+   database. It leaves `manifests/`, `logs/`, `builds/` and the catalog cache.
+3. `./slurm/submit.sh all` — a fresh database needs `journals` too.
+4. Expect the first `validate` to warn `drops_retired_upstream`: the PMIDs
+   PubMed retired between the previous build and the new baseline, which the
+   new database never saw a `DeleteCitation` for. Read the list in the dated
+   report; an *error* (`unexplained_drops`) means PubMed still serves a PMID the
+   export lost.
+
 ## Notes
 
 - We reuse `pubmed-downloader` **as-is** for file listings and XML parsing, but work
@@ -569,4 +614,6 @@ Releases, and the dated data builds they produce, follow
 Helper scripts live in `scripts/` and document themselves — run one with
 `--help` for its usage and options. `benchmark_load.py` times parsing against
 insertion for a given file, which is where [`slurm/README.md`](slurm/README.md)'s
-memory and wall-time figures come from.
+memory and wall-time figures come from; `archive_build.py` and
+`fresh_database.py` are the two steps of
+[Between runs](#between-runs-what-to-keep-archive-and-delete).

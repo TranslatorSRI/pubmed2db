@@ -62,8 +62,9 @@ Builds made by the Translator team are published at
 for its cutoff: the UTC date NCBI posted the last file it loaded
 (`metadata.json`'s `corpus.build_name`). The two pre-1.0 builds, `2026aug21`
 and `2026sep26`, were named for the day their export finished. The directory holds the
-database, the NDJSON shards and a `manifests/` directory with the validation
-report and a sorted list of the build's PMIDs.
+database, the NDJSON shards (with their `metadata.json` and `SHA256SUMS` from
+data model 1.0 on) and a `manifests/` directory with the validation report and
+a sorted list of the build's PMIDs.
 
 ### The size of a build
 

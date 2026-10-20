@@ -87,6 +87,26 @@ explains its part; this table is only a map.
     the CRC (measured 2026-10-19). Only a hash catches an intact shard that
     isn't the one this export wrote (a leftover from another build) or damage
     to a `--no-gzip` export.
+  - **`metadata.json` is also the "finished" mark the between-runs scripts
+    key on.** `04-export.sbatch` refuses to run while one exists in
+    `EXPORT_DIR` (export deletes the previous shards first, #24), and
+    `scripts/archive_build.py` moves the directory to `data/builds/<build>/`
+    named from its `corpus.build_name`. Two things there are deliberate:
+    `data/manifests/` is copied and never moved, because the dated files are
+    the chain every `validate` diffs against; and `scripts/fresh_database.py`
+    *moves* a superseded baseline year out of `data/pubmed/{baseline,updates}`
+    rather than deleting it, because `load` globs those two directories
+    (registered or not) and the operator keeps the XML. `source_file.csv` in
+    each build is the only surviving record of the MD5 NCBI published per
+    file; no sidecars are kept on disk.
+  - **`validate` asks PubMed about drops the database cannot explain**
+    (`check_drops_since`), because a database built fresh from a new baseline
+    never loaded the update files that carried the deletions published before
+    it. Judged by `deleted_pmid` alone, the first run after every rebuild
+    failed, wrote no manifest, and so failed again the next time. A drop PubMed
+    still serves is the error; one it no longer serves is the
+    `drops_retired_upstream` warning. The lookup is capped at
+    `_DROP_CONFIRM_LIMIT`.
 
 - **Reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
   as-is, no upstream changes.** We take its file listings, its cache layout and
