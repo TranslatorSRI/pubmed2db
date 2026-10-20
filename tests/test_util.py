@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import urllib3
 
@@ -187,3 +189,27 @@ def test_download_file_keeps_the_bytes_as_served(monkeypatch, tmp_path):
     assert target.read_bytes() == published
     # And a well-behaved server is asked not to compress in transit at all.
     assert sent == [{"Accept-Encoding": "identity"}]
+
+
+def test_nothing_is_fetched_with_pystow_ensure():
+    """Every download goes through `download_file`: pystow's ``ensure()`` has no
+    timeout, and a stall in it hung a live `journals` run. The download tests'
+    fakes have no ``ensure()``, but that only catches a call on the module they
+    stand in for -- not one through a pubmed-downloader helper such as
+    ``ensure_journal_overview``, which is how J_Entrez.txt was once fetched. So
+    look for any ``ensure``/``ensure_*`` call in the package itself."""
+    import ast
+
+    import pubmed2db
+
+    allowed = {"ensure_object"}  # click's Context.ensure_object, not a download
+    offenders = []
+    for path in sorted(Path(pubmed2db.__file__).parent.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if (name == "ensure" or name.startswith("ensure_")) and name not in allowed:
+                offenders.append(f"{path.name}:{node.lineno} {name}()")
+    assert offenders == []

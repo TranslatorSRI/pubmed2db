@@ -13,9 +13,10 @@ own field names.
 
 ## How it works
 
-Downloading and XML parsing reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
-(bulk download of the PubMed baseline + daily update files, plus the rich `Article`
-data model). On top of it, pubmed2db adds:
+File listing and XML parsing reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
+(the PubMed baseline + daily update file listings and cache layout, plus the rich
+`Article` data model); the transfers themselves use pubmed2db's own download,
+which times out a stalled connection. On top of it, pubmed2db adds:
 
 - **MD5 tracking** — each `<file>.xml.gz.md5` sidecar is fetched and the checksum stored;
   a new or changed checksum triggers a (re)load. PubMed files are normally immutable, so
@@ -437,7 +438,7 @@ still fetched, so a changed published checksum is always detected.
 
 ## Notes
 
-- We reuse `pubmed-downloader` **as-is** for downloading and XML parsing, but work
+- We reuse `pubmed-downloader` **as-is** for file listings and XML parsing, but work
   around three bugs in it (≤ 0.0.14), all tracked in [`FUTURE.md`](./FUTURE.md):
   `catalog.process_journal_overview()` requires `start_year`/`end_year` fields the
   real `J_Entrez.txt` does not contain, so it raises on live data (fixed by

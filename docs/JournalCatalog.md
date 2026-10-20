@@ -275,8 +275,9 @@ relies on NCBI publishing `<file>.xml.gz.md5`, does not transfer. What the serve
 does offer is a stable `ETag` (and `Last-Modified`), so each cached file gets an
 `.etag` sidecar and a HEAD per run decides whether it moved.
 
-That matters because pystow's `ensure()` skips by file *name* — the hazard
-`AGENTS.md` already records for upstream's `ensure()`. Without a validator, a
+That matters because a cache that skips a file already present by *name*, as
+pystow's `ensure()` does, never notices a republished one; pubmed2db's PubMed
+download catches it through the published `.md5`. Without a validator, a
 republished `serfile.YYYYMMDD.xml` would keep its stale bytes indefinitely, and
 re-fetching ~890 MB every run to avoid that is obviously out. A failed HEAD
 returns `None` and leaves the cached copy alone, so a network blip costs nothing.
