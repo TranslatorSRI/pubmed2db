@@ -7,8 +7,7 @@ version scheme is in
 
 ## 1.0.0
 
-The first versioned data model, first built after `2026sep26`. The
-`2026aug21` and `2026sep26` builds predate it.
+The first versioned data model, first built after `2026sep26`.
 
 | Output | What a consumer must do |
 | --- | --- |
@@ -29,3 +28,11 @@ The first versioned data model, first built after `2026sep26`. The
 | `author_affiliation.ror` | dropped (always NULL) |
 | naive `TIMESTAMP`s in the loading machine's local time | `TIMESTAMPTZ` |
 | — | `source_file.published_at`, and the `latest_<table>` views |
+
+## Pre-1.0
+
+The `2026aug21` and `2026sep26` builds predate the data model. They carry no
+version: no `pubmed2db_metadata` table and no `metadata.json`. Current
+pubmed2db refuses their databases, and their tables differ from 1.0 in the ways
+[listed under 1.0.0](#100). Unlike later builds, they are named for the day
+their export finished rather than for their cutoff.
