@@ -44,8 +44,8 @@ on, and a copy left here rots into a contradiction of the code.
   "efetch returns nothing" as deleted. Entrez `esummary` distinguishes deleted
   vs. merged/moved records; use it to label merges explicitly rather than
   surfacing them as "still live → review manually".
-- **Semantic field tolerance** (#31). Journal name/abbrev come from the NLM
-  Catalog dimension, not the article XML, so they are compared as *soft*
+- **Semantic field tolerance** (#31). Journal name/abbrev come from the journal
+  dimension (`J_Entrez.txt`), not the article XML, so they are compared as *soft*
   (warning-only) fields; revisit if a stricter journal cross-check is wanted.
   Worth knowing before that revisit: `journal.title` is `J_Entrez.txt`'s
   `JournalTitle`, which is byte-identical to what `esummary` and `efetch` serve

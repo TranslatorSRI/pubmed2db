@@ -18,7 +18,7 @@ from pubmed2db.db import connect
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-#: A small NLM Catalog journal dimension matching the fixture articles.
+#: A small journal dimension matching the fixture articles.
 SAMPLE_JOURNALS = [
     ("0410462", "Nature", "Nature", 1869, None, True),
     ("9999991", "Journal of Examples", "J Examples", 1990, None, True),

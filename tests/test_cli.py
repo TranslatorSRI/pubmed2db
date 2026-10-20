@@ -350,7 +350,7 @@ def test_cli_update_survives_a_failed_journal_refresh(staged_download, monkeypat
     monkeypatch.setattr(download, "sync", lambda con, **kwargs: [])
 
     def boom(con):
-        raise RuntimeError("NLM Catalog unreachable")
+        raise RuntimeError("NLM unreachable")
 
     monkeypatch.setattr(load, "load_journals", boom)
 
