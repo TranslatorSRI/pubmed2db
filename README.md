@@ -32,7 +32,7 @@ data model). On top of it, pubmed2db adds:
 - **Journal names** — the journal title and abbreviations come from NLM's
   `J_Entrez.txt` (`uv run pubmed2db journals`) and are joined on `nlm_catalog_id`;
   publication years come from NLM's serial catalog. Two sources, deliberately:
-  see [`docs/journal-catalog.md`](./docs/journal-catalog.md).
+  see [`docs/JournalCatalog.md`](./docs/JournalCatalog.md).
 
 ## Setup
 
@@ -454,7 +454,7 @@ still fetched, so a changed published checksum is always detected.
 
 See [`AGENTS.md`](./AGENTS.md) for a map of the source and the design decisions
 behind it, [`FUTURE.md`](./FUTURE.md) for known limitations and planned work, and
-[`docs/journal-catalog.md`](./docs/journal-catalog.md) for why the journal
+[`docs/JournalCatalog.md`](./docs/JournalCatalog.md) for why the journal
 dimension reads from two NLM sources rather than one.
 
 ## Information on running this pipeline
