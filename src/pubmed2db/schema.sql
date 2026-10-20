@@ -28,7 +28,10 @@
 -- here does *not* appear in an existing database: it needs its own
 -- `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` line right below the table, placed
 -- so that a fresh and a migrated database end up with the same column order
--- (`load` inserts BY POSITION). Adding a column is a minor version bump;
+-- (`load` inserts BY POSITION). A forgotten ALTER fails the open rather than
+-- the load: `datamodel.check_migrated` compares a migrated database's tables
+-- with a fresh one's before raising its version. Adding a column is a minor
+-- version bump;
 -- renaming or dropping one is a major bump, which `datamodel.check_compatible`
 -- answers by refusing the old database rather than migrating it. Databases from
 -- before 1.0 are refused the same way. Rows loaded before a column was added
