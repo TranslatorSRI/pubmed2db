@@ -382,7 +382,8 @@ fetch them that way is [#27](https://github.com/TranslatorSRI/pubmed2db/issues/2
 
 **PubMed elements never read.** Nothing stores:
 - `ReferenceList`: the citation graph. One article carries ~444 references, so
-  it would be the largest table by far, and no consumer has asked for it.
+  it would be the largest table by far, and no consumer has asked for it
+  ([#71](https://github.com/TranslatorSRI/pubmed2db/issues/71)).
 - `KeywordList`, `ChemicalList`, `SupplMeshList`, `CommentsCorrectionsList`
   (errata and retraction notices), `DataBankList`
   ([#20](https://github.com/TranslatorSRI/pubmed2db/issues/20)), `GeneSymbolList`,
