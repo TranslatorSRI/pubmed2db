@@ -1,9 +1,10 @@
 # Releasing pubmed2db
 
-Every release pairs a **code version** (`v1.1`) with the **data build** it
+Every release pairs a **code version** (`v1.1.0`) with the **data build** it
 produced (`2026sep26`). The release branch is where the two meet: the cluster
 runs from it, the bugs that run turns up are fixed on it or in the PRs feeding
-it, and both tags are cut from it.
+it, and the data-build tag is cut from it. The version tag is cut from `main`
+once the release PR has merged.
 
 ## Names
 
@@ -13,12 +14,12 @@ it, and both tags are cut from it.
 | Release branch | `pubmed2db-v<version>` | `pubmed2db-v1.1` |
 | Release PR | `pubmed2db v<version>`, stacked on the last feature PR | "pubmed2db v1.1" |
 | Data-build tag | the day the export finished (step 4) — unknown until then, so write `2026sepNN` in anything drafted before the run | `2026sep26` |
-| Version tag and GitHub release | `v<version>` / "pubmed2db v<version>" | `v1.0` |
+| Version tag and GitHub release | `v<version>.<patch>` / "pubmed2db v<version>.<patch>" | `v1.1.0` |
 
 **Versions.**
 - Raise the **minor** version for anything a consumer can safely ignore, such as a new JSON field or a new table or column.
 - Raise the **major** version when an existing JSON field or Parquet column is renamed, removed or changes meaning.
-- Add a third component (`v1.1.1`) for a re-release that only fixes something.
+- Raise the third component (`v1.1.1`) for a re-release that only fixes something. Version tags always carry all three (`v1.1.0`, not `v1.1`), the same form as the package version in `pyproject.toml`, while the milestone, release branch and release PR name only the first two. `v1.0` predates this and keeps its name.
 
 ## Steps
 
@@ -38,7 +39,7 @@ it, and both tags are cut from it.
 
    Fix what the run turns up:
    - Put the fixes in a PR against the release branch (#58 for v1.1), so they are reviewed and described like any other change, and merge it into the release branch.
-   - GitHub links a closing keyword only while the PR's base is the default branch, so one in that PR does nothing. An issue the run answers gets `Closes #N` in the **release** PR. But the release PR is stacked on a feature branch too, so GitHub does not link those keywords either until it is retargeted onto `main` (step 5). After the retarget, check with `gh pr view <N> --json closingIssuesReferences`. If any are missing, re-save the description or link them from the PR's *Development* sidebar. Whether GitHub re-reads the keywords on retarget has not been tested. On v1.1, #55 linked `closes #46`, written while it briefly targeted `main`, but not #11 and #37, which were added after it was retargeted.
+   - GitHub links a closing keyword only while the PR's base is the default branch, so one in that PR does nothing. An issue the run answers gets `Closes #N` in the **release** PR. But the release PR is stacked on a feature branch too, so those keywords need checking once it is retargeted onto `main` (step 5).
    - Fix anything that belongs to a feature PR in that PR, then **merge** its branch into the release branch.
    - Merge rather than rebase: the commit the cluster ran has to stay reachable.
 
@@ -63,20 +64,23 @@ it, and both tags are cut from it.
 
 5. **Merge the feature PRs into `main`**, in stack order, with **merge commits** (see below). The repository deletes a merged branch, and GitHub then retargets the next PR in the stack onto `main`.
 
+   GitHub does not re-read a PR's closing keywords when it retargets the PR. After each retarget, check `gh pr view <N> --json closingIssuesReferences`, and if an issue is missing, edit the description. Saving it unchanged is not enough: in the v1.1 cycle, #58's `Closes #11. Closes #37.` stayed unlinked through its retarget and through an unchanged re-save, and linked as soon as one of its sentences changed.
+
 6. **Wrap up the release PR.**
    - Bring its description up to date: what shipped, what was deferred, and how the run went.
    - Record the run's measurements in the repo, not only in the description: `slurm/README.md`'s run tables take the timings and peaks, and each issue the run answered gets its numbers in a comment. The description links to them. It is read at review and at changelog time and never again, so it cannot be the only copy.
    - Merge it with a merge commit.
 
-7. **Tag the version and publish it.**
-   - Tag the release branch's final commit, as `v1.0` was.
-   - The merge commit keeps that commit reachable from `main`, and its tree is the same as the merge result.
+7. **Tag the version on `main` and publish it.** Pull `main` and tag the release PR's merge commit, by its id rather than `HEAD` in case something else has merged since:
 
    ```bash
-   git tag -a v1.1 <sha> -m "pubmed2db v1.1"
-   git push origin v1.1
-   gh release create v1.1 --title "pubmed2db v1.1" --generate-notes --notes-start-tag v1.0
+   git switch main && git pull
+   git tag -s v1.1.0 "$(gh pr view 55 --json mergeCommit -q .mergeCommit.oid)" -m "pubmed2db v1.1.0"
+   git push origin v1.1.0
+   gh release create v1.1.0 --title "pubmed2db v1.1.0" --generate-notes --notes-start-tag v1.0
    ```
+
+   Tag `main`, not the release branch's last commit. If `main` moved on while the release was being built and was never merged into the release branch, the merge commit is the only commit holding exactly what shipped; the branch's last commit lacks `main`'s changes. Tagging `main` also puts the tag on its first-parent history, where `git describe` finds it.
 
    `--generate-notes` lists the merged PRs by title, which is why PR titles are written as changelog lines.
 
