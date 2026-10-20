@@ -535,8 +535,12 @@ data-model bump)
 
 1. Steps 1–2 above.
 2. `uv run python scripts/fresh_database.py`. It shows what it will do and asks:
-   move the superseded year's XML to `data/pubmed-archive/<year>/`, delete the
-   database. It leaves `manifests/`, `logs/`, `builds/` and the catalog cache.
+   move every year's XML but the baseline NCBI serves now to
+   `data/pubmed-archive/<year>/`, delete the database. At the year boundary
+   that is all of last year's, before the new baseline is downloaded in step 3;
+   mid-year it moves nothing. It asks NCBI which year that is (`--keep-year 2027`
+   names it instead), and leaves `manifests/`, `logs/`, `builds/` and the
+   catalog cache.
 3. `./slurm/submit.sh all` — a fresh database needs `journals` too.
 4. Expect the first `validate` to warn `drops_retired_upstream`: the PMIDs
    PubMed retired between the previous build and the new baseline, which the

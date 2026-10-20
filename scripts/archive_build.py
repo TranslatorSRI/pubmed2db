@@ -15,7 +15,9 @@ build but is written elsewhere:
 - ``source_file.csv``: the ``source_file`` registry from the database, which is
   the only record of the MD5 NCBI published for each file (no sidecars are kept
   on disk). It is what makes the archived XML files reproducible once the
-  database has been wiped for a rebuild.
+  database has been wiped for a rebuild. It is cut at the build's cutoff file
+  (``corpus.cutoff_file`` in ``metadata.json``), since the database may have
+  synced or loaded later files since the export.
 
     uv run python scripts/archive_build.py                # data/json -> data/builds/<build>/
     uv run python scripts/archive_build.py --data-dir /scratch/me/pubmed
@@ -32,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -43,7 +46,12 @@ def fail(message: str) -> None:
 
 
 def latest_report(manifest_dir: Path, export_dir: Path, not_before: float) -> Path | None:
-    """The newest dated report that describes *this* export, if any."""
+    """The newest dated report that describes *this* export, if any.
+
+    ``validate`` records ``inputs.export_dir`` absolute; a report from before it
+    did holds the path as given, relative to where validate ran, and is matched
+    only when this script runs from the same directory.
+    """
     candidates = sorted(manifest_dir.glob("validation_report-*.json"), reverse=True)
     for path in candidates:
         if path.stat().st_mtime < not_before:
@@ -65,9 +73,16 @@ def newest_archived_log_mtime(builds_dir: Path) -> float:
     )
 
 
-def dump_source_file(db_path: Path, out: Path) -> bool:
-    """Copy the ``source_file`` registry to CSV. Read-only; False if it could not."""
+def dump_source_file(db_path: Path, out: Path, cutoff_file: str | None) -> bool:
+    """Copy the ``source_file`` registry, up to ``cutoff_file``, to CSV.
+
+    Read-only; False if it could not. Rows past the cutoff are files the
+    database learned of after the export (a later ``download`` or ``load``),
+    which this build did not contain.
+    """
     import duckdb
+
+    from pubmed2db.db import parse_file_name
 
     try:
         con = duckdb.connect(str(db_path), read_only=True)
@@ -75,11 +90,21 @@ def dump_source_file(db_path: Path, out: Path) -> bool:
         print(f"warning: could not open {db_path} read-only ({exc}); "
               f"no source_file.csv written", file=sys.stderr)
         return False
+
+    in_build = "true"
+    if cutoff_file is None:
+        print("warning: metadata.json names no cutoff file; source_file.csv lists "
+              "every file the database knows of", file=sys.stderr)
+    else:
+        in_build = f"file_order_key <= {parse_file_name(cutoff_file)[2]}"
     try:
-        escaped = out.as_posix().replace("'", "''")
+        later = con.execute(f"SELECT count(*) FROM source_file WHERE NOT ({in_build})").fetchone()[0]
+        if later:
+            print(f"note: left {later} file(s) after the cutoff {cutoff_file} out of "
+                  "source_file.csv; the database has moved on since this export")
         con.execute(
-            "COPY (SELECT * FROM source_file ORDER BY file_order_key) "
-            f"TO '{escaped}' (HEADER)"
+            f"COPY (SELECT * FROM source_file WHERE {in_build} ORDER BY file_order_key) "
+            "TO '" + out.as_posix().replace("'", "''") + "' (HEADER)"
         )
     finally:
         con.close()
@@ -93,7 +118,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--data-dir", type=Path, default=Path("data"),
                         help="The pipeline's --data-dir (default: data).")
     parser.add_argument("--export-dir", type=Path, default=None,
-                        help="The finished export (default: <data-dir>/json).")
+                        help="The finished export (default: $EXPORT_DIR, else <data-dir>/json).")
     parser.add_argument("--name", default=None,
                         help="Build name, when metadata.json has no corpus.build_name "
                              "(a cutoff file download never synced).")
@@ -102,7 +127,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     data_dir: Path = args.data_dir
-    export_dir: Path = args.export_dir or data_dir / "json"
+    export_dir: Path = args.export_dir or Path(os.environ.get("EXPORT_DIR") or data_dir / "json")
     builds_dir = data_dir / "builds"
     manifest_dir = data_dir / "manifests"
     logs_dir = data_dir / "logs"
@@ -137,6 +162,9 @@ def main(argv: list[str] | None = None) -> None:
         written = content.get("inputs", {}).get("manifest_written")
         if written and Path(written).is_file():
             manifest = Path(written)
+        elif written:
+            print(f"warning: {report.name} names the manifest {written}, which is not "
+                  "there from this directory; not copying it", file=sys.stderr)
 
     # The previous build's newest log bounds what belongs to this one; read it
     # before this build's directory exists under builds/.
@@ -165,7 +193,8 @@ def main(argv: list[str] | None = None) -> None:
         print(f"copied {len(logs)} step log(s) -> {dest / 'logs'}")
 
     if db_path.is_file():
-        if dump_source_file(db_path, dest / "source_file.csv"):
+        cutoff = metadata.get("corpus", {}).get("cutoff_file")
+        if dump_source_file(db_path, dest / "source_file.csv", cutoff):
             print(f"wrote {dest / 'source_file.csv'} (the files this build loaded, "
                   "with the MD5 NCBI published for each)")
     else:

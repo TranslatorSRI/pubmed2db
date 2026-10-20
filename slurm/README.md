@@ -40,8 +40,8 @@ to export, which is the quickest way to confirm a step did what you expected.
 has the full inventory of what persists.
 
 **Starting over from a fresh database** (say at a new baseline year) is
-`uv run python scripts/fresh_database.py`: it moves the superseded year's XML
-out of the download cache, where `load` would otherwise parse it straight back
+`uv run python scripts/fresh_database.py`: it moves every year's XML but the
+baseline NCBI serves now out of the download cache, where `load` would otherwise parse it straight back
 in, and deletes the database. A fresh database then needs `journals` as well
 as `load`, because the journal dimension lives in the database; `all` includes
 it. Before `export`, grep the

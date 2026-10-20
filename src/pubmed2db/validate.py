@@ -1962,13 +1962,16 @@ def run_validation(
         "data_model_version": (
             export_metadata.get("data_model_version") if export_metadata else None
         ),
+        # Absolute, so scripts/archive_build.py can match a report to its
+        # export from any working directory: 05-validate.sbatch passes paths
+        # relative to SLURM_SUBMIT_DIR.
         "inputs": {
-            "export_dir": str(export_dir),
+            "export_dir": str(export_dir.resolve()),
             "shards": [p.name for p in shards],
             "database": None if con is None else "available",
             "previous_report": None if previous_report is None else str(previous_report),
             "previous_manifest": None if previous_manifest is None else str(previous_manifest),
-            "manifest_written": None if manifest_written is None else str(manifest_written),
+            "manifest_written": None if manifest_written is None else str(manifest_written.resolve()),
             "online": online,
             "sample_size": sample_size,
             "drop_sample": drop_sample,

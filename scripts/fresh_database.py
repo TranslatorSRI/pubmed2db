@@ -6,18 +6,23 @@ one at a major data-model bump. Deleting ``pubmed.duckdb`` is the easy part;
 two other things have to happen with it, and this script does all three after
 showing you the plan and asking:
 
-1. **Refuse if a finished export is still in ``data/json``.** Its
+1. **Refuse if a finished export is still in ``data/json``** (or ``$EXPORT_DIR``,
+   or ``--export-dir``). Its
    ``metadata.json`` means ``scripts/archive_build.py`` has not moved it to
    ``data/builds/<build>/`` yet, and the database it came from is about to go.
-2. **Move the superseded baseline year's XML out of the download cache.**
+2. **Move every baseline year but NCBI's current one out of the download cache.**
    ``load`` loads every ``*.xml.gz`` under ``data/pubmed/baseline/`` and
    ``data/pubmed/updates/``, registered or not, so last year's ~1,300 files
    left in place are re-parsed into the fresh database (a day of ``load``) and
    recreate the additive database the rebuild exists to replace. The files are
    kept, not deleted: they go to ``data/pubmed-archive/<year>/{baseline,updates}/``,
    which nothing reads. (If you do not want them, ``rm -r`` that directory.)
-   With one baseline year on disk nothing moves and the fresh ``load`` re-parses
-   it all, which is the point of a mid-year rebuild.
+   The year to keep is the one NCBI's baseline listing serves *now*, not the
+   newest on disk: this runs before ``submit.sh all`` downloads the new
+   baseline, so at the year boundary the newest year on disk is the one being
+   superseded. Mid-year, NCBI's year is the one on disk, nothing moves, and the
+   fresh ``load`` re-parses it all, which is the point of a mid-year rebuild.
+   ``--keep-year`` names the year instead of asking NCBI.
 3. **Delete the database**, its write-ahead log and its spill directory.
 
 Left alone, deliberately: ``data/manifests/`` (the next ``validate`` diffs the
@@ -27,6 +32,7 @@ serial-catalog cache under ``data/pubmed2db/`` (``journals`` re-checks it).
 
     uv run python scripts/fresh_database.py              # shows the plan, asks
     uv run python scripts/fresh_database.py --yes        # for a batch job
+    uv run python scripts/fresh_database.py --keep-year 2027   # without asking NCBI
 
 Then ``./slurm/submit.sh all``: a fresh database needs ``journals`` as well as
 ``load`` (grep its log for ``serial catalog unavailable``), and the first
@@ -37,12 +43,17 @@ retired between the previous build and the new baseline.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import sys
 from pathlib import Path
 
 _YEAR = re.compile(r"^pubmed(\d{2})n\d+\.xml\.gz$")
+
+#: pubmed_downloader's BASELINE_URL, written out rather than imported: importing
+#: it sets up pystow, which writes under ~/.data unless PYSTOW_HOME is set.
+BASELINE_URL = "https://ftp.ncbi.nlm.nih.gov/pubmed/baseline/"
 
 
 def fail(message: str) -> None:
@@ -63,12 +74,29 @@ def files_by_year(cache_dirs: list[Path]) -> dict[int, list[Path]]:
     return years
 
 
+def ncbi_baseline_year() -> int:
+    """The two-digit year of the baseline NCBI serves now, from its listing."""
+    import requests
+
+    response = requests.get(BASELINE_URL, timeout=60)
+    response.raise_for_status()
+    years = re.findall(r"pubmed(\d{2})n\d+\.xml\.gz", response.text)
+    if not years:
+        raise ValueError(f"no baseline files listed at {BASELINE_URL}")
+    return max(int(y) for y in years)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--data-dir", type=Path, default=Path("data"),
                         help="The pipeline's --data-dir (default: data).")
+    parser.add_argument("--export-dir", type=Path, default=None,
+                        help="Where export writes (default: $EXPORT_DIR, else <data-dir>/json).")
+    parser.add_argument("--keep-year", type=int, default=None,
+                        help="The baseline year to keep, e.g. 2027 (default: the one NCBI "
+                             "serves now). Every other year's XML is moved.")
     parser.add_argument("--yes", action="store_true", help="Do not ask; proceed.")
     args = parser.parse_args(argv)
 
@@ -80,15 +108,24 @@ def main(argv: list[str] | None = None) -> None:
     to_delete = [p for p in (db_path, db_path.with_suffix(".duckdb.wal"),
                              db_path.with_suffix(".duckdb.tmp")) if p.exists()]
 
-    metadata = data_dir / "json" / "metadata.json"
+    export_dir = args.export_dir or Path(os.environ.get("EXPORT_DIR") or data_dir / "json")
+    metadata = export_dir / "metadata.json"
     if metadata.is_file():
         fail(f"{metadata} exists: a finished export has not been archived, and the "
              "database it came from is about to be deleted. Run\n"
-             f"  uv run python scripts/archive_build.py --data-dir {data_dir}\n"
+             f"  uv run python scripts/archive_build.py --data-dir {data_dir} "
+             f"--export-dir {export_dir}\n"
              "first (or delete the export yourself if it is not wanted).")
 
+    if args.keep_year is not None:
+        keep = args.keep_year % 100
+    else:
+        try:
+            keep = ncbi_baseline_year()
+        except Exception as exc:  # noqa: BLE001 - any failure means the same thing
+            fail(f"could not read NCBI's baseline listing ({exc}); pass --keep-year "
+                 "with the year of the baseline the fresh database should load.")
     years = files_by_year(cache_dirs)
-    keep = max(years) if years else None
     moves: list[tuple[Path, Path]] = []
     for year, paths in sorted(years.items()):
         if year == keep:
@@ -101,11 +138,14 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  move {len(moves)} file(s) from superseded baseline year(s) "
               f"{', '.join(f'20{y:02d}' for y in sorted(years) if y != keep)} "
               f"to {archive}/ (kept, not deleted)")
-    elif keep is not None:
-        print(f"  one baseline year on disk (20{keep:02d}); nothing to move, and the "
-              "fresh load re-parses all of it")
+    elif years:
+        print(f"  only NCBI's current baseline year (20{keep:02d}) on disk; nothing to "
+              "move, and the fresh load re-parses all of it")
     else:
         print(f"  no PubMed files under {cache}")
+    if keep not in years:
+        print(f"  (the 20{keep:02d} baseline is not downloaded yet; `submit.sh all` "
+              "fetches it)")
     for path in to_delete:
         print(f"  delete {path}")
     if not to_delete:
@@ -117,7 +157,10 @@ def main(argv: list[str] | None = None) -> None:
         print("Nothing to do.")
         return
     if not args.yes:
-        answer = input("Proceed? [y/N] ").strip().lower()
+        try:
+            answer = input("Proceed? [y/N] ").strip().lower()
+        except EOFError:  # sbatch, cron: stdin is /dev/null and no one can answer
+            fail("no answer on stdin (a batch job?); pass --yes to proceed without asking.")
         if answer not in ("y", "yes"):
             print("Nothing changed.")
             return

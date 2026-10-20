@@ -10,6 +10,7 @@ import gzip
 import json
 import os
 import time
+from pathlib import Path
 
 import pytest
 
@@ -1360,3 +1361,14 @@ def test_export_metadata_catches_a_changed_or_missing_shard(loaded_con, tmp_path
     check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
     assert check["status"] == "skip"
     assert report["data_model_version"] is None
+
+
+def test_report_records_absolute_paths(export_dir, tmp_path, monkeypatch):
+    """05-validate.sbatch passes paths relative to SLURM_SUBMIT_DIR; the report
+    must not, or archive_build.py run from elsewhere cannot match it to its export."""
+    monkeypatch.chdir(export_dir.parent)
+    report = validate.run_validation(
+        Path(export_dir.name), online=False, manifest_out=Path("pmids.txt.gz")
+    )
+    assert report["inputs"]["export_dir"] == str(export_dir.resolve())
+    assert report["inputs"]["manifest_written"] == str((export_dir.parent / "pmids.txt.gz").resolve())

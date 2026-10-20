@@ -169,11 +169,16 @@ def test_archive_dumps_the_source_file_registry(data_dir: Path) -> None:
     with closing(connect(data_dir / "pubmed.duckdb")) as con:
         register_source_file(con, "pubmed26n0001.xml.gz", kind="baseline",
                              published_md5="abc123")
+        register_source_file(con, "pubmed26n1700.xml.gz", kind="update")
+        # Synced after the export: not part of the build whose cutoff is 1700.
+        register_source_file(con, "pubmed26n1701.xml.gz", kind="update")
     result = run(ARCHIVE, "--data-dir", str(data_dir))
     assert result.returncode == 0, result.stderr
     csv = (data_dir / "builds" / "2026oct19" / "source_file.csv").read_text()
     assert csv.splitlines()[0].startswith("file_name,kind,")
     assert "pubmed26n0001.xml.gz,baseline" in csv and "abc123" in csv
+    assert "pubmed26n1700.xml.gz" in csv and "pubmed26n1701.xml.gz" not in csv
+    assert "left 1 file(s) after the cutoff" in result.stdout
     assert "pubmed.duckdb HOST:" in result.stdout
 
 
@@ -205,7 +210,7 @@ def _listing(root: Path) -> set[str]:
 
 def test_fresh_database_moves_the_old_year_and_deletes_the_database(two_years: Path) -> None:
     before = _listing(two_years)
-    result = run(FRESH, "--data-dir", str(two_years), "--yes")
+    result = run(FRESH, "--data-dir", str(two_years), "--keep-year", "2026", "--yes")
     assert result.returncode == 0, result.stderr
     after = _listing(two_years)
 
@@ -228,7 +233,7 @@ def test_fresh_database_moves_the_old_year_and_deletes_the_database(two_years: P
 def test_fresh_database_refuses_while_a_finished_export_is_unarchived(two_years: Path) -> None:
     (two_years / "json" / "metadata.json").write_text("{}")
     before = _listing(two_years)
-    result = run(FRESH, "--data-dir", str(two_years), "--yes")
+    result = run(FRESH, "--data-dir", str(two_years), "--keep-year", "2026", "--yes")
     assert result.returncode == 1
     assert "archive_build.py" in result.stderr
     assert _listing(two_years) == before
@@ -236,7 +241,7 @@ def test_fresh_database_refuses_while_a_finished_export_is_unarchived(two_years:
 
 def test_fresh_database_asks_first(two_years: Path) -> None:
     before = _listing(two_years)
-    result = run(FRESH, "--data-dir", str(two_years), stdin="n\n")
+    result = run(FRESH, "--data-dir", str(two_years), "--keep-year", "2026", stdin="n\n")
     assert result.returncode == 0, result.stderr
     assert "move 4 file(s)" in result.stdout
     assert "Nothing changed." in result.stdout
@@ -247,12 +252,68 @@ def test_fresh_database_with_one_year_moves_nothing(two_years: Path) -> None:
     for kind in ("baseline", "updates"):
         for p in (two_years / "pubmed" / kind).glob("pubmed25n*"):
             p.unlink()
-    result = run(FRESH, "--data-dir", str(two_years), "--yes")
+    result = run(FRESH, "--data-dir", str(two_years), "--keep-year", "2026", "--yes")
     assert result.returncode == 0, result.stderr
     assert "nothing to move" in result.stdout
     assert not (two_years / "pubmed-archive").exists()
     assert not (two_years / "pubmed.duckdb").exists()
     assert (two_years / "pubmed" / "baseline" / "pubmed26n0001.xml.gz").is_file()
+
+
+def test_fresh_database_at_the_year_boundary_moves_the_only_year_on_disk(two_years: Path) -> None:
+    """The README runs this *before* `submit.sh all` downloads the new baseline.
+
+    So at the boundary the newest year on disk is the superseded one, and
+    keeping it would load both years into the fresh database.
+    """
+    result = run(FRESH, "--data-dir", str(two_years), "--keep-year", "2027", "--yes")
+    assert result.returncode == 0, result.stderr
+    assert "not downloaded yet" in result.stdout
+    for kind in ("baseline", "updates"):
+        assert not list((two_years / "pubmed" / kind).glob("pubmed2*"))
+        assert (two_years / "pubmed-archive" / "2026" / kind / "pubmed26n0001.xml.gz").is_file()
+
+
+def test_fresh_database_reads_the_year_from_ncbi(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+
+    import requests
+
+    spec = importlib.util.spec_from_file_location("fresh_database", FRESH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class Listing:
+        text = '<a href="pubmed26n0001.xml.gz">x</a> <a href="pubmed26n1334.xml.gz.md5">'
+
+        def raise_for_status(self) -> None:
+            pass
+
+    monkeypatch.setattr(requests, "get", lambda url, timeout: Listing())
+    assert module.ncbi_baseline_year() == 26
+
+
+def test_fresh_database_without_an_answer_refuses_cleanly(two_years: Path) -> None:
+    """Under sbatch or cron stdin is empty: a refusal, not an EOFError traceback."""
+    before = _listing(two_years)
+    result = run(FRESH, "--data-dir", str(two_years), "--keep-year", "2026")
+    assert result.returncode == 1
+    assert "--yes" in result.stderr and "Traceback" not in result.stderr
+    assert _listing(two_years) == before
+
+
+def test_fresh_database_checks_an_overridden_export_dir(two_years: Path) -> None:
+    elsewhere = two_years.parent / "exports"
+    elsewhere.mkdir()
+    (elsewhere / "metadata.json").write_text("{}")
+    result = subprocess.run(
+        [sys.executable, str(FRESH), "--data-dir", str(two_years), "--keep-year", "2026", "--yes"],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "EXPORT_DIR": str(elsewhere)},
+    )
+    assert result.returncode == 1
+    assert str(elsewhere) in result.stderr
+    assert (two_years / "pubmed.duckdb").exists()
 
 
 # --------------------------------------------------------------------------- #
