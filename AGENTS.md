@@ -87,8 +87,13 @@ explains its part; this table is only a map.
   `parse._publication_types` reads the exact path, and `validate` reuses it for
   the efetch side, so the two cannot diverge. Two things to keep:
   - **A NULL `type_name` means "loaded before names were parsed".**
-    `export_json` warns with the count, because `"name": ""` on every type is
-    valid JSON and otherwise silent.
+    `status.export_readiness` warns (so `status`, JSON and Parquet all say it),
+    because `"name": ""` on every type is valid JSON and otherwise silent. It
+    counts *files*, not latest-version rows: a file's rows are all named or all
+    NULL, so that answers "reload?" without a join against `_latest_snapshot`
+    on every export. `validate` reports the blank names under their own code
+    and compares such records on ids alone, so a stale database is not misread
+    as tens of thousands of indexing revisions.
   - **The field is SOFT, under its own check.** NLM revises types when MEDLINE
     indexing completes, so live efetch can be ahead of our last update file.
     `validate._SOFT_GROUPS` gives every soft reason its own check and warning

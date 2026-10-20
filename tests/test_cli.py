@@ -112,6 +112,19 @@ def test_cli_status_reports_pipeline_state(loaded_db):
     assert "Export:    ready" in result.output
 
 
+def test_cli_status_flags_publication_types_without_names(tmp_path, loaded_con):
+    """A database migrated in place but not reloaded is visible from `status`,
+    not only from a JSON export's log -- the Parquet path writes NULL names too."""
+    loaded_con.execute("UPDATE publication_type SET type_name = NULL")
+    loaded_con.close()
+
+    result = CliRunner().invoke(main, ["--db", str(tmp_path / "test.duckdb"), "status"])
+    assert result.exit_code == 0, result.output
+    assert "Export:    ready, but:" in result.output
+    assert "predate publication-type names" in result.output
+    assert "load --force" in result.output
+
+
 def test_cli_status_flags_a_second_baseline_year(loaded_db):
     """A new baseline year stores every PMID twice; `status` should say so."""
     from pubmed2db.db import connect, register_source_file
