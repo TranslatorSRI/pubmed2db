@@ -190,9 +190,11 @@ WHERE pt.type_name = 'Review';
 
 > **Names need a reload.** They are parsed at load time, and a database loaded
 > before this field existed stored only the MeSH ids. There, `export` writes
-> `"name": ""` for every type and logs a warning with the count until the corpus
-> is re-parsed. See [`load --force` or a fresh database?](#load---force-or-a-fresh-database);
-> `load --force` is enough, since the new columns are added automatically.
+> `"name": ""` for every type (a NULL `type_name` in Parquet) until the corpus is
+> re-parsed; `status` and `export` warn with the number of files affected, and
+> `validate` reports it as `publication_type_names_missing`. `load --force` is
+> enough, because this change only adds columns; see
+> [`load --force` or a fresh database?](#load---force-or-a-fresh-database).
 
 ### Identifiers in the JSON export
 
@@ -412,16 +414,18 @@ Two ways to apply one, and they are not interchangeable:
   applies a *parsing* change to the whole corpus: roughly a baseline's worth of
   time (~2–3 h), no re-download, and the database keeps its history.
 - **A fresh database** (delete `<data-dir>/pubmed.duckdb`, then `journals` and
-  `load`) is the answer whenever the *schema* changed, and the safer default if
-  you are unsure.
+  `load`) is the answer whenever the schema *removed or redefined* something,
+  and the safer default if you are unsure.
 
 The asymmetry is that `schema.sql` only ever adds: `CREATE TABLE IF NOT EXISTS`
-plus explicit `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations. Nothing
-drops a table or a column, so a forced reload refreshes the rows of tables that
-still exist while a table removed from the schema keeps its rows forever —
-`reference_citation`, dropped during development, is exactly that case. A forced
-reload also leaves any pre-existing wrong rows in place for files it re-parses
-identically.
+plus explicit `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migrations. So a schema
+change that only adds — a new table, or a new column such as
+`publication_type.type_name` — is applied on the next connect and filled by
+`load --force`. Nothing drops a table or a column, though, so a forced reload
+refreshes the rows of tables that still exist while a table removed from the
+schema keeps its rows forever — `reference_citation`, dropped during
+development, is exactly that case. A forced reload also leaves any pre-existing
+wrong rows in place for files it re-parses identically.
 
 Rebuilding costs a full `load` and a `journals` refresh, and nothing else — the
 downloaded files are not touched — so unless the corpus is already loaded on a machine where 2–3 hours of
