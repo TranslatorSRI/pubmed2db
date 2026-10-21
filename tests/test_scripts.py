@@ -172,14 +172,63 @@ def test_archive_dumps_the_source_file_registry(data_dir: Path) -> None:
         register_source_file(con, "pubmed26n1700.xml.gz", kind="update")
         # Synced after the export: not part of the build whose cutoff is 1700.
         register_source_file(con, "pubmed26n1701.xml.gz", kind="update")
+        con.execute("UPDATE source_file SET processed_at = now()")
+        # Downloaded but never loaded: before the cutoff, and still not in the build.
+        register_source_file(con, "pubmed26n1650.xml.gz", kind="update")
     result = run(ARCHIVE, "--data-dir", str(data_dir))
     assert result.returncode == 0, result.stderr
     csv = (data_dir / "builds" / "2026oct19" / "source_file.csv").read_text()
     assert csv.splitlines()[0].startswith("file_name,kind,")
     assert "pubmed26n0001.xml.gz,baseline" in csv and "abc123" in csv
     assert "pubmed26n1700.xml.gz" in csv and "pubmed26n1701.xml.gz" not in csv
+    assert "pubmed26n1650.xml.gz" not in csv
     assert "left 1 file(s) after the cutoff" in result.stdout
+    assert "left 1 file(s) the database never loaded" in result.stdout
     assert "pubmed.duckdb HOST:" in result.stdout
+
+
+def test_archive_reads_reports_from_an_overridden_manifest_dir(data_dir: Path) -> None:
+    """config.sh lets MANIFEST_DIR move; validate's reports go with it."""
+    elsewhere = data_dir.parent / "elsewhere"
+    (data_dir / "manifests").rename(elsewhere)
+    result = subprocess.run(
+        [sys.executable, str(ARCHIVE), "--data-dir", str(data_dir)],
+        capture_output=True, text=True, env={**os.environ, "MANIFEST_DIR": str(elsewhere)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert (data_dir / "builds" / "2026oct19" / "manifests"
+            / "validation_report-20261020.json").is_file()
+
+
+def test_archive_says_when_it_finds_no_logs(data_dir: Path) -> None:
+    """An sbatch file submitted by hand logs to data/logs, not $DATA_DIR/logs."""
+    logs = data_dir.parent / "submitdir-logs"
+    (data_dir / "logs").rename(logs)
+    result = run(ARCHIVE, "--data-dir", str(data_dir))
+    assert "pass --logs-dir" in result.stdout
+    assert not (data_dir / "builds" / "2026oct19" / "logs").exists()
+
+
+def test_archive_takes_logs_from_logs_dir(data_dir: Path) -> None:
+    logs = data_dir.parent / "submitdir-logs"
+    (data_dir / "logs").rename(logs)
+    result = run(ARCHIVE, "--data-dir", str(data_dir), "--logs-dir", str(logs))
+    assert result.returncode == 0, result.stderr
+    assert (data_dir / "builds" / "2026oct19" / "logs" / "pubmed2db-load-200.out").is_file()
+
+
+def test_archive_recovers_from_a_run_that_died_before_the_move(data_dir: Path) -> None:
+    """A staging directory left behind neither blocks a re-run nor hides its logs."""
+    stale = data_dir / "builds" / ".2026oct19.incoming"
+    (stale / "logs").mkdir(parents=True)
+    _touch_at(stale / "logs" / "pubmed2db-export-201.out", time.time(), "staged")
+    result = run(ARCHIVE, "--data-dir", str(data_dir))
+    assert result.returncode == 0, result.stderr
+    dest = data_dir / "builds" / "2026oct19"
+    assert not stale.exists()
+    assert sorted(p.name for p in (dest / "logs").iterdir()) == [
+        "pubmed2db-export-201.out", "pubmed2db-load-200.out",
+    ]
 
 
 # --------------------------------------------------------------------------- #

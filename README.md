@@ -527,7 +527,10 @@ build. Everything the pipeline writes, and what to do with it:
 
 1. If `data/json/metadata.json` exists, archive the build:
    `uv run python scripts/archive_build.py`. It refuses an export that has not
-   been validated, or whose validation failed.
+   been validated, or whose validation failed. It reads `$DATA_DIR`,
+   `$EXPORT_DIR` and `$MANIFEST_DIR` as `slurm/config.sh` does; logs from an
+   `.sbatch` file submitted by hand rather than through `submit.sh` need
+   `--logs-dir data/logs`.
 2. If you publish the database as well as the export, copy
    `data/pubmed.duckdb` now — the next `download`/`load` changes it. The script
    prints both `rsync` lines.

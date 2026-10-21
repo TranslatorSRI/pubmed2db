@@ -15,12 +15,25 @@ build but is written elsewhere:
 - ``source_file.csv``: the ``source_file`` registry from the database, which is
   the only record of the MD5 NCBI published for each file (no sidecars are kept
   on disk). It is what makes the archived XML files reproducible once the
-  database has been wiped for a rebuild. It is cut at the build's cutoff file
-  (``corpus.cutoff_file`` in ``metadata.json``), since the database may have
-  synced or loaded later files since the export.
+  database has been wiped for a rebuild. It holds the files the build loaded:
+  cut at its cutoff file (``corpus.cutoff_file`` in ``metadata.json``), since
+  the database may have synced or loaded later files since the export, and
+  without files registered but never loaded, which ``corpus`` does not count.
+
+The directories follow the pipeline's: ``--data-dir`` defaults to
+``$DATA_DIR``, and the export and manifest directories to ``$EXPORT_DIR`` and
+``$MANIFEST_DIR`` (what ``slurm/config.sh`` reads), each falling back to its
+place under the data directory. ``submit.sh`` writes step logs to
+``$DATA_DIR/logs``; an ``.sbatch`` file submitted by hand writes them to
+``data/logs`` under the submit directory, so pass ``--logs-dir`` for those.
+
+Nothing moves until everything that can fail has run: the report, manifest,
+logs and ``source_file.csv`` are gathered in ``builds/.<build>.incoming/``
+first, then the export is moved and they are renamed in beside it.
 
     uv run python scripts/archive_build.py                # data/json -> data/builds/<build>/
     uv run python scripts/archive_build.py --data-dir /scratch/me/pubmed
+    uv run python scripts/archive_build.py --logs-dir data/logs   # logs of hand-run sbatch jobs
 
 The build name is read from ``metadata.json`` (``corpus.build_name``), so the
 export must have finished; the script refuses an export with no
@@ -67,18 +80,25 @@ def latest_report(manifest_dir: Path, export_dir: Path, not_before: float) -> Pa
 
 
 def newest_archived_log_mtime(builds_dir: Path) -> float:
-    """When the newest already-archived step log was written (0 if none)."""
+    """When the newest already-archived step log was written (0 if none).
+
+    Skips ``.<build>.incoming/``: a run that died before its move left this
+    build's own logs there, which would otherwise mark them already archived.
+    """
     return max(
-        (p.stat().st_mtime for p in builds_dir.glob("*/logs/*.out")), default=0.0
+        (p.stat().st_mtime for p in builds_dir.glob("*/logs/*.out")
+         if not p.parent.parent.name.startswith(".")),
+        default=0.0,
     )
 
 
 def dump_source_file(db_path: Path, out: Path, cutoff_file: str | None) -> bool:
-    """Copy the ``source_file`` registry, up to ``cutoff_file``, to CSV.
+    """Copy the files this build loaded, from the ``source_file`` registry, to CSV.
 
     Read-only; False if it could not. Rows past the cutoff are files the
     database learned of after the export (a later ``download`` or ``load``),
-    which this build did not contain.
+    and rows never loaded were not in the build either: the same rows
+    ``status.corpus_provenance`` counts for ``metadata.json``.
     """
     import duckdb
 
@@ -91,21 +111,33 @@ def dump_source_file(db_path: Path, out: Path, cutoff_file: str | None) -> bool:
               f"no source_file.csv written", file=sys.stderr)
         return False
 
-    in_build = "true"
+    in_build = "processed_at IS NOT NULL"
     if cutoff_file is None:
         print("warning: metadata.json names no cutoff file; source_file.csv lists "
-              "every file the database knows of", file=sys.stderr)
+              "every file the database has loaded", file=sys.stderr)
     else:
-        in_build = f"file_order_key <= {parse_file_name(cutoff_file)[2]}"
+        in_build += f" AND file_order_key <= {parse_file_name(cutoff_file)[2]}"
     try:
-        later = con.execute(f"SELECT count(*) FROM source_file WHERE NOT ({in_build})").fetchone()[0]
+        later, unloaded = con.execute(
+            "SELECT count(*) FILTER (WHERE processed_at IS NOT NULL), "
+            "count(*) FILTER (WHERE processed_at IS NULL) "
+            f"FROM source_file WHERE NOT ({in_build})"
+        ).fetchone()
         if later:
             print(f"note: left {later} file(s) after the cutoff {cutoff_file} out of "
                   "source_file.csv; the database has moved on since this export")
+        if unloaded:
+            print(f"note: left {unloaded} file(s) the database never loaded out of "
+                  "source_file.csv")
         con.execute(
             f"COPY (SELECT * FROM source_file WHERE {in_build} ORDER BY file_order_key) "
             "TO '" + out.as_posix().replace("'", "''") + "' (HEADER)"
         )
+    except duckdb.Error as exc:
+        out.unlink(missing_ok=True)
+        print(f"warning: could not dump source_file from {db_path} ({exc}); "
+              "no source_file.csv written", file=sys.stderr)
+        return False
     finally:
         con.close()
     return True
@@ -115,10 +147,15 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--data-dir", type=Path, default=Path("data"),
-                        help="The pipeline's --data-dir (default: data).")
+    parser.add_argument("--data-dir", type=Path, default=Path(os.environ.get("DATA_DIR") or "data"),
+                        help="The pipeline's --data-dir (default: $DATA_DIR, else data).")
     parser.add_argument("--export-dir", type=Path, default=None,
                         help="The finished export (default: $EXPORT_DIR, else <data-dir>/json).")
+    parser.add_argument("--manifest-dir", type=Path, default=None,
+                        help="Where validate wrote its reports and manifests "
+                             "(default: $MANIFEST_DIR, else <data-dir>/manifests).")
+    parser.add_argument("--logs-dir", type=Path, default=None,
+                        help="Where the Slurm step logs are (default: <data-dir>/logs).")
     parser.add_argument("--name", default=None,
                         help="Build name, when metadata.json has no corpus.build_name "
                              "(a cutoff file download never synced).")
@@ -129,8 +166,9 @@ def main(argv: list[str] | None = None) -> None:
     data_dir: Path = args.data_dir
     export_dir: Path = args.export_dir or Path(os.environ.get("EXPORT_DIR") or data_dir / "json")
     builds_dir = data_dir / "builds"
-    manifest_dir = data_dir / "manifests"
-    logs_dir = data_dir / "logs"
+    manifest_dir: Path = args.manifest_dir or Path(
+        os.environ.get("MANIFEST_DIR") or data_dir / "manifests")
+    logs_dir: Path = args.logs_dir or data_dir / "logs"
     db_path = data_dir / "pubmed.duckdb"
 
     metadata_path = export_dir / "metadata.json"
@@ -172,33 +210,46 @@ def main(argv: list[str] | None = None) -> None:
     logs = sorted(p for p in logs_dir.glob("pubmed2db-*.out")
                   if p.stat().st_mtime > logs_since) if logs_dir.is_dir() else []
 
+    # Gather everything beside the export first, so a failure here leaves the
+    # export where it was and a re-run starts clean.
     builds_dir.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(export_dir), str(dest))
-    print(f"moved {export_dir} -> {dest}")
+    incoming = builds_dir / f".{build}.incoming"
+    if incoming.exists():
+        shutil.rmtree(incoming)  # left by a run that died before the move
+    incoming.mkdir()
 
     if report is not None:
-        (dest / "manifests").mkdir()
-        shutil.copy2(report, dest / "manifests" / report.name)
+        (incoming / "manifests").mkdir()
+        shutil.copy2(report, incoming / "manifests" / report.name)
         print(f"copied {report.name} -> {dest / 'manifests'}")
         if manifest is not None:
-            shutil.copy2(manifest, dest / "manifests" / manifest.name)
+            shutil.copy2(manifest, incoming / "manifests" / manifest.name)
             print(f"copied {manifest.name} -> {dest / 'manifests'}")
         else:
             print("note: the report names no manifest (a fail run writes none); "
                   "nothing copied")
     if logs:
-        (dest / "logs").mkdir()
+        (incoming / "logs").mkdir()
         for log in logs:
-            shutil.copy2(log, dest / "logs" / log.name)
+            shutil.copy2(log, incoming / "logs" / log.name)
         print(f"copied {len(logs)} step log(s) -> {dest / 'logs'}")
+    else:
+        print(f"note: no step logs in {logs_dir} newer than the last archived build's; "
+              "pass --logs-dir if the jobs wrote them elsewhere")
 
     if db_path.is_file():
         cutoff = metadata.get("corpus", {}).get("cutoff_file")
-        if dump_source_file(db_path, dest / "source_file.csv", cutoff):
+        if dump_source_file(db_path, incoming / "source_file.csv", cutoff):
             print(f"wrote {dest / 'source_file.csv'} (the files this build loaded, "
                   "with the MD5 NCBI published for each)")
     else:
         print(f"note: {db_path} not found; no source_file.csv written")
+
+    shutil.move(str(export_dir), str(dest))
+    print(f"moved {export_dir} -> {dest}")
+    for item in sorted(incoming.iterdir()):
+        item.rename(dest / item.name)
+    incoming.rmdir()
 
     print()
     print(f"Build {build} is in {dest}. To publish it:")
