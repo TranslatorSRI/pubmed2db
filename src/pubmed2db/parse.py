@@ -12,7 +12,9 @@ We drive the XML iteration ourselves (rather than using
    wrong: the *raw* ``PubDate`` components (so ``MedlineDate``-only and
    partial dates survive with full fidelity), ``<DeleteCitation>`` PMIDs
    (needed for latest-version selection), and the article's own IDs (see
-   :func:`_article_ids`).
+   :func:`_article_ids`). Publication types and MeSH headings are read here
+   too, because upstream's model of them loses names or order, or rewrites
+   their IDs (:func:`_publication_types`, :func:`_mesh_headings`).
 
 :func:`_cited_pmids` is deliberately unused — see its docstring.
 """
@@ -23,11 +25,29 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 from lxml import etree
 from pubmed_downloader.api import Article, _extract_article
 
 logger = logging.getLogger(__name__)
+
+
+class MeshQualifier(NamedTuple):
+    """A ``<QualifierName>``: its UI, its text and ``MajorTopicYN``, as PubMed wrote them."""
+
+    ui: str | None
+    name: str | None
+    major: bool
+
+
+class MeshHeading(NamedTuple):
+    """A ``<MeshHeading>``: its descriptor's UI, text and ``MajorTopicYN``, and its qualifiers."""
+
+    ui: str
+    name: str | None
+    major: bool
+    qualifiers: list[MeshQualifier]
 
 
 @dataclass
@@ -50,6 +70,9 @@ class ParsedArticle:
     #: ``(mesh_ui, name)`` in PubMed's order; see :func:`_publication_types` for
     #: why we don't use the upstream ``Article.type_mesh_ids``.
     publication_types: list[tuple[str, str]] = field(default_factory=list)
+    #: In PubMed's order; see :func:`_mesh_headings` for why we don't use the
+    #: upstream ``Article.headings``.
+    mesh_headings: list[MeshHeading] = field(default_factory=list)
 
     @property
     def pubmed(self) -> int:
@@ -136,6 +159,47 @@ def _publication_types(element: etree._Element) -> list[tuple[str, str]]:
     ]
 
 
+_MESH_HEADING_PATH = "MedlineCitation/MeshHeadingList/MeshHeading"
+
+
+def _mesh_headings(element: etree._Element) -> list[MeshHeading]:
+    """The article's MeSH headings, in document order, as PubMed wrote them.
+
+    Upstream's ``Heading`` is a model we would otherwise read the UI and name
+    through, and it moves: 0.1.0 renamed its fields and runs every descriptor
+    ID through ``_ground_mesh`` (prefix stripping, cutting at ``Q``), and drops
+    a qualifier with no text where 0.0.14 rejected the article. None of that
+    changed a value on real data (four 2026 files loaded identically under
+    both versions), but the next release could, silently. Reading the elements
+    here pins ``mesh_heading``/``mesh_qualifier`` to the XML, as the column
+    comments say they are, and keeps the names PubMed's own (AGENTS.md: MeSH
+    labels are per record, never looked up).
+
+    Text is kept verbatim, ``None`` when the element is empty. A heading
+    without ``DescriptorName/@UI``, which the DTD requires, is skipped rather
+    than stored as a descriptor nothing can join on. ``MajorTopicYN``
+    defaults to ``N``, as the DTD declares. Upstream still parses the headings
+    inside ``_extract_article``, so an article it rejects is rejected before
+    this runs.
+    """
+    headings = []
+    for heading in element.iterfind(_MESH_HEADING_PATH):
+        descriptor = heading.find("DescriptorName")
+        if descriptor is None or not (ui := descriptor.get("UI")):
+            continue
+        headings.append(MeshHeading(
+            ui=ui,
+            name=descriptor.text,
+            major=descriptor.get("MajorTopicYN", "N") == "Y",
+            qualifiers=[
+                MeshQualifier(ui=q.get("UI"), name=q.text,
+                              major=q.get("MajorTopicYN", "N") == "Y")
+                for q in heading.iterfind("QualifierName")
+            ],
+        ))
+    return headings
+
+
 def _cited_pmids(element: etree._Element) -> list[int]:
     """Cited PMIDs from ``<ReferenceList>``, deduplicated, in document order.
 
@@ -213,6 +277,7 @@ def parse_file(path: str | Path) -> ParsedFile:
                 medline_date=medline_date,
                 article_ids=_article_ids(element),
                 publication_types=_publication_types(element),
+                mesh_headings=_mesh_headings(element),
             )
         )
 

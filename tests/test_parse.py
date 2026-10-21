@@ -56,8 +56,42 @@ def test_extracts_rich_fields(gz_fixture):
         ("BACKGROUND", "First section of the abstract."),
         ("RESULTS", "Second section of the abstract."),
     ]
-    assert {(h.reference.identifier, h.major) for h in article.headings} == {("D000818", False), ("D006801", True)}
     assert article.journal.nlm_catalog_id == "0410462"
+
+
+def test_mesh_headings_are_read_from_the_xml(gz_fixture):
+    """UI, PubMed's own name, major flag and qualifiers, in document order."""
+    from pubmed2db.parse import MeshHeading, MeshQualifier, parse_file
+
+    parsed = parse_file(gz_fixture("pubmed25n0001"))
+    article = next(pa for pa in parsed.articles if pa.pubmed == 1001)
+    assert article.mesh_headings == [
+        MeshHeading("D000818", "Animals", False, []),
+        MeshHeading("D006801", "Humans", True, [MeshQualifier("Q000235", "genetics", False)]),
+    ]
+
+
+def test_mesh_headings_keep_pubmeds_text_and_skip_a_descriptor_without_a_ui():
+    """Neither shape occurs in 2026 files; both are where upstream's model moved.
+
+    pubmed-downloader 0.1.0 drops a qualifier with no text and rewrites an ID
+    taken from a MeshHeading URI; neither should reach our tables.
+    """
+    from lxml import etree
+
+    from pubmed2db.parse import MeshHeading, MeshQualifier, _mesh_headings
+
+    element = etree.fromstring(
+        "<PubmedArticle><MedlineCitation><MeshHeadingList>"
+        '<MeshHeading URI="https://id.nlm.nih.gov/mesh/D000820Q000453">'
+        "<DescriptorName>Animal Diseases</DescriptorName></MeshHeading>"
+        '<MeshHeading><DescriptorName UI="D006801">Humans</DescriptorName>'
+        '<QualifierName UI="Q000235" MajorTopicYN="Y"></QualifierName></MeshHeading>'
+        "</MeshHeadingList></MedlineCitation></PubmedArticle>"
+    )
+    assert _mesh_headings(element) == [
+        MeshHeading("D006801", "Humans", False, [MeshQualifier("Q000235", None, True)]),
+    ]
 
 
 def test_article_ids_exclude_reference_ids(gz_fixture):

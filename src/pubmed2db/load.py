@@ -101,16 +101,14 @@ def _article_rows(parsed: ParsedArticle, source_file: str, order_key: int) -> di
 
     # A descriptor can repeat within one record, so a qualifier is tied to its
     # heading by position; the descriptor UI alone was ambiguous.
-    for heading_position, heading in enumerate(a.headings):
-        descriptor = heading.reference  # the descriptor's UI and name
+    for heading_position, heading in enumerate(parsed.mesh_headings):
         rows["mesh_heading"].append(
-            (pmid, source_file, heading_position, descriptor.identifier, descriptor.name,
-             heading.major)
+            (pmid, source_file, heading_position, heading.ui, heading.name, heading.major)
         )
-        for qualifier in heading.qualifiers or []:
+        for qualifier in heading.qualifiers:
             rows["mesh_qualifier"].append(
-                (pmid, source_file, heading_position, descriptor.identifier,
-                 qualifier.mesh_id, qualifier.name, qualifier.major)
+                (pmid, source_file, heading_position, heading.ui,
+                 qualifier.ui, qualifier.name, qualifier.major)
             )
 
     for position, (type_ui, type_name) in enumerate(parsed.publication_types):
