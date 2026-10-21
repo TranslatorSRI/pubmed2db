@@ -21,12 +21,11 @@ def test_latest_article_picks_newest_version(loaded_con):
 def test_deleted_pmid_excluded_from_latest(loaded_con):
     # PMID 1002 was deleted in the update file -> absent from latest_article,
     # but its history row remains in the base table.
-    assert loaded_con.execute(
-        "SELECT count(*) FROM latest_article WHERE pmid = 1002"
-    ).fetchone()[0] == 0
-    assert loaded_con.execute(
-        "SELECT count(*) FROM article WHERE pmid = 1002"
-    ).fetchone()[0] == 1
+    assert (
+        loaded_con.execute("SELECT count(*) FROM latest_article WHERE pmid = 1002").fetchone()[0]
+        == 0
+    )
+    assert loaded_con.execute("SELECT count(*) FROM article WHERE pmid = 1002").fetchone()[0] == 1
 
 
 def test_reload_is_idempotent(con, gz_fixture):
@@ -92,10 +91,12 @@ def test_child_tables_populated(loaded_con):
 
 def test_no_reference_citation_table(con):
     """The citation graph is deliberately not stored -- see parse._cited_pmids."""
-    assert con.execute(
-        "SELECT count(*) FROM information_schema.tables "
-        "WHERE table_name = 'reference_citation'"
-    ).fetchone()[0] == 0
+    assert (
+        con.execute(
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'reference_citation'"
+        ).fetchone()[0]
+        == 0
+    )
 
 
 def test_bad_file_is_skipped_not_fatal(con, gz_fixture, tmp_path):
@@ -113,9 +114,12 @@ def test_bad_file_is_skipped_not_fatal(con, gz_fixture, tmp_path):
     # The good file landed...
     assert con.execute("SELECT count(*) FROM article").fetchone()[0] == 3
     # ...and the bad one left no rows, no watermark, so a later run retries it.
-    assert con.execute(
-        "SELECT count(*) FROM article WHERE source_file = 'pubmed25n0003.xml.gz'"
-    ).fetchone()[0] == 0
+    assert (
+        con.execute(
+            "SELECT count(*) FROM article WHERE source_file = 'pubmed25n0003.xml.gz'"
+        ).fetchone()[0]
+        == 0
+    )
     assert needs_load(con, "pubmed25n0003.xml.gz") is True
 
 
@@ -126,7 +130,10 @@ def test_unparseable_filename_is_ignored_not_fatal(con, gz_fixture, tmp_path):
     stray = tmp_path / "notes.xml.gz"
     stray.write_bytes(b"")
 
-    assert load_files(con, [(stray, "update"), (gz_fixture("pubmed25n0001"), "baseline")]) == (1, [])
+    assert load_files(con, [(stray, "update"), (gz_fixture("pubmed25n0001"), "baseline")]) == (
+        1,
+        [],
+    )
     assert con.execute("SELECT count(*) FROM article").fetchone()[0] == 3
 
 
@@ -237,8 +244,7 @@ def test_load_progress_line_reports_rate_and_elapsed(con, gz_fixture, caplog):
 
     from pubmed2db.load import load_files
 
-    files = [(gz_fixture("pubmed25n0001"), "baseline"),
-             (gz_fixture("pubmed25n0002"), "update")]
+    files = [(gz_fixture("pubmed25n0001"), "baseline"), (gz_fixture("pubmed25n0002"), "update")]
     with caplog.at_level(logging.INFO, logger="pubmed2db.load"):
         load_files(con, files)
 
@@ -289,6 +295,21 @@ def test_corpus_provenance_names_the_cutoff(loaded_con):
         "records_failed": 0,
         "book_records_skipped": 0,
     }
+
+
+def test_corpus_provenance_has_no_date_when_the_cutoff_has_none(loaded_con):
+    """A cutoff file with no posting time (copied in by rsync) names no build,
+    rather than borrowing an earlier file's date: `arg_max` skips NULLs."""
+    from pubmed2db.status import corpus_provenance
+
+    loaded_con.execute(
+        "UPDATE source_file SET published_at = TIMESTAMPTZ '2025-06-01 14:05:00+00' "
+        "WHERE file_name = 'pubmed25n0001.xml.gz'"
+    )
+    provenance = corpus_provenance(loaded_con)
+    assert provenance["cutoff_file"] == "pubmed25n0002.xml.gz"
+    assert provenance["cutoff_published_at"] is None
+    assert provenance["build_name"] is None
 
 
 def test_build_name_is_the_utc_posting_date_of_the_cutoff():

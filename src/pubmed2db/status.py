@@ -10,7 +10,7 @@ tables were wiped). The CLI turns these into actionable errors/warnings.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import duckdb
 
@@ -39,11 +39,42 @@ def pending_file_count(con: duckdb.DuckDBPyConnection) -> int:
     ).fetchone()[0]
 
 
+def load_gaps(con: duckdb.DuckDBPyConnection) -> list[str]:
+    """Files inside the loaded range that this database never loaded.
+
+    PubMed numbers each year's files without gaps (the baseline from 1, its
+    updatefiles continuing above it), so within a year every number between the
+    first and last file loaded should be loaded too. A missing one is an update
+    file that failed to download or to load, and its ``DeleteCitation`` never
+    reached ``deleted_pmid``. A file registered but not loaded below the cutoff
+    counts as well, which covers the end of a year that a later year followed.
+    Files past the cutoff are not gaps: ``pending_file_count`` reports those.
+    """
+    rows = con.execute(
+        """
+        WITH loaded AS (
+            SELECT year_yy, file_number, file_order_key FROM source_file
+            WHERE processed_at IS NOT NULL
+        ),
+        span AS (
+            SELECT year_yy, unnest(range(min(file_number), max(file_number) + 1)) AS file_number
+            FROM loaded GROUP BY year_yy
+        )
+        SELECT year_yy, file_number FROM span
+        WHERE (year_yy, file_number) NOT IN (SELECT (year_yy, file_number) FROM loaded)
+        UNION
+        SELECT year_yy, file_number FROM source_file
+        WHERE processed_at IS NULL
+          AND file_order_key < (SELECT max(file_order_key) FROM loaded)
+        ORDER BY year_yy, file_number
+        """
+    ).fetchall()
+    return [f"pubmed{yy:02d}n{number:04d}.xml.gz" for yy, number in rows]
+
+
 def last_run(con: duckdb.DuckDBPyConnection, step: str) -> datetime | None:
     """When ``step`` was last recorded in ``pipeline_run`` (or ``None``)."""
-    row = con.execute(
-        "SELECT last_run_at FROM pipeline_run WHERE step = ?", [step]
-    ).fetchone()
+    row = con.execute("SELECT last_run_at FROM pipeline_run WHERE step = ?", [step]).fetchone()
     return row[0] if row else None
 
 
@@ -156,7 +187,7 @@ def build_name(cutoff_published_at: datetime | None) -> str | None:
 
     if cutoff_published_at is None:
         return None
-    day = cutoff_published_at.astimezone(timezone.utc)
+    day = cutoff_published_at.astimezone(UTC)
     return f"{day.year}{_MONTH_ABBR[day.month - 1].lower()}{day.day:02d}"
 
 
@@ -179,7 +210,7 @@ def corpus_provenance(con: duckdb.DuckDBPyConnection) -> dict:
         SELECT
             arg_min(file_name, file_order_key),
             arg_max(file_name, file_order_key),
-            arg_max(published_at, file_order_key),
+            arg_max_null(published_at, file_order_key),
             count(*),
             max(year_yy) FILTER (WHERE kind = 'baseline'),
             sum(n_articles),
@@ -197,7 +228,7 @@ def corpus_provenance(con: duckdb.DuckDBPyConnection) -> dict:
         "cutoff_file": last,
         # In UTC, not the session's zone: this lands in a file other people read.
         "cutoff_published_at": (
-            None if published is None else published.astimezone(timezone.utc).isoformat()
+            None if published is None else published.astimezone(UTC).isoformat()
         ),
         "files_loaded": files,
         "article_versions_loaded": articles or 0,

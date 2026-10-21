@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
+import time
+from pathlib import Path
 
 import pytest
 
@@ -61,13 +64,23 @@ def _fake_eutils_factory(articles, *, entrez_count=2):
 
     def fake(endpoint, params, *, api_key=None, email=None, **_):
         if endpoint == "einfo.fcgi":
-            return json.dumps(
-                {"einforesult": {"dbinfo": [{"count": str(entrez_count)}]}}
-            ).encode()
+            return json.dumps({"einforesult": {"dbinfo": [{"count": str(entrez_count)}]}}).encode()
         if endpoint == "efetch.fcgi":
             wanted = [int(x) for x in params["id"].split(",")]
             body = "".join(articles[p] for p in wanted if p in articles)
             return f"<PubmedArticleSet>{body}</PubmedArticleSet>".encode()
+        if endpoint == "esummary.fcgi":
+            # Shaped like the live response: every ID asked about is named, a
+            # missing one with "error".
+            wanted = params["id"].split(",")
+            result = {"uids": wanted}
+            for uid in wanted:
+                result[uid] = (
+                    {"uid": uid}
+                    if int(uid) in articles
+                    else {"uid": uid, "error": "cannot get document summary"}
+                )
+            return json.dumps({"result": result}).encode()
         raise AssertionError(f"unexpected endpoint {endpoint}")
 
     return fake
@@ -167,28 +180,34 @@ def test_malformed_and_structural_errors(export_dir):
     _append_to_shard(
         export_dir,
         "{not json}",
-        json.dumps({"id": "PMID:1001"}),                                    # duplicate + missing fields
-        json.dumps({**_valid_doc(), "id": "1099"}),                         # bad id
+        json.dumps({"id": "PMID:1001"}),  # duplicate + missing fields
+        json.dumps({**_valid_doc(), "id": "1099"}),  # bad id
         json.dumps({**_valid_doc(), "id": "PMID:1200", "volume": None}),
     )
 
     report = validate.run_validation(export_dir, online=False)
     codes = {e["code"] for e in report["errors"]}
     assert report["status"] == "fail"
-    assert {"malformed_json", "missing_fields", "invalid_ids", "null_values", "duplicate_pmids"} <= codes
+    assert {
+        "malformed_json",
+        "missing_fields",
+        "invalid_ids",
+        "null_values",
+        "duplicate_pmids",
+    } <= codes
 
 
 @pytest.mark.parametrize(
     "pub_month,warns",
     [
-        ("Mar", False),             # an ordinary abbreviation
-        ("", False),                # absent, the empty-string convention
-        ("Spring", False),          # a season -- the export now passes these through
-        ("Sep-Dec", False),         # the DocumentMetadataAPI example's range
+        ("Mar", False),  # an ordinary abbreviation
+        ("", False),  # absent, the empty-string convention
+        ("Spring", False),  # a season -- the export now passes these through
+        ("Sep-Dec", False),  # the DocumentMetadataAPI example's range
         ("Jul-Aug", False),
-        ("Winter-Spring", False),   # a range of seasons
-        ("Dec-1999 Jan", True),     # cross-year: legitimate input, still worth seeing
-        ("3", True),                # unnormalized -- the export should never emit this
+        ("Winter-Spring", False),  # a range of seasons
+        ("Dec-1999 Jan", True),  # cross-year: legitimate input, still worth seeing
+        ("3", True),  # unnormalized -- the export should never emit this
         ("Marzipan", True),
     ],
 )
@@ -212,9 +231,17 @@ def _valid_doc():
     return {
         "id": "PMID:9",
         "identifiers": ["PMID:9"],
-        "journal_name": "", "journal_abbrev": "", "article_title": "",
-        "volume": "", "issue": "", "pub_year": "", "pub_month": "",
-        "pub_day": "", "pub_date": "", "publication_types": [], "abstract": "",
+        "journal_name": "",
+        "journal_abbrev": "",
+        "article_title": "",
+        "volume": "",
+        "issue": "",
+        "pub_year": "",
+        "pub_month": "",
+        "pub_day": "",
+        "pub_date": "",
+        "publication_types": [],
+        "abstract": "",
     }
 
 
@@ -232,14 +259,10 @@ def test_coverage_warns_outside_default_band(export_dir, loaded_con, monkeypatch
     """A short export must trip the ±5% band, not slip through it."""
     # 2 exported against an Entrez total of 4 is 50% — inside the old [0.1, 1.5]
     # band, outside the calibrated default one.
-    monkeypatch.setattr(
-        validate, "_eutils", _fake_eutils_factory(_EFETCH, entrez_count=4)
-    )
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH, entrez_count=4))
     report = validate.run_validation(export_dir, con=loaded_con, email="me@example.com")
     assert report["checks"]["coverage"]["pct_of_entrez"] == pytest.approx(0.5)
-    assert any(w["code"] == "coverage_out_of_band" for w in report["warnings"]), (
-        report["warnings"]
-    )
+    assert any(w["code"] == "coverage_out_of_band" for w in report["warnings"]), report["warnings"]
 
 
 def test_field_validation_matches(export_dir, loaded_con, monkeypatch):
@@ -260,19 +283,25 @@ def test_field_validation_matches(export_dir, loaded_con, monkeypatch):
     "label,edit",
     [
         # Indexing added a type after our last update file -- the usual cause.
-        ("added", lambda x: x.replace(
-            '<PublicationType UI="D016420">Comment</PublicationType>',
-            '<PublicationType UI="D016420">Comment</PublicationType>'
-            '<PublicationType UI="D016454">Review</PublicationType>',
-        )),
+        (
+            "added",
+            lambda x: x.replace(
+                '<PublicationType UI="D016420">Comment</PublicationType>',
+                '<PublicationType UI="D016420">Comment</PublicationType>'
+                '<PublicationType UI="D016454">Review</PublicationType>',
+            ),
+        ),
         # Same types, different order: order is part of what we ship.
-        ("reordered", lambda x: x.replace(
-            '<PublicationType UI="D016422">Letter</PublicationType>', ""
-        ).replace(
-            '<PublicationType UI="D016420">Comment</PublicationType>',
-            '<PublicationType UI="D016420">Comment</PublicationType>'
-            '<PublicationType UI="D016422">Letter</PublicationType>',
-        )),
+        (
+            "reordered",
+            lambda x: x.replace(
+                '<PublicationType UI="D016422">Letter</PublicationType>', ""
+            ).replace(
+                '<PublicationType UI="D016420">Comment</PublicationType>',
+                '<PublicationType UI="D016420">Comment</PublicationType>'
+                '<PublicationType UI="D016422">Letter</PublicationType>',
+            ),
+        ),
     ],
 )
 def test_publication_types_mismatch_is_soft(export_dir, loaded_con, monkeypatch, label, edit):
@@ -293,9 +322,7 @@ def test_publication_types_mismatch_is_soft(export_dir, loaded_con, monkeypatch,
     assert [w["code"] for w in report["warnings"]] == ["publication_type_mismatches"]
 
 
-def test_unnamed_publication_types_blame_the_load_not_indexing(
-    loaded_con, tmp_path, monkeypatch
-):
+def test_unnamed_publication_types_blame_the_load_not_indexing(loaded_con, tmp_path, monkeypatch):
     """A database loaded before names were parsed exported `"name": ""` on
     every type. That must read as "rebuild", once, under its own code -- not as
     every sampled record's types having been revised by indexing."""
@@ -318,13 +345,20 @@ def test_unnamed_publication_types_still_compare_their_ids(monkeypatch):
     """Comparing on ids alone must not hide a real revision."""
     report = validate.Report()
     doc = {**_valid_doc(), "publication_types": [{"id": "MESH:D016428", "name": ""}]}
-    revised = {**doc, "publication_types": [
-        {"id": "MESH:D016428", "name": "Journal Article"},
-        {"id": "MESH:D016454", "name": "Review"},
-    ]}
+    revised = {
+        **doc,
+        "publication_types": [
+            {"id": "MESH:D016428", "name": "Journal Article"},
+            {"id": "MESH:D016454", "name": "Review"},
+        ],
+    }
     monkeypatch.setattr(validate, "efetch_documents", lambda *a, **k: {9: revised})
     validate.check_fields(
-        report, {9: doc}, online=True, api_key=None, email="me@example.com",
+        report,
+        {9: doc},
+        online=True,
+        api_key=None,
+        email="me@example.com",
         abstract_threshold=0.9,
     )
     assert [w["code"] for w in report.warnings] == ["publication_type_mismatches"]
@@ -333,13 +367,13 @@ def test_unnamed_publication_types_still_compare_their_ids(monkeypatch):
 @pytest.mark.parametrize(
     "types",
     [
-        "Review",                                             # not a list
-        [{"id": "MeSH:D016454", "name": "Review"}],           # Biolink's casing is MESH
-        [{"id": "D016454", "name": "Review"}],                # no prefix
-        [{"id": "MESH:D016454"}],                             # no name
-        [{"id": "MESH:D016454", "label": "Review"}],          # renamed key
-        [{"id": "MESH:D016454", "name": "Review", "x": 1}],   # extra key
-        ["MESH:D016454"],                                     # bare CURIE
+        "Review",  # not a list
+        [{"id": "MeSH:D016454", "name": "Review"}],  # Biolink's casing is MESH
+        [{"id": "D016454", "name": "Review"}],  # no prefix
+        [{"id": "MESH:D016454"}],  # no name
+        [{"id": "MESH:D016454", "label": "Review"}],  # renamed key
+        [{"id": "MESH:D016454", "name": "Review", "x": 1}],  # extra key
+        ["MESH:D016454"],  # bare CURIE
     ],
 )
 def test_malformed_publication_types_fail_structure(export_dir, types):
@@ -367,7 +401,11 @@ def test_one_soft_group_cannot_crowd_out_anothers_examples(monkeypatch):
     fetched[pmid] = {**fetched[pmid], "pub_date": "2021"}  # only the last record
     monkeypatch.setattr(validate, "efetch_documents", lambda *a, **k: fetched)
     validate.check_fields(
-        report, sample, online=True, api_key=None, email="me@example.com",
+        report,
+        sample,
+        online=True,
+        api_key=None,
+        email="me@example.com",
         abstract_threshold=0.9,
     )
 
@@ -441,7 +479,9 @@ def test_efetch_identifiers_exclude_cited_references(monkeypatch):
     monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory({1001: with_refs}))
     docs = validate.efetch_documents([1001], api_key=None, email="me@example.com")
     assert docs[1001]["identifiers"] == [
-        "PMID:1001", "doi:10.1038/example1001", "PMC:PMC7654321",
+        "PMID:1001",
+        "doi:10.1038/example1001",
+        "PMC:PMC7654321",
     ]
 
 
@@ -549,7 +589,10 @@ def test_drops_explained_by_recorded_deletion(export_dir, loaded_con, tmp_path):
 
 
 def test_unexplained_drop_is_an_error(export_dir, loaded_con, tmp_path):
-    """A PMID that vanished without a recorded deletion fails the run."""
+    """A PMID that vanished without a recorded deletion fails an offline run.
+
+    Offline there is no second opinion to ask, so the database's word is final.
+    """
     manifest = tmp_path / "prev.txt.gz"
     validate.write_manifest({1001, 1003, 4242}, manifest)
 
@@ -560,6 +603,293 @@ def test_unexplained_drop_is_an_error(export_dir, loaded_con, tmp_path):
     assert drops["unexplained"] == [4242]
     assert report["status"] == "fail"
     assert any(e["code"] == "unexplained_drops" for e in report["errors"])
+    assert drops["pubmed_confirmation"] == "offline"
+
+
+def test_a_drop_pubmed_no_longer_serves_is_a_warning(export_dir, loaded_con, monkeypatch, tmp_path):
+    """The fresh-database rebuild: deletions the new database never loaded.
+
+    A database built from a new baseline has no deleted_pmid row for anything
+    PubMed retired between the previous build and that baseline, so by the
+    database alone every such drop failed the run, no manifest was written, and
+    the next run diffed against the same old manifest and failed the same way.
+    Asked online, PubMed does not serve 4242 either, which explains the drop:
+    a warning (so the manifest is still written) rather than an error.
+    """
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
+    manifest = _manifest_from_before_the_database(tmp_path, {1001, 1003, 4242})
+    manifest_out = tmp_path / "next.txt.gz"
+
+    report = validate.run_validation(
+        export_dir,
+        con=loaded_con,
+        previous_manifest=manifest,
+        manifest_out=manifest_out,
+        email="me@example.com",
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["pubmed_confirmation"] == "entrez"
+    assert drops["database_rebuilt_since"] is True
+    assert drops["retired_upstream"] == [4242]
+    assert drops["unexplained"] == []
+    assert report["status"] == "warn"
+    assert any(w["code"] == "drops_retired_upstream" for w in report["warnings"])
+    assert not any(e["code"] == "unexplained_drops" for e in report["errors"])
+    assert manifest_out.exists()
+
+
+def _manifest_from_before_the_database(tmp_path, pmids, *, copied=False):
+    """A previous manifest written before the database existed: a rebuild.
+
+    ``copied`` gives the file a fresh mtime, as ``cp -r`` would, leaving only
+    the gzip header to say when it was written.
+    """
+    manifest = tmp_path / "prev.txt.gz"
+    an_hour_ago = time.time() - 3600
+    with gzip.GzipFile(manifest, "wb", mtime=an_hour_ago) as handle:
+        handle.write("".join(f"{p}\n" for p in sorted(pmids)).encode())
+    if not copied:
+        os.utime(manifest, (an_hour_ago, an_hour_ago))
+    return manifest
+
+
+def test_a_copied_manifest_still_marks_a_rebuild(export_dir, loaded_con, monkeypatch, tmp_path):
+    """The gzip header, not the file's mtime, says when a manifest was written."""
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
+    manifest = _manifest_from_before_the_database(tmp_path, {1001, 1003, 4242}, copied=True)
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    assert report["checks"]["drops_since_previous"]["database_rebuilt_since"] is True
+    assert any(w["code"] == "drops_retired_upstream" for w in report["warnings"])
+
+
+def test_a_drop_pubmed_no_longer_serves_fails_a_continuing_database(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """The same drop on a database that exported it last time: a missed update file.
+
+    A continuing database loads every update file, so a record PubMed retired
+    has its DeleteCitation here unless a file was skipped. PubMed agreeing the
+    record is gone does not explain how *this* database lost it.
+    """
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1003, 4242}, manifest)
+    manifest_out = tmp_path / "next.txt.gz"
+
+    report = validate.run_validation(
+        export_dir,
+        con=loaded_con,
+        previous_manifest=manifest,
+        manifest_out=manifest_out,
+        email="me@example.com",
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["database_rebuilt_since"] is False
+    assert drops["retired_upstream"] == [4242]
+    assert report["status"] == "fail"
+    assert any(e["code"] == "missed_deletions" for e in report["errors"])
+    assert not manifest_out.exists()
+
+
+def test_a_rebuilt_database_with_a_load_gap_does_not_excuse_retired_drops(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """A fresh build that skipped an update file missed that file's deletions.
+
+    They look exactly like the deletions published before the new baseline, so
+    being rebuilt is not enough: every file inside the build's range must have
+    loaded, or a warning run writes a manifest that buries the gap for good.
+    """
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
+    # 25n0002 is loaded; register 25n0004 as loaded too, leaving 25n0003 out.
+    loaded_con.execute(
+        "INSERT INTO source_file (file_name, kind, year_yy, file_number, file_order_key, "
+        "processed_at) VALUES ('pubmed25n0004.xml.gz', 'update', 25, 4, 25000004, now())"
+    )
+    manifest = _manifest_from_before_the_database(tmp_path, {1001, 1003, 4242})
+    manifest_out = tmp_path / "next.txt.gz"
+
+    report = validate.run_validation(
+        export_dir,
+        con=loaded_con,
+        previous_manifest=manifest,
+        manifest_out=manifest_out,
+        email="me@example.com",
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["database_rebuilt_since"] is True
+    assert drops["load_gaps"] == ["pubmed25n0003.xml.gz"]
+    assert drops["retired_upstream"] == [4242]
+    assert report["status"] == "fail"
+    error = next(e for e in report["errors"] if e["code"] == "missed_deletions")
+    assert "load_gaps" in error["message"]
+    assert not any(w["code"] == "drops_retired_upstream" for w in report["warnings"])
+    assert not manifest_out.exists()
+
+
+def test_lost_records_and_missed_deletions_are_both_reported(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """One error must not hide the other: they send the operator different ways."""
+    served = dict(_EFETCH)
+    served[4242] = _EFETCH[1003].replace("1003", "4242")
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(served))
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1003, 4242, 4243}, manifest)
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["unexplained"] == [4242]
+    assert drops["retired_upstream"] == [4243]
+    codes = {e["code"]: e["count"] for e in report["errors"]}
+    assert codes["unexplained_drops"] == 1
+    assert codes["missed_deletions"] == 1
+
+
+def test_a_continuing_database_asks_pubmed_about_a_sample_only(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """Where PubMed's answer cannot excuse a drop, a sample names the failure.
+
+    On a continuing database every unexplained drop fails, whatever PubMed says,
+    so confirming all of them would spend rate-limited requests on a verdict
+    already reached.
+    """
+    asked: list[str] = []
+    fake = _fake_eutils_factory(_EFETCH)
+
+    def counting(endpoint, params, **kwargs):
+        if endpoint == "esummary.fcgi":
+            asked.extend(params["id"].split(","))
+        return fake(endpoint, params, **kwargs)
+
+    monkeypatch.setattr(validate, "_eutils", counting)
+    monkeypatch.setattr(validate, "_DROP_DIAGNOSE_SAMPLE", 2)
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1003, 4242, 4243, 4244}, manifest)
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert len(asked) == 2 and set(asked) < {"4242", "4243", "4244"}
+    assert drops["pubmed_confirmation"] == "sampled"
+    assert drops["retired_upstream"] == sorted(int(p) for p in asked)
+    assert drops["unexplained"] == sorted({4242, 4243, 4244} - {int(p) for p in asked})
+    codes = {e["code"] for e in report["errors"]}
+    assert codes == {"unexplained_drops", "missed_deletions"}
+
+
+def test_a_degraded_esummary_response_is_not_an_explanation(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """A response that does not mention a PMID says nothing about it.
+
+    NCBI can answer 200 with an error body or a truncated one. Reading every
+    PMID missing from that as "PubMed dropped it" would turn lost records into a
+    warning, and the warning run's manifest would bury them for good.
+    """
+    fake = _fake_eutils_factory(_EFETCH)
+
+    def degraded(endpoint, params, **kwargs):
+        if endpoint == "esummary.fcgi":
+            return b'{"esummaryresult": ["Unable to obtain query #1"]}'
+        return fake(endpoint, params, **kwargs)
+
+    monkeypatch.setattr(validate, "_eutils", degraded)
+    manifest = _manifest_from_before_the_database(tmp_path, {1001, 1003, 4242})
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["pubmed_confirmation"] == "unreachable"
+    assert drops["retired_upstream"] == []
+    assert drops["unexplained"] == [4242]
+    assert report["status"] == "fail"
+
+
+def test_pmids_served_needs_an_answer_for_every_pmid(monkeypatch):
+    """A well-formed response that leaves a PMID out raises rather than guessing."""
+
+    def partial(endpoint, params, **_):
+        return json.dumps({"result": {"uids": ["1001"], "1001": {"uid": "1001"}}}).encode()
+
+    monkeypatch.setattr(validate, "_eutils", partial)
+    with pytest.raises(RuntimeError, match="did not answer"):
+        validate.pmids_served([1001, 4242], api_key=None, email=None)
+
+
+def test_a_drop_pubmed_still_serves_is_an_error(export_dir, loaded_con, monkeypatch, tmp_path):
+    """A PMID PubMed still serves but the export lost is the real failure."""
+    served = dict(_EFETCH)
+    served[4242] = _EFETCH[1003].replace("1003", "4242")
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(served))
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1003, 4242}, manifest)
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["pubmed_confirmation"] == "entrez"
+    assert drops["unexplained"] == [4242]
+    assert drops["retired_upstream"] == []
+    assert report["status"] == "fail"
+    error = next(e for e in report["errors"] if e["code"] == "unexplained_drops")
+    assert "still serves" in error["message"]
+
+
+def test_too_many_unexplained_drops_are_not_sent_to_pubmed(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """Past the cap the previous manifest is suspect, not the export."""
+
+    def no_esummary(endpoint, params, **_):
+        if endpoint == "esummary.fcgi":
+            raise AssertionError("esummary must not be called over the limit")
+        return _fake_eutils_factory(_EFETCH)(endpoint, params)
+
+    monkeypatch.setattr(validate, "_eutils", no_esummary)
+    monkeypatch.setattr(validate, "_DROP_CONFIRM_LIMIT", 1)
+    # Rebuilt: a continuing database only ever sends a sample, so has no cap.
+    manifest = _manifest_from_before_the_database(tmp_path, {1001, 1003, 4242, 4243})
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["pubmed_confirmation"] == "over_limit"
+    assert drops["unexplained"] == [4242, 4243]
+    assert report["status"] == "fail"
+    error = next(e for e in report["errors"] if e["code"] == "unexplained_drops")
+    assert "without --previous-manifest" in error["message"]
+    assert "run validate online" not in error["message"]
+
+
+def test_unreachable_pubmed_leaves_drops_unexplained(export_dir, loaded_con, monkeypatch, tmp_path):
+    """No answer is not an explanation: the run fails and says why."""
+
+    def dead(endpoint, params, **_):
+        raise RuntimeError("eutils down")
+
+    monkeypatch.setattr(validate, "_eutils", dead)
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1003, 4242}, manifest)
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["pubmed_confirmation"] == "unreachable"
+    assert drops["unexplained"] == [4242]
+    error = next(e for e in report["errors"] if e["code"] == "unexplained_drops")
+    assert "reachable" in error["message"]
+    assert "run validate online" not in error["message"]
 
 
 # --------------------------------------------------------------------------- #
@@ -623,8 +953,11 @@ def test_mismatch_kind_classification(mismatch, expected):
     [
         ("", "An abstract efetch serves but the baseline XML lacks.", "exported_blank"),
         ("An abstract we exported that efetch no longer serves.", "", "entrez_blank"),
-        ("The exported abstract, quite unlike the other.", "Totally different text.",
-         "low_similarity"),
+        (
+            "The exported abstract, quite unlike the other.",
+            "Totally different text.",
+            "low_similarity",
+        ),
     ],
 )
 def test_blank_abstract_is_missing_data_not_truncation(monkeypatch, exported_abs, entrez_abs, kind):
@@ -641,7 +974,11 @@ def test_blank_abstract_is_missing_data_not_truncation(monkeypatch, exported_abs
     fetched = {1: {**doc, "abstract": entrez_abs}}
     monkeypatch.setattr(validate, "efetch_documents", lambda *a, **k: fetched)
     validate.check_fields(
-        report, {1: doc}, online=True, api_key=None, email="me@example.com",
+        report,
+        {1: doc},
+        online=True,
+        api_key=None,
+        email="me@example.com",
         abstract_threshold=0.9,
     )
 
@@ -652,11 +989,13 @@ def test_blank_abstract_is_missing_data_not_truncation(monkeypatch, exported_abs
 
 
 def test_group_mismatches_tallies_by_field_and_kind():
-    grouped = validate.group_mismatches([
-        {"field": "pub_year", "exported": "", "entrez": "1978"},
-        {"field": "pub_year", "exported": "", "entrez": "1975"},
-        {"field": "volume", "exported": "12", "entrez": "13"},
-    ])
+    grouped = validate.group_mismatches(
+        [
+            {"field": "pub_year", "exported": "", "entrez": "1978"},
+            {"field": "pub_year", "exported": "", "entrez": "1975"},
+            {"field": "volume", "exported": "12", "entrez": "13"},
+        ]
+    )
     assert grouped["by_field"] == {"pub_year": 2, "volume": 1}
     assert grouped["by_kind"]["exported_blank"] == 2
     assert grouped["by_kind"]["values_differ"] == 1
@@ -670,13 +1009,21 @@ def test_summary_always_reports_the_incorrect_data_count():
     "20 fields disagreed" is unactionable; "20 blank, 0 wrong" says the export is
     incomplete but not corrupt, which is the call a reviewer actually has to make.
     """
-    grouped = validate.group_mismatches([
-        {"field": "pub_year", "exported": "", "entrez": "1978"},
-    ])
+    grouped = validate.group_mismatches(
+        [
+            {"field": "pub_year", "exported": "", "entrez": "1978"},
+        ]
+    )
     check = {
-        "name": "core-fields", "section": "field accuracy", "status": "warn",
-        "expectation": "x", "observed": "y", "code": "field_mismatches",
-        "count": 1, "see": "checks.field_validation.mismatches", "detail": grouped,
+        "name": "core-fields",
+        "section": "field accuracy",
+        "status": "warn",
+        "expectation": "x",
+        "observed": "y",
+        "code": "field_mismatches",
+        "count": 1,
+        "see": "checks.field_validation.mismatches",
+        "detail": grouped,
     }
     lines = "\n".join(validate._mismatch_detail(check))
     assert "1 exported blank where Entrez has a value (missing data)" in lines
@@ -688,14 +1035,25 @@ def test_summary_shows_a_blank_abstract_as_missing_data():
     clipped, under "missing data" -- not `similarity 0.0` under "possible
     truncation", which is what PMID:4825553 read as before the mismatch
     carried its values."""
-    grouped = validate.group_mismatches([
-        {"field": "abstract", "exported": "",
-         "entrez": "An abstract efetch serves but the baseline XML lacks."},
-    ])
+    grouped = validate.group_mismatches(
+        [
+            {
+                "field": "abstract",
+                "exported": "",
+                "entrez": "An abstract efetch serves but the baseline XML lacks.",
+            },
+        ]
+    )
     check = {
-        "name": "core-fields", "section": "field accuracy", "status": "warn",
-        "expectation": "x", "observed": "y", "code": "field_mismatches",
-        "count": 1, "see": "checks.field_validation.mismatches", "detail": grouped,
+        "name": "core-fields",
+        "section": "field accuracy",
+        "status": "warn",
+        "expectation": "x",
+        "observed": "y",
+        "code": "field_mismatches",
+        "count": 1,
+        "see": "checks.field_validation.mismatches",
+        "detail": grouped,
     }
     lines = "\n".join(validate._mismatch_detail(check))
     assert "1 exported blank where Entrez has a value (missing data)" in lines
@@ -710,9 +1068,15 @@ def test_summary_flags_truncated_example_lists():
         [{"field": "pub_year", "exported": "", "entrez": "1978"}] * 20
     )
     check = {
-        "name": "core-fields", "section": "field accuracy", "status": "warn",
-        "expectation": "x", "observed": "y", "code": "field_mismatches",
-        "count": 43, "see": None, "detail": grouped,
+        "name": "core-fields",
+        "section": "field accuracy",
+        "status": "warn",
+        "expectation": "x",
+        "observed": "y",
+        "code": "field_mismatches",
+        "count": 43,
+        "see": None,
+        "detail": grouped,
     }
     assert "(20 of 43 shown)" in "\n".join(validate._mismatch_detail(check))
 
@@ -736,8 +1100,7 @@ def test_summary_columns_line_up(export_dir):
     """Every row's expectation and observation start in the same column, in
     every section -- fixed widths went ragged once check names outgrew them."""
     report = validate.run_validation(export_dir, online=False)
-    rows = [line for line in validate.format_summary(report).splitlines()
-            if line.startswith("  [")]
+    rows = [line for line in validate.format_summary(report).splitlines() if line.startswith("  [")]
     starts = set()
     for check in report["checks_run"]:
         [row] = [r for r in rows if r[9:].startswith(check["name"] + " ")]
@@ -748,8 +1111,11 @@ def test_summary_columns_line_up(export_dir):
 def test_report_records_the_thresholds_it_was_judged_against(export_dir):
     """A report that cannot reproduce its own thresholds cannot be re-read later."""
     report = validate.run_validation(
-        export_dir, online=False, abstract_threshold=0.8,
-        entrez_low=0.5, entrez_high=1.5,
+        export_dir,
+        online=False,
+        abstract_threshold=0.8,
+        entrez_low=0.5,
+        entrez_high=1.5,
     )
     assert report["inputs"]["abstract_threshold"] == 0.8
     assert report["inputs"]["entrez_low"] == 0.5
@@ -774,16 +1140,27 @@ def test_summary_surfaces_findings_from_unrendered_checks(export_dir):
     and silently vanishing from the human-readable output.
     """
     report = validate.run_validation(export_dir, online=False)
-    report["checks_run"].append({
-        "name": "future-check", "section": "some-new-section",
-        "expectation": "something nobody has rendered yet", "status": "fail",
-        "observed": "it went wrong", "code": "future_code", "count": 3,
-        "see": "checks.future", "detail": {},
-    })
-    report["errors"].append({
-        "code": "future_code", "message": "A check the renderer knows nothing about.",
-        "count": 3, "see": "checks.future",
-    })
+    report["checks_run"].append(
+        {
+            "name": "future-check",
+            "section": "some-new-section",
+            "expectation": "something nobody has rendered yet",
+            "status": "fail",
+            "observed": "it went wrong",
+            "code": "future_code",
+            "count": 3,
+            "see": "checks.future",
+            "detail": {},
+        }
+    )
+    report["errors"].append(
+        {
+            "code": "future_code",
+            "message": "A check the renderer knows nothing about.",
+            "count": 3,
+            "see": "checks.future",
+        }
+    )
 
     out = validate.format_summary(report)
     assert "OTHER FINDINGS" in out
@@ -807,25 +1184,36 @@ def test_medline_date_year_is_not_a_false_mismatch(export_dir, loaded_con, monke
     assert fetched[1003]["pub_year"] == "1998"
     # Same recovery for the month half, which the export now also ships.
     assert fetched[1003]["pub_month"] == "Spring"
-    assert [m for m in report["checks"]["field_validation"]["mismatches"]
-            if m["field"] in ("pub_year", "pub_month")] == []
+    assert [
+        m
+        for m in report["checks"]["field_validation"]["mismatches"]
+        if m["field"] in ("pub_year", "pub_month")
+    ] == []
 
 
 @pytest.mark.parametrize(
     "exported,entrez,same",
     [
         # PMID:5684047 -- efetch drops the [ ] marking a translated title.
-        ("[Surgical results in the reconstruction of the lacrimal ducts with out cannula probes].",
-         "Surgical results in the reconstruction of the lacrimal ducts with out cannula probes.",
-         True),
+        (
+            "[Surgical results in the reconstruction of the lacrimal ducts with out cannula probes].",
+            "Surgical results in the reconstruction of the lacrimal ducts with out cannula probes.",
+            True,
+        ),
         # PMID:10205128 -- the archival title has a trailing space and no period.
-        ("Rationing-talk and action in health care ",
-         "Rationing-talk and action in health care.", True),
+        (
+            "Rationing-talk and action in health care ",
+            "Rationing-talk and action in health care.",
+            True,
+        ),
         # PMID:33511611 -- an empty <ArticleTitle/> is served as "[Not Available].".
         ("", "[Not Available].", True),
         # PMID:36326224 -- no terminal period inside the brackets.
-        ("[An infectious diseases ward dedicated to elderly patients: why and how?]",
-         "[An infectious diseases ward dedicated to elderly patients: why and how?].", True),
+        (
+            "[An infectious diseases ward dedicated to elderly patients: why and how?]",
+            "[An infectious diseases ward dedicated to elderly patients: why and how?].",
+            True,
+        ),
         # A change of wording must still be reported.
         ("Revised title for article one.", "A completely different title.", False),
     ],
@@ -870,7 +1258,11 @@ def test_date_renderings_are_compared_normalized(export_dir, loaded_con, monkeyp
     fetched = {1003: {**{f: "" for f in validate.EXPECTED_FIELDS}, "pub_date": "1998 Sep"}}
     monkeypatch.setattr(validate, "efetch_documents", lambda *a, **k: fetched)
     validate.check_fields(
-        report, sample, online=True, api_key=None, email="me@example.com",
+        report,
+        sample,
+        online=True,
+        api_key=None,
+        email="me@example.com",
         abstract_threshold=0.9,
     )
 
@@ -890,7 +1282,11 @@ def test_each_soft_reason_is_its_own_check(monkeypatch):
     fetched = {9: {**doc, "pub_date": "2020 Mar 17"}}
     monkeypatch.setattr(validate, "efetch_documents", lambda *a, **k: fetched)
     validate.check_fields(
-        report, sample, online=True, api_key=None, email="me@example.com",
+        report,
+        sample,
+        online=True,
+        api_key=None,
+        email="me@example.com",
         abstract_threshold=0.9,
     )
 
@@ -938,8 +1334,11 @@ def test_season_rendering_is_not_a_false_mismatch(export_dir, loaded_con, monkey
     # The convergence that makes pub_date checkable: assembled from <Year>+<Season>
     # here, taken whole from <MedlineDate> in the export, one string either way.
     assert fetched[1003]["pub_date"] == "1998 Spring"
-    assert [m for m in report["checks"]["field_validation"]["mismatches"]
-            if m["field"] in ("pub_year", "pub_month", "pub_date")] == []
+    assert [
+        m
+        for m in report["checks"]["field_validation"]["mismatches"]
+        if m["field"] in ("pub_year", "pub_month", "pub_date")
+    ] == []
 
 
 # --------------------------------------------------------------------------- #
@@ -973,6 +1372,7 @@ def test_examples_are_capped_but_counted():
 
 def test_offline_results_survive_an_entrez_outage(export_dir, loaded_con, monkeypatch):
     """A mid-run network failure must not discard the offline checks or the manifest."""
+
     def dead(endpoint, params, **_):
         if endpoint == "efetch.fcgi":
             raise RuntimeError("eutils efetch.fcgi failed after 3 attempts")
@@ -1021,6 +1421,7 @@ def test_a_warning_still_writes_a_manifest(export_dir, loaded_con, monkeypatch, 
     shard read that built the set -- and refusing to write on it would mean a
     cluster with flaky egress never accumulates a baseline at all.
     """
+
     def dead(endpoint, params, **_):
         if endpoint == "efetch.fcgi":
             raise RuntimeError("eutils efetch.fcgi failed after 3 attempts")
@@ -1113,8 +1514,7 @@ def test_progress_lines_and_peak_rss_are_logged(export_dir, monkeypatch, caplog)
     assert report["checks"]["structure"]["records_total"] == 2
     progress = [m for m in caplog.messages if m.startswith("progress:")]
     assert progress and "remaining" in progress[0]
-    assert any(m.startswith("validation finished in") and "peak RSS" in m
-               for m in caplog.messages)
+    assert any(m.startswith("validation finished in") and "peak RSS" in m for m in caplog.messages)
 
 
 def test_export_metadata_catches_a_changed_or_missing_shard(loaded_con, tmp_path):
@@ -1127,7 +1527,11 @@ def test_export_metadata_catches_a_changed_or_missing_shard(loaded_con, tmp_path
 
     out = tmp_path / "json"
     shards = export_json(loaded_con, out, shards=1)
-    report = validate.run_validation(out, online=False)
+    # The hashes come from the structure read; a second pass over every shard
+    # would double validate's disk reads on the full corpus.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(validate, "file_sha256", lambda path: 1 / 0)
+        report = validate.run_validation(out, online=False)
     check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
     assert check["status"] == "pass", check
     assert report["data_model_version"] == "1.0.0"
@@ -1151,8 +1555,31 @@ def test_export_metadata_catches_a_changed_or_missing_shard(loaded_con, tmp_path
     assert "checksum differs" in check["observed"]
     assert "1 record(s) read, 2 exported" in check["observed"]
 
-    (out / "metadata.json").unlink()
+    # A hand-edited count is reported, not a crash.
+    metadata = json.loads((out / "metadata.json").read_text())
+    (out / "metadata.json").write_text(json.dumps({**metadata, "records": "2"}))
     report = validate.run_validation(out, online=False)
+    check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
+    assert check["status"] == "fail"
+    assert "not an integer" in check["observed"]
+
+    # No metadata.json: the export's version is unknown, even beside a 1.0
+    # database, which the shards may predate.
+    (out / "metadata.json").unlink()
+    report = validate.run_validation(out, online=False, con=loaded_con)
     check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
     assert check["status"] == "skip"
     assert report["data_model_version"] is None
+
+
+def test_report_records_absolute_paths(export_dir, tmp_path, monkeypatch):
+    """05-validate.sbatch passes paths relative to SLURM_SUBMIT_DIR; the report
+    must not, or archive_build.py run from elsewhere cannot match it to its export."""
+    monkeypatch.chdir(export_dir.parent)
+    report = validate.run_validation(
+        Path(export_dir.name), online=False, manifest_out=Path("pmids.txt.gz")
+    )
+    assert report["inputs"]["export_dir"] == str(export_dir.resolve())
+    assert report["inputs"]["manifest_written"] == str(
+        (export_dir.parent / "pmids.txt.gz").resolve()
+    )

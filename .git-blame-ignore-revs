@@ -1,0 +1,18 @@
+# Commits that only reformat, for `git blame` to skip. GitHub's blame view reads
+# this file on its own; locally, run once:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Each line must name a commit on main, so merge the PR that adds one with a
+# merge commit: a squash or rebase merge gives the commit a new SHA, and git
+# then skips nothing. tests/test_blame_ignore_revs.py fails if a listed commit
+# is not an ancestor of HEAD; if it fails on main after a merge, replace the
+# SHA with the one the commit landed as.
+
+# Apply ruff's lint fixes: import order, unused imports, datetime.UTC
+d327290b8f880c75b4f2b50fc9b70fcb76e59ce3
+
+# Format every Python file with ruff format
+be73b1b6d9cb1a32fab974d02a6cc48254835a41
+
+# Fix what rumdl finds in the Markdown, three of them by hand
+1f5bfb8431673cb0ba85c27ef16598d8873c3f75

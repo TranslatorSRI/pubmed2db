@@ -9,7 +9,7 @@ Everything a user needs — commands, options, operational notes, the year-bound
 rebuild — is in [`README.md`](./README.md); deferred work and known limitations
 are in [`FUTURE.md`](./FUTURE.md); how a release and its data build are cut is in
 [`docs/Releases.md`](./docs/Releases.md); what the outputs *mean*, for the
-people who consume them, is in [`docs/DataModel.md`](./docs/DataModel.md). This
+people who consume them, is in [`docs/data-model/`](./docs/data-model/README.md). This
 file is the map plus the handful of decisions you cannot see from the code.
 
 ## Layout
@@ -31,7 +31,7 @@ explains its part; this table is only a map.
 | `src/pubmed2db/util.py` | Shared helpers for the long steps: progress/ETA, durations, peak RSS. |
 | `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`, `status`, `validate`. |
 | `slurm/` | One `sbatch` script per pipeline step, `config.sh`, and `submit.sh`. See [`slurm/README.md`](./slurm/README.md). |
-| `docs/` | Longer write-ups, named in CamelCase (`JournalCatalog.md`). |
+| `docs/` | Longer write-ups, named in CamelCase (`JournalCatalog.md`). `data-model/` is the exception: the data model's contract (`README.md`), its `Changelog.md` and its generated `Reference.md`. |
 
 ## Decisions that are not visible from the code
 
@@ -43,14 +43,30 @@ explains its part; this table is only a map.
   NDJSON fields are SQL over the tables, so documenting one documents the other.
   Changing the shape fails `tests/test_data_model.py` until you bump it:
   - **minor** only appends (a column at a table's end, a table, a view, an
-    NDJSON field);
-  - **major** for anything else.
-  - **Patch** is for value fixes, and no test can detect that you owe one.
+    NDJSON field) or adds a guarantee: a change in what a value *means* that
+    leaves every reading of the old description correct (an unspecified order
+    becoming PubMed's). That bump still needs its golden file, with the same
+    shape as the last;
+  - **major** for anything else, including any change in meaning that makes an
+    old reading wrong (what NULL stands for, an ordering's base) with no
+    change to the shape, however mild. A minor is what consumers take without
+    reading, so severity and urgency go in the changelog entry, not the level.
+    No test catches a change of meaning; ask whether a consumer must read
+    anything differently, and whether code reading it the old way is now
+    wrong.
+  - **Patch** is not used, and `test_the_patch_level_is_unused` holds it
+    at 0. The version is the contract, not the contents: new PubMed or MeSH
+    data never bumps it (unless PubMed starts using a field in a way its
+    description no longer covers, which is a change of meaning), and neither
+    does a fix that changes values without changing how to read them. That
+    goes in the code's release notes, with whether it needs a reload
+    (`docs/Releases.md`, step 7). Nothing in a database records which code
+    loaded which rows: `last_loaded_by` is one key, overwritten by every load.
 
   Then write `tests/data_model/<MAJOR.MINOR>.json` with
   `python -m pubmed2db.datamodel --golden`; there is one file per
-  `MAJOR.MINOR`, because a patch cannot change the shape. Every bump, patch
-  included, also needs an entry in `docs/DataModel.md`'s changelog saying, per
+  `MAJOR.MINOR`, the levels that describe the shape. Every bump also
+  needs an entry in `docs/data-model/Changelog.md` saying, per
   output, what consumers must do; a test checks that it exists. That per-output
   table is the deliberate alternative to an extra version level for "breaks
   some consumers but not others". **Never edit an existing version's
@@ -61,10 +77,13 @@ explains its part; this table is only a map.
     `Provenance.` or `Internal.`; `datamodel.describe` reads the tier from
     there. Only internal tables (`pipeline_run`) are outside the contract.
   - **The comments are the data dictionary, and the doc is generated from
-    them.** `docs/DataModel.md`'s column reference is
-    `datamodel.render_reference`; edit the `COMMENT ON` in `schema.sql`, then
-    run `python -m pubmed2db.datamodel --docs docs/DataModel.md`. A test fails
-    on a stale block, so don't hand-edit it.
+    them.** `docs/data-model/Reference.md` is `datamodel.render_reference`;
+    edit the `COMMENT ON` in `schema.sql`, then run
+    `python -m pubmed2db.datamodel --docs docs/data-model/Reference.md`. A test
+    fails on a stale block, so don't hand-edit it. It and the changelog are
+    separate from the README so the contract prose stays short enough to read
+    whole; the three link each other by absolute URL on `main`, and
+    `test_links_between_the_data_model_docs_resolve` checks those links.
   - **Pre-1.0 databases are refused, not migrated.** `check_compatible` runs
     *before* `schema.sql`, so a refused file is untouched. That is why the old
     `ALTER TABLE` migrations, and the NULL-`type_name` export warning they
@@ -87,18 +106,63 @@ explains its part; this table is only a map.
     the CRC (measured 2026-10-19). Only a hash catches an intact shard that
     isn't the one this export wrote (a leftover from another build) or damage
     to a `--no-gzip` export.
-
+  - **`metadata.json` is also the "finished" mark the between-runs scripts
+    key on.** `export` refuses to run while one exists in its output
+    directory unless given `--overwrite` (it deletes the previous shards
+    first, #24; the check is in `export.py`, not the Slurm script, so a
+    hand-run export gets it too, and `submit.sh` repeats it before submitting
+    so an `all` chain does not run its load first), and
+    `scripts/archive_build.py` moves the directory to `data/builds/<build>/`
+    named from its `corpus.build_name`. Two things there are deliberate:
+    `data/manifests/` is copied and never moved, because the dated files are
+    the chain every `validate` diffs against; and `scripts/fresh_database.py`
+    *moves* a superseded baseline year out of `data/pubmed/{baseline,updates}`
+    rather than deleting it, because `load` globs those two directories
+    (registered or not) and the operator keeps the XML. `source_file.csv` in
+    each build is the only surviving record of the MD5 NCBI published per
+    file; no sidecars are kept on disk.
+  - **`validate` asks PubMed about drops the database cannot explain**
+    (`check_drops_since`), because a database built fresh from a new baseline
+    never loaded the update files that carried the deletions published before
+    it. Judged by `deleted_pmid` alone, the first run after every rebuild
+    failed, wrote no manifest, and so failed again the next time. A drop PubMed
+    still serves is the error; one it no longer serves is the
+    `drops_retired_upstream` warning, **but only on a database created after
+    the previous manifest** (`pubmed2db_metadata.created_at` against the
+    write time in the manifest's gzip header, which a `cp -r` of the data
+    directory keeps and the file's mtime does not) **and with no gap in its
+    files** (`status.load_gaps`):
+    a skipped update file's deletions look exactly like the ones published
+    before the baseline. On a continuing database the same drop means an update
+    file was missed, and stays a `missed_deletions` error; there PubMed's
+    answer only names the failure, so one batch is sampled
+    (`_DROP_DIAGNOSE_SAMPLE`) rather than all of them. The lookup is
+    `pmids_served`, on esummary rather than efetch, because esummary names
+    every ID it was asked about (a missing one with `"error"`): efetch's
+    recovering parser skips what it cannot read, which made a degraded
+    response read as "retired". On a clean rebuild it is capped at
+    `_DROP_CONFIRM_LIMIT`, and a run over the cap fails, so the cap has to sit
+    well above a year's deletions or the chain never recovers.
 - **Reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
   as-is, no upstream changes.** We take its file listings, its cache layout and
   its `Article` data model, but not its transfers (see below) or its
   `iterate_process_*`/JSONL cache — DuckDB is our store, and
   `parse.py` drives the XML itself for the fields that pipeline drops (its
   docstring says which). Pinned `<0.2` because we call private APIs
-  (`_extract_article`, `_ensure_urls`); 0.1.0 already renamed a model field we
-  read (`Heading.mesh_id`). We still parse `J_Entrez.txt` ourselves even
-  though 0.1.0's `process_journal_overview()` now works: upstream's parser
-  raises on a field it does not know, ours ignores it, and
-  `load._parse_journal_overview` says why that matters.
+  (`_extract_article`, `_ensure_urls`); 0.1.0 renamed `Heading.mesh_id` and
+  started rewriting MeSH IDs, so `parse._mesh_headings` now reads the headings
+  from the XML, as `_publication_types` and `_article_ids` do. We still parse
+  `J_Entrez.txt` ourselves even though 0.1.0's `process_journal_overview()`
+  now works: upstream's parser raises on a field it does not know, ours
+  ignores it, and `load._parse_journal_overview` says why that matters.
+  **Check whether an upstream bump changes the loaded values by loading, not
+  by reading upstream's diff**: load the same few PubMed files under the old
+  and new version (a `git worktree` of `main` with its own `uv sync` holds the
+  old one), then compare every table with `EXCEPT ALL` both ways, leaving out
+  `TIMESTAMPTZ` columns and `pubmed2db_metadata.created_by`. A difference goes
+  in the release notes, with whether it needs a reload; it bumps the data
+  model only if consumers must read a value differently. For 0.0.14 → 0.1.0,
+  four 2026 files (n0001, n0750, n1334, n1690) matched row for row.
 - **The journal dimension reads two NLM sources, and swapping to one loses
   data.** `J_Entrez.txt` gives `title`/`abbreviation_*`; NLM's serial catalog
   (serfile) gives `start_year`/`end_year`/`active`. The tempting simplification —
@@ -364,7 +428,6 @@ explains its part; this table is only a map.
   module they replace. A file that fails is skipped and the sync carries on,
   then `download` exits non-zero naming it; a SIGKILL skips `download_file`'s
   cleanup, so `download` and the catalog prune each sweep stale `.part` files.
-
 - **The `#SBATCH` headers in `slurm/` are the only place an allocation is
   written down**, and `slurm/README.md` deliberately does not repeat them — it
   carries the *evidence* (dated run tables, peak RSS, the shard-read breakdown)
@@ -407,11 +470,29 @@ explains its part; this table is only a map.
 ## Development
 
 ```bash
-uv sync --extra dev
+uv sync --extra dev --group lint
 uv run pytest          # no network needed
+uv run ruff check . && uv run ruff format --check . && uv run rumdl check .
+uv run ruff check --fix . && uv run ruff format . && uv run rumdl fmt .   # to fix
 ```
 
 Tests gzip the readable XML fixtures under `tests/fixtures/` into temp
 `pubmedNNnNNNN.xml.gz` files. Scratch downloads and databases go under `./data`
 (gitignored); the CLI points `PYSTOW_HOME` at `--data-dir` so
 `pubmed_downloader` caches under `data/pubmed/{baseline,updates}/`.
+
+The lint line is what `.github/workflows/lint.yml` runs; the config is in
+`pyproject.toml`, and `uv.lock` pins both tools (the `lint` dependency group,
+which CI installs on its own), since a new ruff can reformat code. Three things the fixers get wrong:
+
+- **ruff format reformats code inside a multi-line f-string**, and in a SQL
+  template that strands a dozen lines of Python at column 0 mid-query. Name
+  the expression first and interpolate the name (`export._ASSEMBLED_DATE_SQL`).
+- **In wrapped Markdown, a line starting with `+`, `-`, `*` or `1.` becomes a
+  list item, and one starting `#13` is a heading away from a fix.** rumdl
+  flags them (MD032, MD018), and its autofixes would make the damage
+  permanent: MD018's adds the space that makes the heading, MD032's the blank
+  lines that split the paragraph. Both are `unfixable` in `pyproject.toml`,
+  so `rumdl fmt` leaves them reported; rewrap the line by hand.
+- **`docs/data-model/Reference.md` is generated**, so a rumdl finding there is
+  fixed in `datamodel.render_reference`, not in the file.

@@ -1,6 +1,6 @@
 """The data model contract: its version, its shape, and what it promises.
 
-`docs/DataModel.md` is the consumer-facing description; these tests are what
+`docs/data-model/` is the consumer-facing description; these tests are what
 stops the database drifting away from it. A failure here usually means the
 shape changed — which is fine, but only together with a version bump.
 """
@@ -16,7 +16,6 @@ import pytest
 from pubmed2db import datamodel
 from pubmed2db.datamodel import DATA_MODEL_VERSION, IncompatibleDatabase
 from pubmed2db.db import connect
-
 
 # --- version -----------------------------------------------------------------
 
@@ -79,8 +78,12 @@ def test_a_pre_1_0_database_is_refused_and_left_untouched(tmp_path):
 
 @pytest.mark.parametrize(
     ("stored", "message"),
-    [("0.9.0", "rebuild the database"), ("2.0.0", "rebuild the database"),
-     ("1.99.0", "newer than"), ("one", "unrecognized")],
+    [
+        ("0.9.0", "rebuild the database"),
+        ("2.0.0", "rebuild the database"),
+        ("1.99.0", "newer than"),
+        ("one", "unrecognized"),
+    ],
 )
 def test_an_incompatible_version_is_refused(tmp_path, stored, message):
     path = tmp_path / "db.duckdb"
@@ -109,6 +112,45 @@ def test_an_older_minor_version_is_raised_to_ours(tmp_path, monkeypatch):
         assert datamodel.stored_version(con) == newer
     finally:
         con.close()
+
+
+def test_a_migration_missing_a_column_is_refused_and_not_stamped(tmp_path, monkeypatch):
+    """A minor version whose CREATE TABLE gained a column without the matching
+    ALTER TABLE leaves a migrated database short of it; `load` inserts by
+    position, so opening it must fail before the version is raised. Simulated
+    by code one minor ahead and a table whose columns differ from schema.sql's
+    (dropping one instead trips schema.sql's own COMMENT ON first)."""
+    path = tmp_path / "db.duckdb"
+    connect(path).close()
+    raw = duckdb.connect(str(path))
+    raw.execute("ALTER TABLE source_file ADD COLUMN stray INTEGER")
+    raw.close()
+    major, minor, _ = datamodel.parse_version(DATA_MODEL_VERSION)
+    monkeypatch.setattr(datamodel, "DATA_MODEL_VERSION", f"{major}.{minor + 1}.0")
+
+    with pytest.raises(IncompatibleDatabase, match="source_file"):
+        connect(path)
+    raw = duckdb.connect(str(path))
+    try:
+        assert datamodel.stored_version(raw) == DATA_MODEL_VERSION
+    finally:
+        raw.close()
+
+
+def test_a_read_only_open_writes_nothing(tmp_path):
+    """`validate` opens read-only, so it works on a read-only mount and never
+    rewrites a database's views or version."""
+    path = tmp_path / "db.duckdb"
+    connect(path).close()
+    path.chmod(0o444)
+    try:
+        con = connect(path, read_only=True)
+        try:
+            assert datamodel.stored_version(con) == DATA_MODEL_VERSION
+        finally:
+            con.close()
+    finally:
+        path.chmod(0o644)
 
 
 def test_cli_explains_an_incompatible_database(tmp_path):
@@ -197,7 +239,7 @@ def test_timestamps_are_instants_not_wall_clock_times(con, gz_fixture):
     """Before 1.0 these were naive TIMESTAMPs holding the loading machine's
     local time, mixed with Python's UTC: unreadable without knowing the node's
     time zone. Now each is an aware instant, comparable from anywhere."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import UTC, datetime, timedelta
 
     from pubmed2db.load import load_file
 
@@ -206,7 +248,7 @@ def test_timestamps_are_instants_not_wall_clock_times(con, gz_fixture):
         "SELECT s.downloaded_at, s.processed_at, max(a.loaded_at) FROM source_file s "
         "JOIN article a ON a.source_file = s.file_name GROUP BY ALL"
     ).fetchone()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for value in (downloaded, processed, loaded):
         assert value.tzinfo is not None
         assert abs(now - value) < timedelta(minutes=5)
@@ -218,15 +260,18 @@ def test_each_child_table_has_a_latest_view_matching_the_export(edge_con):
     from pubmed2db.export import _VERSIONED_CHILDREN
 
     for table in _VERSIONED_CHILDREN:
-        assert _rows(
-            edge_con,
-            f"(SELECT * FROM latest_{table} EXCEPT ALL SELECT c.* FROM {table} c "
-            "WHERE EXISTS (SELECT 1 FROM latest_article la "
-            "WHERE la.pmid = c.pmid AND la.source_file = c.source_file)) "
-            f"UNION ALL (SELECT c.* FROM {table} c WHERE EXISTS (SELECT 1 FROM latest_article la "
-            "WHERE la.pmid = c.pmid AND la.source_file = c.source_file) "
-            f"EXCEPT ALL SELECT * FROM latest_{table})",
-        ) == [], table
+        assert (
+            _rows(
+                edge_con,
+                f"(SELECT * FROM latest_{table} EXCEPT ALL SELECT c.* FROM {table} c "
+                "WHERE EXISTS (SELECT 1 FROM latest_article la "
+                "WHERE la.pmid = c.pmid AND la.source_file = c.source_file)) "
+                f"UNION ALL (SELECT c.* FROM {table} c WHERE EXISTS (SELECT 1 FROM latest_article la "
+                "WHERE la.pmid = c.pmid AND la.source_file = c.source_file) "
+                f"EXCEPT ALL SELECT * FROM latest_{table})",
+            )
+            == []
+        ), table
     # PMID 1001's superseded baseline authors are excluded; its update's kept.
     assert _rows(edge_con, "SELECT name FROM latest_author WHERE pmid = 1001") == [("Jane Smith",)]
     assert _rows(edge_con, "SELECT count(*) FROM latest_author WHERE pmid = 2002") == [(0,)]
@@ -239,27 +284,27 @@ GOLDEN_DIR = Path(__file__).parent / "data_model"
 _BUMP_HELP = (
     "The data model's shape changed. If that was deliberate, bump "
     "datamodel.DATA_MODEL_VERSION (minor if this only adds, major otherwise; "
-    "docs/DataModel.md says which), then write tests/data_model/<MAJOR.MINOR>.json "
+    "docs/data-model/README.md says which), then write tests/data_model/<MAJOR.MINOR>.json "
     "with `uv run python -m pubmed2db.datamodel --golden tests/data_model/<MAJOR.MINOR>.json` "
     "and regenerate the doc. Never overwrite an existing version's file."
 )
 
 
 def _golden_files() -> list[tuple[tuple[int, int], Path]]:
-    return sorted(
-        (datamodel.parse_version(path.stem), path) for path in GOLDEN_DIR.glob("*.json")
-    )
+    return sorted((datamodel.parse_version(path.stem), path) for path in GOLDEN_DIR.glob("*.json"))
 
 
 def test_a_fresh_database_has_exactly_this_versions_shape(con):
-    golden = json.loads((GOLDEN_DIR / f"{datamodel.shape_version(DATA_MODEL_VERSION)}.json").read_text())
+    golden = json.loads(
+        (GOLDEN_DIR / f"{datamodel.shape_version(DATA_MODEL_VERSION)}.json").read_text()
+    )
     assert datamodel.shape(con) == golden, _BUMP_HELP
 
 
 def test_the_newest_golden_file_is_this_version():
     """A golden file for an unreleased version, or a minor bump without one,
     both mean the version and the shape have come apart. One file per
-    MAJOR.MINOR: a patch cannot change the shape."""
+    MAJOR.MINOR: those are the levels that describe the shape."""
     assert _golden_files()[-1][1].stem == datamodel.shape_version(DATA_MODEL_VERSION)
 
 
@@ -290,7 +335,9 @@ def test_only_adds_catches_what_a_minor_version_must_not_do():
             new["relations"][relation][key] = value
         return new
 
-    grown = changed(t__columns=["a INTEGER", "b VARCHAR", "c DATE"], v__columns=["z INTEGER", "a INTEGER"])
+    grown = changed(
+        t__columns=["a INTEGER", "b VARCHAR", "c DATE"], v__columns=["z INTEGER", "a INTEGER"]
+    )
     grown["relations"]["new_table"] = {"kind": "table", "tier": "stable", "columns": []}
     grown["ndjson_fields"].append("extra")
     assert datamodel.only_adds(base, grown) == []
@@ -327,15 +374,18 @@ def test_every_latest_view_names_the_table_it_filters(con):
 
 # --- invariants the documentation promises ------------------------------------------
 
-_CHILDREN_SQL = "SELECT table_name FROM duckdb_columns() WHERE column_name = 'source_file' " \
-    "AND table_name NOT IN ('article', 'deleted_pmid') AND table_name NOT LIKE 'latest_%' " \
+_CHILDREN_SQL = (
+    "SELECT table_name FROM duckdb_columns() WHERE column_name = 'source_file' "
+    "AND table_name NOT IN ('article', 'deleted_pmid') AND table_name NOT LIKE 'latest_%' "
     "GROUP BY 1"
+)
 
 
 def test_pmid_and_source_file_identify_an_article_version(edge_con):
-    assert _rows(
-        edge_con, "SELECT pmid, source_file FROM article GROUP BY ALL HAVING count(*) > 1"
-    ) == []
+    assert (
+        _rows(edge_con, "SELECT pmid, source_file FROM article GROUP BY ALL HAVING count(*) > 1")
+        == []
+    )
 
 
 def test_every_child_row_belongs_to_a_stored_article_version(edge_con):
@@ -379,8 +429,18 @@ def test_positions_are_0_based_and_unique_within_their_parent(edge_con):
         (
             "history",
             "pub_status",
-            {"received", "accepted", "revised", "aheadofprint", "ecollection", "pubmed",
-             "medline", "entrez", "pmc-release", "retracted"},
+            {
+                "received",
+                "accepted",
+                "revised",
+                "aheadofprint",
+                "ecollection",
+                "pubmed",
+                "medline",
+                "entrez",
+                "pmc-release",
+                "retracted",
+            },
         ),
     ],
 )
@@ -393,40 +453,39 @@ def test_closed_vocabularies_hold(edge_con, table, column, domain):
     assert _rows(edge_con, f"SELECT count(*) FROM {table} WHERE {column} IS NULL") == [(0,)]
 
 
-# --- docs/DataModel.md ------------------------------------------------------------
+# --- docs/data-model/ -------------------------------------------------------------
 
-DOC = Path(__file__).parent.parent / "docs" / "DataModel.md"
+DOCS = Path(__file__).parent.parent / "docs" / "data-model"
+DOC = DOCS / "README.md"
+CHANGELOG = DOCS / "Changelog.md"
+REFERENCE = DOCS / "Reference.md"
 
 
 def _doc_section(heading: str) -> str:
     text = DOC.read_text()
     start = text.index(f"\n## {heading}\n")
     end = text.find("\n## ", start + 1)
-    return text[start:end if end != -1 else None]
+    return text[start : end if end != -1 else None]
 
 
 def test_the_docs_column_reference_is_generated_from_the_database(con):
     """The reference half of the doc is the database's own comments, rendered.
     Hand-editing it, or changing a comment without regenerating, fails here."""
     expected = datamodel.render_reference(datamodel.describe(con))
-    assert expected in DOC.read_text(), (
-        "docs/DataModel.md is stale: run "
-        "`uv run python -m pubmed2db.datamodel --docs docs/DataModel.md`"
+    assert expected in REFERENCE.read_text(), (
+        "docs/data-model/Reference.md is stale: run "
+        "`uv run python -m pubmed2db.datamodel --docs docs/data-model/Reference.md`"
     )
 
 
 def test_the_doc_names_only_columns_that_exist(con):
-    """Prose like `author.position` must name a real column. The changelog is
-    exempt: naming what no longer exists is its job."""
+    """Prose like `author.position` must name a real column. The changelog,
+    a separate file, is exempt: naming what no longer exists is its job."""
     import re
 
-    columns = {
-        (r["name"], c["name"]) for r in datamodel.describe(con) for c in r["columns"]
-    }
+    columns = {(r["name"], c["name"]) for r in datamodel.describe(con) for c in r["columns"]}
     relations = {r["name"] for r in datamodel.describe(con)}
-    text = DOC.read_text()
-    prose = text[: text.index("\n## Changelog\n")]
-    named = set(re.findall(r"`([a-z_]+)\.([a-z_]+)`", prose))
+    named = set(re.findall(r"`([a-z_]+)\.([a-z_]+)`", DOC.read_text()))
     unknown = {pair for pair in named if pair[0] in relations and pair not in columns}
     assert not unknown
 
@@ -437,12 +496,9 @@ def test_the_doc_describes_every_ndjson_field_in_order():
     from pubmed2db.export import JSON_FIELDS
 
     rows = [
-        line for line in _doc_section("The NDJSON record").splitlines()
-        if line.startswith("| `")
+        line for line in _doc_section("The NDJSON record").splitlines() if line.startswith("| `")
     ]
-    documented = [
-        name for row in rows for name in re.findall(r"`([a-z_]+)`", row.split("|")[1])
-    ]
+    documented = [name for row in rows for name in re.findall(r"`([a-z_]+)`", row.split("|")[1])]
     assert documented == list(JSON_FIELDS)
 
 
@@ -455,7 +511,9 @@ def test_every_recipe_in_the_doc_runs(edge_con, tmp_path, monkeypatch):
     from pubmed2db.export import export_parquet
 
     export_parquet(edge_con, tmp_path / "parquet")
-    db_path = Path(edge_con.execute("SELECT path FROM duckdb_databases() WHERE NOT internal").fetchone()[0])
+    db_path = Path(
+        edge_con.execute("SELECT path FROM duckdb_databases() WHERE NOT internal").fetchone()[0]
+    )
     edge_con.close()
     (tmp_path / "pubmed.duckdb").write_bytes(db_path.read_bytes())
     monkeypatch.chdir(tmp_path)
@@ -471,9 +529,25 @@ def test_every_recipe_in_the_doc_runs(edge_con, tmp_path, monkeypatch):
         session.close()
 
 
+def test_the_patch_level_is_unused():
+    """The version is the contract, so a value fix does not bump it: it goes in
+    the code's release notes. Without this, a 1.0.1 for a value fix, with its
+    `## 1.0.1` changelog entry, would pass every other test here."""
+    assert datamodel.parse_version(DATA_MODEL_VERSION)[2] == 0, (
+        "the data model's patch level is unused (docs/data-model/README.md, "
+        '"Versioning and stability"): list a value fix in the release notes, '
+        "and bump the minor or major version only for a change to the contract"
+    )
+    import re
+
+    headings = re.findall(r"^## (\d+\.\d+\.\d+)$", CHANGELOG.read_text(), re.M)
+    assert headings and all(heading.split(".")[2] == "0" for heading in headings)
+
+
 def test_patch_levels_neither_refuse_nor_downgrade(tmp_path, monkeypatch):
-    """A patch fixes values, never the shape, so code a patch behind or ahead
-    opens the database, and the stored version only ever rises."""
+    """The patch level is unused (test_the_patch_level_is_unused), so it must
+    never decide whether a database opens: code a patch behind or ahead opens
+    it, and the stored version only ever rises."""
     path = tmp_path / "db.duckdb"
     connect(path).close()
     major, minor, patch = datamodel.parse_version(DATA_MODEL_VERSION)
@@ -489,6 +563,32 @@ def test_patch_levels_neither_refuse_nor_downgrade(tmp_path, monkeypatch):
 
 
 def test_the_changelog_has_an_entry_for_this_version():
-    """Every bump, patch included, tells consumers what changed and what each
-    output's consumers must do; a version with no entry has told them nothing."""
-    assert f"\n### {DATA_MODEL_VERSION}\n" in _doc_section("Changelog")
+    """Every bump tells consumers what changed and what each output's
+    consumers must do; a version with no entry has told them nothing."""
+    assert f"\n## {DATA_MODEL_VERSION}\n" in CHANGELOG.read_text()
+
+
+def test_links_between_the_data_model_docs_resolve():
+    """The three files link each other by absolute URL on `main`, so the doc
+    reads the same without the repository. GitHub cannot check those links
+    before the branch merges; this does, against the files and their headings."""
+    import re
+
+    base = "https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/"
+
+    def anchors(path: Path) -> set[str]:
+        # GitHub's slug: lower-case, drop punctuation but `-` and `_`, spaces to `-`.
+        return {
+            re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+            for heading in re.findall(r"^#+ (.+)$", path.read_text(), re.M)
+        }
+
+    broken = []
+    for source in (DOC, CHANGELOG, REFERENCE):
+        for name, anchor in re.findall(
+            re.escape(base) + r"([\w.]+)(?:#([\w-]+))?", source.read_text()
+        ):
+            target = DOCS / name
+            if not target.is_file() or (anchor and anchor not in anchors(target)):
+                broken.append(f"{source.name}: {name}#{anchor}")
+    assert not broken

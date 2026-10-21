@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
 
 import duckdb
 
-from .datamodel import check_compatible, stamp
+from .datamodel import check_compatible, check_migrated, needs_migration, stamp
 
 #: Filenames look like ``pubmed25n1274.xml.gz`` -> (year_yy=25, file_number=1274).
 _FILENAME_RE = re.compile(r"^pubmed(\d{2})n(\d+)\.xml\.gz$")
@@ -39,6 +39,7 @@ def connect(
     threads: int | None = None,
     temp_directory: str | Path | None = None,
     memory_limit: str | None = None,
+    read_only: bool = False,
 ) -> duckdb.DuckDBPyConnection:
     """Open (creating if needed) the DuckDB database and ensure the schema.
 
@@ -60,6 +61,11 @@ def connect(
     the lxml tree, the parsed records and the Arrow batch share the same cgroup
     and get only the remaining quarter. Set it a margin below your allocation on
     any long load to widen that headroom.
+
+    ``read_only`` opens an existing database without writing to it: it is still
+    checked for compatibility, but ``schema.sql`` and the version stamp are
+    skipped. For readers such as ``validate``, which then work beside another
+    process's read-only open and on a read-only mount.
     """
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,12 +76,16 @@ def connect(
         config["temp_directory"] = str(temp_directory)
     if memory_limit is not None:
         config["memory_limit"] = memory_limit
-    con = duckdb.connect(str(path), config=config)
+    con = duckdb.connect(str(path), read_only=read_only, config=config)
     try:
         # Before schema.sql, so a database we refuse is left untouched.
         check_compatible(con)
-        init_schema(con)
-        stamp(con)
+        if not read_only:
+            migrating = needs_migration(con)
+            init_schema(con)
+            if migrating:
+                check_migrated(con)
+            stamp(con)
     except BaseException:
         con.close()
         raise
@@ -116,7 +126,7 @@ def register_source_file(
     about when the file was posted.
     """
     year_yy, file_number, order_key = parse_file_name(file_name)
-    ts = datetime.now(timezone.utc) if mark_downloaded else None
+    ts = datetime.now(UTC) if mark_downloaded else None
     con.execute(
         """
         INSERT INTO source_file

@@ -19,23 +19,25 @@ once the release PR has merged.
 **Two version numbers, for two audiences.** The code version says how the *code* changed; the data model version says how *consumers* are affected. They move independently: a big code release can leave the data model alone, and a one-line fix can bump it.
 
 **Code versions** (`vX.Y.Z`, the release tags). Tags always carry all three components (`v1.1.0`, not `v1.1`), the same form as `pyproject.toml`'s `version`, while the milestone, release branch and release PR name only the first two. `v1.0` predates this and keeps its name.
+
 - **X** for a rewrite: a new language, framework or code organization.
 - **Y** for a release with substantial changes or improvements. This is the usual release, one per milestone (`v1.1.0`, `v1.2.0`).
-- **Z** for smaller improvements and fixes that shouldn't significantly change the output (`v1.1.1`).
+- **Z** for smaller improvements and fixes (`v1.1.1`). A Z release can still change output values, since a value fix never moves the data model version; its release notes say which values change and whether an existing database needs a reload, the same as a Y release's.
 
-**The data model version** (`datamodel.DATA_MODEL_VERSION`, 1.0.0 since the build after `2026sep26`) is what consumers pin. It is standard semantic versioning, defined in [`docs/DataModel.md`](./DataModel.md#versioning-and-stability):
-- **patch:** values fixed, shape and meaning unchanged;
-- **minor:** only additions;
-- **major:** anything renamed, removed or changed in meaning.
+**The data model version** (`datamodel.DATA_MODEL_VERSION`, 1.0.0 since the build after `2026sep26`) is what consumers pin. It is standard semantic versioning, defined in [`docs/data-model/README.md`](./data-model/README.md#versioning-and-stability):
 
-A major bump is often breaking for one output and harmless for another (1.0.0 renamed Parquet tables and left the NDJSON untouched). So rather than a separate level for "breaks some consumers", every bump gets an entry in that doc's changelog saying, output by output, what a consumer must do. A test fails until the entry exists. A release that changes the data model says so in its release PR and GitHub release notes, and links that entry.
+- **minor:** only additions, including a guarantee that leaves every old reading correct;
+- **major:** anything renamed, removed, or changed in meaning so that an old reading is now wrong, however mildly;
+- **patch:** not used. The version describes how to read the outputs, not what they contain, so a fix that changes values without changing how to read them is a code change, listed in the release notes with whether a database needs a reload.
+
+A major bump is often breaking for one output and harmless for another (1.0.0 renamed Parquet tables and left the NDJSON untouched). So rather than a separate level for "breaks some consumers", every bump gets an entry in [the data model changelog](./data-model/Changelog.md) saying, output by output, what a consumer must do. A test fails until the entry exists. A release that changes the data model says so in its release PR and GitHub release notes, and links that entry.
 
 ## Steps
 
 1. **Plan.**
    - Open a milestone named for the version, with the planned build date as its due date. It is named for the version, not the date, so a build that slips does not leave it misnamed; the data-build tag records the actual date.
    - Put the build's issues and PRs on it. An item the run only has to *observe*, such as a measurement read from its logs, goes on the next milestone, with a line in the release PR's post-run checklist to record what the run showed.
-   - Decide whether the release changes the data model, and at which level. `tests/test_data_model.py` fails on any shape change that was not bumped, but only a person can spot a patch-level change in values, so ask of every merged PR: does any output now hold different values?
+   - Decide whether the release changes the data model, and at which level. `tests/test_data_model.py` fails on any shape change that was not bumped, but only a person can spot a change of meaning, so ask of every merged PR: does a consumer need to read anything differently? If code reading it the old way is now wrong, the bump is major; if the old reading still holds and the PR only promises more, it is minor. A PR that only changes values (a parsing fix, an upstream library that parses differently) does not bump the version; list it in the release notes, with whether it needs a reload.
    - Feature PRs may be stacked on each other, and each is reviewed on its own.
 
 2. **Cut the release branch.**
@@ -54,13 +56,15 @@ A major bump is often breaking for one output and harmless for another (1.0.0 re
    - Fix anything that belongs to a feature PR in that PR, then **merge** its branch into the release branch.
    - Merge rather than rebase: the commit the cluster ran has to stay reachable.
 
-4. **Tag the data build** on the exact commit the cluster ran, and record that commit in the release PR:
+4. **Archive, publish and tag the data build.** Once `validate` has passed, move the export out of `data/json` as a build directory, copy it (and the database, if it is published) to stars, and tag the exact commit the cluster ran, recording that commit in the release PR:
 
    ```bash
-   jq -r .corpus.build_name data/json/metadata.json      # e.g. 2026sep24
+   uv run python scripts/archive_build.py                # data/json -> data/builds/2026sep24/, prints the rsync lines
    git tag -a 2026sep24 <sha> -m "pubmed2db used to create 2026sep24"
    git push origin 2026sep24
    ```
+
+   The script prints the build name; it is `corpus.build_name` in the build's `metadata.json`. The README's ["Between runs"](../README.md#between-runs-what-to-keep-archive-and-delete) says what else the next run needs.
 
    The name is the build's **cutoff**: the UTC date NCBI posted the last file the build loaded. Every update file before it is in the build and every one after belongs to the next, so the name says what the build contains. `status` prints the same name, and `metadata.json` carries the file and the exact time (`corpus.cutoff_file`, `corpus.cutoff_published_at`).
 
@@ -94,6 +98,8 @@ A major bump is often breaking for one output and harmless for another (1.0.0 re
    Tag `main`, not the release branch's last commit. If `main` moved on while the release was being built and was never merged into the release branch, the merge commit is the only commit holding exactly what shipped; the branch's last commit lacks `main`'s changes. Tagging `main` also puts the tag on its first-parent history, where `git describe` finds it.
 
    `--generate-notes` lists the merged PRs by title, which is why PR titles are written as changelog lines.
+
+   Value fixes are not in the data model changelog, so these notes are the only place consumers find them ([`docs/data-model/README.md`](./data-model/README.md#versioning-and-stability) sends them here). Above the generated list, name every PR that changes output values, say for each whether an existing database needs a reload, and say whether this release's data build has it: a build on a fresh database does, one that continued an older database does only if it reloaded the files.
 
 8. **Close the milestone.** Move anything still open on it to the next version's milestone or to one of the undated ones ("Needed soon", "Needed later", "Not urgent"). Never rename a milestone to reuse it for the next version: its closed items are the record of what that version shipped.
 

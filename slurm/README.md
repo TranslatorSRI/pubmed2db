@@ -31,9 +31,22 @@ Logs land in `data/logs/pubmed2db-<step>-<jobid>.out`. Between steps,
 `uv run pubmed2db status` reports what has been downloaded, loaded and is ready
 to export, which is the quickest way to confirm a step did what you expected.
 
-**Starting over from a fresh database** (deleting `data/pubmed.duckdb`, say at a
-new baseline year) needs `journals` as well as `load`, because the journal
-dimension lives in the database; `all` includes it. Before `export`, grep the
+**Between runs**, archive the finished export first:
+`uv run python scripts/archive_build.py` moves `data/json` to
+`data/builds/<build>/` with its validation report, manifest and these logs.
+`export` refuses to run while `data/json/metadata.json` exists
+(`EXPORT_OVERWRITE=1` to replace it anyway), and `submit.sh` refuses to submit
+a plan that includes `export` until then, so `all` does not spend a download
+and a load first. The README's
+["Between runs"](../README.md#between-runs-what-to-keep-archive-and-delete)
+has the full inventory of what persists.
+
+**Starting over from a fresh database** (say at a new baseline year) is
+`uv run python scripts/fresh_database.py`: it moves every year's XML but the
+baseline NCBI serves now out of the download cache, where `load` would otherwise parse it straight back
+in, and deletes the database. A fresh database then needs `journals` as well
+as `load`, because the journal dimension lives in the database; `all` includes
+it. Before `export`, grep the
 `journals` log for `serial catalog unavailable`. On a fresh database that
 warning means every journal's years are NULL, and since the step still exits 0,
 `afterok` lets an `all` chain carry on into `export` regardless. Re-running
@@ -59,10 +72,14 @@ has the rest.
 manifest nobody wrote (#32). The script picks the newest earlier manifest as
 `--previous-manifest` automatically. A run that *fails* writes no manifest, so a
 truncated export cannot become the next run's baseline.
+The chain survives a fresh database: the first run after one warns
+`drops_retired_upstream` for the PMIDs PubMed retired between the previous build
+and the new baseline (the new database never loaded those deletions, so
+`validate` asks PubMed instead), and still writes its manifest.
 
 ## The scripts
 
-```
+```text
 slurm/
   config.sh            settings shared across steps; every value overridable from the environment
   01-download.sbatch   \
@@ -103,9 +120,9 @@ buffer pool below it. Measured on two full loads, the process settles at that
 cap plus ~5–6 GiB: everything above our own working set is DuckDB's cache, and
 it fills whatever it is given.**
 
-The loader holds one file at a time (full lxml tree + that file's parsed records
-+ the Arrow batch), then inserts it and moves on. *Our* footprint does not grow
-with the number of files or the size of the database.
+The loader holds one file at a time (full lxml tree + that file's parsed
+records + the Arrow batch), then inserts it and moves on. *Our* footprint does
+not grow with the number of files or the size of the database.
 
 DuckDB's does. It runs in the same process and caches ever more of a growing
 database, so its buffer pool is what makes a long load's RSS climb run-long —
@@ -142,7 +159,7 @@ silently caps a later export at the load's much smaller figure.
 
 Each file logs both figures, and the difference between them is the point:
 
-```
+```text
 INFO pubmed2db.load: loaded pubmed26n1201.xml.gz: 30000 articles, 0 deletions, 0 failed to parse, 0 book record(s) skipped (RSS 12.4 GiB, peak 42.1 GiB)
 ```
 
@@ -215,7 +232,7 @@ update files add ~50 files to the count, so `03-load.sbatch` now asks for 36h.
 Don't guess the next run's limit — the progress line reports the rate and the
 elapsed time to date, which is exactly what scales:
 
-```
+```text
 INFO pubmed2db.load: progress: 1000/1636 files this run, 636 remaining · 40.4 s/file · elapsed 11h 13m · ~7h 08m to go
 ```
 
@@ -333,7 +350,7 @@ lines any more; a heartbeat logs output size and current RSS once a minute
 instead, and `-v` additionally enables DuckDB's own progress bar. From the
 2026-09-26 run:
 
-```
+```text
 INFO pubmed2db.export: starting JSON export: 41153516 document(s) to at most 8 shard(s) in data/json (gzip)
 INFO pubmed2db.export: writing: 0.0 GiB across 0 shard(s) · 0 MiB/s · elapsed 4m 21s · RSS 157.0 GiB
 INFO pubmed2db.export: writing: 8.8 GiB across 8 shard(s) · 16 MiB/s · elapsed 9m 27s · RSS 144.4 GiB
@@ -480,9 +497,9 @@ Nearly all of it is one thing: **the shard read** — 7m 38s of the 7m 57s on
 16 uncompressed shards, 26m 26s of the 28m 37s on 8 gzipped ones. Every Entrez
 check together takes ~20 seconds. The read is a single-threaded `json.loads`
 per line — 89k records/s uncompressed, ~26k records/s through gzip — so if this
-job ever needs to be faster, that pass is the only place worth touching (issue
-#13). The gzip default (~4× smaller shards) is paid for here, at ~3.5× the
-read time.
+job ever needs to be faster, that pass is the only place worth touching
+(issue #13). The gzip default (~4× smaller shards) is paid for here, at ~3.5×
+the read time.
 
 The log tells you the same while it runs. The start line confirms what was picked
 up before any of the slow work (the key itself is never logged, here or in the
@@ -490,7 +507,7 @@ report), the shard read reports progress once a minute, and each phase after it
 is announced — which is what distinguishes "still reading shards" from "hung on
 an NCBI call", since only the first is local:
 
-```
+```text
 INFO pubmed2db.validate: starting validation: 16 shard(s) in data/json, 52.0 GiB · database available · online with an NCBI API key (10 req/s)
 INFO pubmed2db.validate: reading shards (structure check)...
 INFO pubmed2db.validate: progress: 21,667,845 record(s), shard 9/16, 52.2% of 52.0 GiB read · elapsed 4m 00s · RSS 1.7 GiB · ~3m 39s remaining

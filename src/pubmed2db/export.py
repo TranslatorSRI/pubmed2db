@@ -13,7 +13,7 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -55,7 +55,11 @@ _VERSIONED_CHILDREN = (
 #: Dimension/bookkeeping tables exported as-is. ``pubmed2db_metadata`` goes with
 #: them so a Parquet export carries its data model version, like the database.
 _OTHER_TABLES = (
-    "journal", "journal_issn", "source_file", "deleted_pmid", "pipeline_run",
+    "journal",
+    "journal_issn",
+    "source_file",
+    "deleted_pmid",
+    "pipeline_run",
     "pubmed2db_metadata",
 )
 
@@ -91,17 +95,18 @@ MESH_PREFIX = "MESH"
 #: would let a new id type or a casing fix reach the validator without reaching
 #: the export, and every sampled record would be reported as a mismatch against
 #: a correct export. No `ELSE` branch: an unlisted type cannot pass the `WHERE`.
-_ID_CURIE_SQL = "CASE id_type " + " ".join(
-    f"WHEN '{t}' THEN '{prefix}:'" for t, prefix in ID_PREFIXES.items()
-) + " END"
+_ID_CURIE_SQL = (
+    "CASE id_type "
+    + " ".join(f"WHEN '{t}' THEN '{prefix}:'" for t, prefix in ID_PREFIXES.items())
+    + " END"
+)
 _ID_TYPES_SQL = ", ".join(f"'{t}'" for t in ID_PREFIXES)
 
 
 #: Month abbreviations, frozen rather than taken from ``calendar.month_abbr``:
 #: that is ``strftime('%b')`` under ``LC_TIME``, so any dependency calling
 #: ``locale.setlocale`` would silently localize a spec-defined output field.
-_MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
-               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+_MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 def normalize_month(raw: str | None) -> str:
@@ -272,10 +277,7 @@ _STRIP_CLASS_SQL = r"[\s\p{Z}\x0B]"
 
 def _strip_sql(expr: str) -> str:
     """``str.strip()`` as SQL, over an arbitrary expression."""
-    return (
-        f"regexp_replace({expr}, "
-        f"'^{_STRIP_CLASS_SQL}+|{_STRIP_CLASS_SQL}+$', '', 'g')"
-    )
+    return f"regexp_replace({expr}, '^{_STRIP_CLASS_SQL}+|{_STRIP_CLASS_SQL}+$', '', 'g')"
 
 
 def normalize_day(raw: str | None) -> str:
@@ -412,8 +414,7 @@ _NORMALIZED_DAY_SQL = (
     f"ELSE {_STRIPPED_DAY_SQL} END"
 )
 _DAY_FOR_DATE_SQL = (
-    f"CASE WHEN {_MONTH_FOR_DATE_SQL} = '' THEN NULL "
-    f"ELSE NULLIF({_NORMALIZED_DAY_SQL}, '') END"
+    f"CASE WHEN {_MONTH_FOR_DATE_SQL} = '' THEN NULL ELSE NULLIF({_NORMALIZED_DAY_SQL}, '') END"
 )
 
 #: ``pub_date``'s logic as SQL. ``concat_ws`` skips NULLs, which is what the
@@ -425,14 +426,17 @@ _DAY_FOR_DATE_SQL = (
 #: ``medline_date`` is blank, so a value of one non-breaking space that an
 #: ASCII trim calls non-empty and ``.strip()`` calls empty does not pad a
 #: string — it makes the two implementations emit entirely different dates.
+_STRIPPED_YEAR_SQL = _strip_sql("COALESCE(la.pub_year, '')")
+_ASSEMBLED_DATE_SQL = _strip_sql(
+    "concat_ws(' ', "
+    f"NULLIF({_STRIPPED_YEAR_SQL}, ''), "
+    f"NULLIF({_MONTH_FOR_DATE_SQL}, ''), "
+    f"{_DAY_FOR_DATE_SQL})"
+)
 _PUB_DATE_SQL = f"""CASE
         WHEN {_strip_sql("COALESCE(la.medline_date, '')")} <> ''
             THEN {_strip_sql("la.medline_date")}
-        ELSE {_strip_sql("concat_ws(' ', " + ", ".join([
-            "NULLIF(" + _strip_sql("COALESCE(la.pub_year, '')") + ", '')",
-            "NULLIF(" + _MONTH_FOR_DATE_SQL + ", '')",
-            _DAY_FOR_DATE_SQL,
-        ]) + ")")}
+        ELSE {_ASSEMBLED_DATE_SQL}
     END"""
 
 #: ``_year_from_medline_date``'s fallback, same pattern, same pinning test
@@ -556,11 +560,39 @@ LEFT JOIN pts ON pts.pmid = la.pmid AND pts.source_file = la.source_file
 )
 
 
+def _remove_finished_mark(out_dir: Path, overwrite: bool, *, archivable: bool) -> None:
+    """Delete a previous export's ``metadata.json`` and ``SHA256SUMS`` before writing.
+
+    ``metadata.json`` is the "export finished" mark. Left in place, an export
+    that dies after removing the old files would still look finished, with
+    checksums for files that are gone or have been replaced. Remove the mark
+    first, so a directory without one is one whose export never completed.
+
+    It is also why a finished export is refused unless ``overwrite``: this
+    export is about to delete that one's files, the only local copy of its
+    build until ``scripts/archive_build.py`` has moved it (#24). A partial
+    export, with no mark, is swept without asking. The check is here rather
+    than in ``04-export.sbatch`` so every caller gets it. ``archivable`` is
+    whether that script can take the export: it archives the validated JSON
+    build, and ``validate`` reads no Parquet, so a Parquet export is only ever
+    moved aside or overwritten.
+    """
+    if not overwrite and (out_dir / METADATA_FILE).exists():
+        first = (
+            "Archive it first (scripts/archive_build.py)" if archivable else "Move it aside first"
+        )
+        raise FileExistsError(
+            f"{out_dir} holds a finished export ({METADATA_FILE} exists). {first}, "
+            "or pass --overwrite (EXPORT_OVERWRITE=1 under Slurm) to replace it."
+        )
+    for name in (METADATA_FILE, CHECKSUMS_FILE):
+        (out_dir / name).unlink(missing_ok=True)
+
+
 def _shard_paths(out_dir: Path) -> list[Path]:
     """The shard files this export owns, sorted — its output and its leftovers."""
     return sorted(
-        p for p in out_dir.glob(f"{_SHARD_STEM}*")
-        if p.name.endswith((".ndjson", ".ndjson.gz"))
+        p for p in out_dir.glob(f"{_SHARD_STEM}*") if p.name.endswith((".ndjson", ".ndjson.gz"))
     )
 
 
@@ -588,7 +620,8 @@ def _log_writing_progress(out_dir: Path, start: float) -> None:
     current = current_rss_gib()
     logger.info(
         "writing: %.1f GiB across %d shard(s) · %.0f MiB/s · elapsed %s · RSS %s",
-        written / 1024**3, len(paths),
+        written / 1024**3,
+        len(paths),
         written / 1024**2 / elapsed if elapsed else 0.0,
         fmt_duration(elapsed),
         "n/a" if current is None else f"{current:.1f} GiB",
@@ -625,6 +658,7 @@ def export_json(
     *,
     shards: int | None = None,
     gzip_output: bool = True,
+    overwrite: bool = False,
 ) -> list[Path]:
     """Export the latest version of every abstract as sharded NDJSON.
 
@@ -649,6 +683,7 @@ def export_json(
         raise ValueError("shards must be >= 1")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    _remove_finished_mark(out_dir, overwrite, archivable=True)
 
     # Clock the whole export, not just the COPY. Materializing the snapshot is a
     # window function over the entire `article` table -- the reason export memory
@@ -665,8 +700,10 @@ def export_json(
     total = con.execute("SELECT count(*) FROM _latest_snapshot").fetchone()[0]
     logger.info(
         "starting JSON export: %d document(s) to %s in %s%s",
-        total, f"at most {shards} shard(s)" if shards else "one shard per thread",
-        out_dir, " (gzip)" if gzip_output else "",
+        total,
+        f"at most {shards} shard(s)" if shards else "one shard per thread",
+        out_dir,
+        " (gzip)" if gzip_output else "",
     )
 
     # DuckDB appends to a per-thread output directory rather than clearing it,
@@ -682,8 +719,11 @@ def export_json(
 
     suffix = "ndjson.gz" if gzip_output else "ndjson"
     options = [
-        "FORMAT JSON", "PER_THREAD_OUTPUT true", "OVERWRITE_OR_IGNORE true",
-        f"FILENAME_PATTERN '{_SHARD_STEM}{{i}}'", f"FILE_EXTENSION '{suffix}'",
+        "FORMAT JSON",
+        "PER_THREAD_OUTPUT true",
+        "OVERWRITE_OR_IGNORE true",
+        f"FILENAME_PATTERN '{_SHARD_STEM}{{i}}'",
+        f"FILE_EXTENSION '{suffix}'",
     ]
     if gzip_output:
         options.append("COMPRESSION 'gzip'")
@@ -719,7 +759,11 @@ def export_json(
     write_export_metadata(con, out_dir, paths, fmt="ndjson", records=total)
     logger.info(
         "exported %d documents to %d shard(s) in %s in %s (peak RSS %.1f GiB)",
-        total, len(paths), out_dir, fmt_duration(time.monotonic() - start), peak_rss_gib(),
+        total,
+        len(paths),
+        out_dir,
+        fmt_duration(time.monotonic() - start),
+        peak_rss_gib(),
     )
     return paths
 
@@ -731,14 +775,22 @@ def file_sha256(path: Path) -> str:
 
 
 def write_export_metadata(
-    con: duckdb.DuckDBPyConnection, out_dir: Path, files: list[Path], *, fmt: str, records: int,
+    con: duckdb.DuckDBPyConnection,
+    out_dir: Path,
+    files: list[Path],
+    *,
+    fmt: str,
+    records: int,
+    article_versions: int | None = None,
 ) -> Path:
     """Write ``metadata.json`` and ``SHA256SUMS``: the export's version, provenance and checksums.
 
     An export travels without its database, so this is where a consumer learns
     which data model it follows (``data_model_version``; check the major), what
     corpus it holds (``corpus``: the cutoff file and when NCBI posted it, #57),
-    how many records to expect, and each file's size and SHA-256. ``validate``
+    how many current articles it holds (``records``, the same in every format;
+    a history export adds ``article_versions``, every row of
+    ``article.parquet``), and each file's size and SHA-256. ``validate``
     checks the directory against it. ``SHA256SUMS`` repeats the hashes for
     ``sha256sum -c``. Both are written last, after every file they describe,
     and ``metadata.json`` after ``SHA256SUMS``, so its presence means the export
@@ -762,7 +814,8 @@ def write_export_metadata(
         "data_model_version": datamodel.DATA_MODEL_VERSION,
         "format": fmt,
         "records": records,
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        **({} if article_versions is None else {"article_versions": article_versions}),
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "generated_by": datamodel.code_version(),
         "database": datamodel.metadata(con),
         "corpus": corpus_provenance(con),
@@ -788,6 +841,7 @@ def export_parquet(
     out_dir: str | Path,
     *,
     latest: bool = True,
+    overwrite: bool = False,
 ) -> list[Path]:
     """Export the database to one Parquet file per table.
 
@@ -797,12 +851,15 @@ def export_parquet(
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    _remove_finished_mark(out_dir, overwrite, archivable=False)
     written: list[Path] = []
 
     tables = 1 + len(_VERSIONED_CHILDREN) + len(_OTHER_TABLES)
     logger.info(
         "starting Parquet export: %d table(s) (%s) to %s",
-        tables, "latest version" if latest else "full history", out_dir,
+        tables,
+        "latest version" if latest else "full history",
+        out_dir,
     )
     run_start = time.monotonic()
 
@@ -817,7 +874,8 @@ def export_parquet(
     if stale:
         logger.info(
             "removed %d Parquet file(s) for table(s) no longer in the schema: %s",
-            len(stale), ", ".join(sorted(path.stem for path in stale)),
+            len(stale),
+            ", ".join(sorted(path.stem for path in stale)),
         )
 
     def _progress(done: int) -> None:
@@ -860,14 +918,24 @@ def export_parquet(
         written.append(path)
         _progress(len(written))
 
+    # `records` counts current articles in every format, so two exports of one
+    # build agree on it; the history export adds its version count separately.
     records = con.execute(
-        "SELECT count(*) FROM _latest_snapshot" if latest else "SELECT count(*) FROM article"
+        "SELECT count(*) FROM _latest_snapshot" if latest else "SELECT count(*) FROM latest_article"
     ).fetchone()[0]
+    article_versions = None if latest else con.execute("SELECT count(*) FROM article").fetchone()[0]
     write_export_metadata(
-        con, out_dir, written, fmt="parquet-latest" if latest else "parquet-all", records=records,
+        con,
+        out_dir,
+        written,
+        fmt="parquet-latest" if latest else "parquet-all",
+        records=records,
+        article_versions=article_versions,
     )
     logger.info(
         "exported %d Parquet file(s) to %s (peak RSS %.1f GiB)",
-        len(written), out_dir, peak_rss_gib(),
+        len(written),
+        out_dir,
+        peak_rss_gib(),
     )
     return written

@@ -81,7 +81,7 @@ The dependency is pinned `<0.2` because we call private APIs (`_extract_article`
 
 Nothing has been filed against `cthoyt/pubmed-downloader` for either, and nothing
 should be until the open items below are answered. (The journal-model fix is the
-exception: filed and merged as https://github.com/cthoyt/pubmed-downloader/pull/16.
+exception: filed and merged as <https://github.com/cthoyt/pubmed-downloader/pull/16>.
 Its maintainer will not consider a pull request or issue whose text or code is
 AI-generated, so whatever we report must be written by hand.)
 
@@ -127,12 +127,13 @@ Still open:
   because of memory (two runs with different limits matched within 2%). Both
   RSS figures are logged per file; see `slurm/README.md` and
   `scripts/benchmark_load.py`.
-- **Loader parallelism — deferred.** A serial full load is a day. To go faster,
-  overlap parse with insert first (#26), then parallelize across files: since
-  DuckDB is single-writer, have parallel Slurm tasks each parse one XML → write
-  per-file **Parquet shards** (no shared writer), then a single step does
-  `INSERT INTO t SELECT * FROM read_parquet('shards/*')`. Bigger rearchitecture;
-  do it only if a day becomes a bottleneck.
+- **Loader parallelism** (#68). A serial full load is a day. First find what
+  makes each file's insert slower as the database grows (the per-file
+  `delete_file_rows` scan is the unmeasured suspect), then overlap parse with
+  insert (#26), then parallelize across files: since DuckDB is single-writer,
+  have parallel Slurm tasks each parse one XML → write per-file **Parquet
+  shards** (no shared writer), then a single step does
+  `INSERT INTO t SELECT * FROM read_parquet('shards/*')`.
 - **`latest_article` view** runs a window over the entire `article` table on every
   read. At full scale, consider an index on `article(pmid, file_order_key)` or
   materializing the latest set into a table before export.
@@ -212,9 +213,10 @@ Still open:
   `None` (no MeSH/ROR/ORCID lookups). Data model 1.0 dropped the always-NULL
   `author_affiliation.ror` column rather than ship it empty, so grounding would
   return as new columns (a minor version bump). The library's `[process]` extra
-  (pyobo/orcid-downloader) could enable it if needed — at significant dependency
-  + runtime cost. Note that PubMed's own `AffiliationInfo/Identifier` (ROR, GRID,
-  ISNI) is not read either; that needs no grounding at all.
+  (pyobo/orcid-downloader) could enable it if needed — at significant
+  dependency and runtime cost. Note that PubMed's own
+  `AffiliationInfo/Identifier` (ROR, GRID, ISNI) is not read either; that needs
+  no grounding at all.
 
 ## Misc
 

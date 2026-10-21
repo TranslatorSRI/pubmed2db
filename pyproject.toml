@@ -13,9 +13,11 @@ authors = [{ name = "Gaurav Vaidya", email = "gaurav@ggvaidya.com" }]
 # and a green suite.
 dependencies = [
     # Upper bound: we call private APIs (`_extract_article`, `_ensure_urls`), so
-    # any release can break us; 0.1.0 already renamed `Heading.mesh_id`. Re-test
-    # before raising the ceiling. The floor is 0.1.0 because it carries
-    # pubmed-downloader#16, which `load.load_journals` relies on.
+    # any release can break us; 0.1.0 already renamed `Heading.mesh_id` and
+    # changed how it reads MeSH IDs, which is why `parse._mesh_headings` reads
+    # them from the XML instead. Re-test before raising the ceiling. The floor
+    # is the version this release was tested against, per the note above:
+    # nothing we call needs a 0.1.0 feature.
     "pubmed-downloader>=0.1.0,<0.2",
     # The export is one COPY statement whose SQL leans on version-specific
     # behaviour (regexp classes, TRY_CAST, PER_THREAD_OUTPUT options), so the
@@ -30,7 +32,8 @@ dependencies = [
     # Imported directly: util.download_file reads the undecoded body through
     # urllib3 and translates its exceptions.
     "urllib3>=2",
-    "pystow>=0.9",
+    # pubmed-downloader 0.1.0 itself requires >=0.10.2.
+    "pystow>=0.10.3",
     "tqdm>=4.70",
     "lxml>=6.1",
 ]
@@ -39,8 +42,18 @@ dependencies = [
 pubmed2db = "pubmed2db.cli:main"
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=9",
+dev = ["pytest>=9"]
+
+[dependency-groups]
+# The linters CI runs (.github/workflows/lint.yml). uv.lock pins the exact
+# versions, so a dev box and CI format alike; a new ruff can reformat code, so
+# raise it on purpose, with its reformat in its own commit. A group rather than
+# part of the dev extra so each CI job installs only what it runs: the lint job
+# installs these two alone (`--only-group lint`), the test jobs leave them out.
+# Not a default group, so a plain `uv sync` on the cluster leaves them out too.
+lint = [
+    "ruff>=0.17.1",
+    "rumdl>=0.3.0",
 ]
 
 [build-system]
@@ -52,3 +65,40 @@ packages = ["src/pubmed2db"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+# The code already ran past 88 on hundreds of lines but past 100 on few, so 100
+# reformats least.
+line-length = 100
+# No target-version: ruff reads it from requires-python, so the two cannot
+# disagree when the floor is raised.
+
+[tool.ruff.lint]
+# Listed explicitly: ruff's own default set is far broader (~400 rules in
+# 0.17) and changes between releases, so an unlisted set would make an upgrade
+# a lint change too. No E501: the formatter owns line width, and the long
+# strings and URLs it leaves are better long than split.
+select = [
+    "E4", "E7", "E9",  # pycodestyle errors that are not style
+    "F",               # pyflakes
+    "I",               # import order
+    "UP",              # pyupgrade, to requires-python
+]
+
+[tool.rumdl]
+disable = [
+    # Line length: docs/Releases.md writes a paragraph per line, and the
+    # generated docs/data-model/Reference.md has long table cells.
+    "MD013",
+    # Blank line inside a blockquote: the README puts two callouts in a row,
+    # which GitHub renders as two quotes.
+    "MD028",
+]
+# Reported, never autofixed. On wrapped prose, a line that happens to start
+# with `#13` or `+` trips these, and the fix is to rewrap it: MD018's autofix
+# adds the space that makes the line a heading, MD032's adds the blank lines
+# that split the paragraph around a one-item list.
+unfixable = ["MD018", "MD032"]
+
+[tool.rumdl.per-file-ignores]
+"CLAUDE.md" = ["MD041"]   # it is only "@AGENTS.md", which has no heading to give
