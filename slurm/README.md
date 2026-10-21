@@ -312,8 +312,9 @@ last two are it. Read the pair together: DuckDB's peak tracks the buffer-pool
 limit it is given, not what the query needs — 40 GB more limit bought 38 GiB
 more peak and a slightly *slower* run — so `config.sh` now sets `160GB`, the
 lower of the two measured values. `--mem=256G` is the allocation both ran
-under; a 192G node would leave ~38 GiB over the 160GB run's peak and is the
-next thing to measure, not a number to assume.
+under. 192G would leave ~38 GiB over the 160GB run's peak, so
+`04-export.sbatch` now tries that; until a run under it is in the table, it is
+a guess, not a measurement.
 
 For the record, the 2026-08-05 run on `ht1` was submitted as `srun --mem=256G
 --cpus-per-task=8 --time=02:00:00` (12:14:50 started, 12:32:56 finished) — kept
