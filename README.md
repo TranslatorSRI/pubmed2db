@@ -375,7 +375,11 @@ created since the previous manifest: that is the expected result of the first
 run after a [fresh database](#load---force-or-a-fresh-database), which never
 loads the update files that carried those deletions. On a continuing database
 they are an **error** (`missed_deletions`), because it means an update file
-was skipped. Offline, or with no database available, the drops can't be
+was skipped, and so they are on a rebuilt database with a gap in its files
+(a number inside the loaded range that never loaded, listed as `load_gaps`).
+Where PubMed's answer cannot excuse a drop, validate asks about only one
+request's worth (200), enough to say whether records were lost or deletions
+missed; both errors are reported when both happen. Offline, or with no database available, the drops can't be
 attributed: offline they stay errors, and without a database they downgrade to
 a warning to review. More than 200,000 unexplained drops are not looked up and
 fail the run; the message says how to restart the manifest chain if that much

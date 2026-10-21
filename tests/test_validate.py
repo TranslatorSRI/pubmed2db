@@ -601,7 +601,7 @@ def test_a_drop_pubmed_no_longer_serves_is_a_warning(
     drops = report["checks"]["drops_since_previous"]
     assert drops["pubmed_confirmation"] == "entrez"
     assert drops["database_rebuilt_since"] is True
-    assert drops["explained_by_pubmed"] == [4242]
+    assert drops["retired_upstream"] == [4242]
     assert drops["unexplained"] == []
     assert report["status"] == "warn"
     assert any(w["code"] == "drops_retired_upstream" for w in report["warnings"])
@@ -638,10 +638,98 @@ def test_a_drop_pubmed_no_longer_serves_fails_a_continuing_database(
     )
     drops = report["checks"]["drops_since_previous"]
     assert drops["database_rebuilt_since"] is False
-    assert drops["explained_by_pubmed"] == [4242]
+    assert drops["retired_upstream"] == [4242]
     assert report["status"] == "fail"
     assert any(e["code"] == "missed_deletions" for e in report["errors"])
     assert not manifest_out.exists()
+
+
+def test_a_rebuilt_database_with_a_load_gap_does_not_excuse_retired_drops(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """A fresh build that skipped an update file missed that file's deletions.
+
+    They look exactly like the deletions published before the new baseline, so
+    being rebuilt is not enough: every file inside the build's range must have
+    loaded, or a warning run writes a manifest that buries the gap for good.
+    """
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
+    # 25n0002 is loaded; register 25n0004 as loaded too, leaving 25n0003 out.
+    loaded_con.execute(
+        "INSERT INTO source_file (file_name, kind, year_yy, file_number, file_order_key, "
+        "processed_at) VALUES ('pubmed25n0004.xml.gz', 'update', 25, 4, 25000004, now())"
+    )
+    manifest = _manifest_from_before_the_database(tmp_path, {1001, 1003, 4242})
+    manifest_out = tmp_path / "next.txt.gz"
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest,
+        manifest_out=manifest_out, email="me@example.com",
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["database_rebuilt_since"] is True
+    assert drops["load_gaps"] == ["pubmed25n0003.xml.gz"]
+    assert drops["retired_upstream"] == [4242]
+    assert report["status"] == "fail"
+    error = next(e for e in report["errors"] if e["code"] == "missed_deletions")
+    assert "load_gaps" in error["message"]
+    assert not any(w["code"] == "drops_retired_upstream" for w in report["warnings"])
+    assert not manifest_out.exists()
+
+
+def test_lost_records_and_missed_deletions_are_both_reported(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """One error must not hide the other: they send the operator different ways."""
+    served = dict(_EFETCH)
+    served[4242] = _EFETCH[1003].replace("1003", "4242")
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(served))
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1003, 4242, 4243}, manifest)
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["unexplained"] == [4242]
+    assert drops["retired_upstream"] == [4243]
+    codes = {e["code"]: e["count"] for e in report["errors"]}
+    assert codes["unexplained_drops"] == 1
+    assert codes["missed_deletions"] == 1
+
+
+def test_a_continuing_database_asks_pubmed_about_a_sample_only(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """Where PubMed's answer cannot excuse a drop, a sample names the failure.
+
+    On a continuing database every unexplained drop fails, whatever PubMed says,
+    so confirming all of them would spend rate-limited requests on a verdict
+    already reached.
+    """
+    asked: list[str] = []
+    fake = _fake_eutils_factory(_EFETCH)
+
+    def counting(endpoint, params, **kwargs):
+        if endpoint == "esummary.fcgi":
+            asked.extend(params["id"].split(","))
+        return fake(endpoint, params, **kwargs)
+
+    monkeypatch.setattr(validate, "_eutils", counting)
+    monkeypatch.setattr(validate, "_DROP_DIAGNOSE_SAMPLE", 2)
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1003, 4242, 4243, 4244}, manifest)
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert asked == ["4242", "4243"]
+    assert drops["pubmed_confirmation"] == "sampled"
+    assert drops["retired_upstream"] == [4242, 4243]
+    assert drops["unexplained"] == [4244]
+    codes = {e["code"] for e in report["errors"]}
+    assert codes == {"unexplained_drops", "missed_deletions"}
 
 
 def test_a_degraded_esummary_response_is_not_an_explanation(
@@ -668,7 +756,7 @@ def test_a_degraded_esummary_response_is_not_an_explanation(
     )
     drops = report["checks"]["drops_since_previous"]
     assert drops["pubmed_confirmation"] == "unreachable"
-    assert drops["explained_by_pubmed"] == []
+    assert drops["retired_upstream"] == []
     assert drops["unexplained"] == [4242]
     assert report["status"] == "fail"
 
@@ -699,7 +787,7 @@ def test_a_drop_pubmed_still_serves_is_an_error(
     drops = report["checks"]["drops_since_previous"]
     assert drops["pubmed_confirmation"] == "entrez"
     assert drops["unexplained"] == [4242]
-    assert drops["explained_by_pubmed"] == []
+    assert drops["retired_upstream"] == []
     assert report["status"] == "fail"
     error = next(e for e in report["errors"] if e["code"] == "unexplained_drops")
     assert "still serves" in error["message"]
@@ -716,8 +804,8 @@ def test_too_many_unexplained_drops_are_not_sent_to_pubmed(
 
     monkeypatch.setattr(validate, "_eutils", no_esummary)
     monkeypatch.setattr(validate, "_DROP_CONFIRM_LIMIT", 1)
-    manifest = tmp_path / "prev.txt.gz"
-    validate.write_manifest({1001, 1003, 4242, 4243}, manifest)
+    # Rebuilt: a continuing database only ever sends a sample, so has no cap.
+    manifest = _manifest_from_before_the_database(tmp_path, {1001, 1003, 4242, 4243})
 
     report = validate.run_validation(
         export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"

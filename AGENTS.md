@@ -112,13 +112,17 @@ explains its part; this table is only a map.
     still serves is the error; one it no longer serves is the
     `drops_retired_upstream` warning, **but only on a database created after
     the previous manifest** (`pubmed2db_metadata.created_at` against the
-    manifest's mtime). On a continuing database the same drop means an update
-    file was missed, and stays a `missed_deletions` error. The lookup is
+    manifest's mtime) **and with no gap in its files** (`status.load_gaps`):
+    a skipped update file's deletions look exactly like the ones published
+    before the baseline. On a continuing database the same drop means an update
+    file was missed, and stays a `missed_deletions` error; there PubMed's
+    answer only names the failure, so one batch is sampled
+    (`_DROP_DIAGNOSE_SAMPLE`) rather than all of them. The lookup is
     `pmids_served`, on esummary rather than efetch, because esummary names
     every ID it was asked about (a missing one with `"error"`): efetch's
     recovering parser skips what it cannot read, which made a degraded
-    response read as "retired". It is capped at `_DROP_CONFIRM_LIMIT`, and a
-    run over the cap fails, so the cap has to sit well above a year's
+    response read as "retired". On a clean rebuild it is capped at
+    `_DROP_CONFIRM_LIMIT`, and a run over the cap fails, so the cap has to sit well above a year's
     deletions or the chain never recovers.
 
 - **Reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)

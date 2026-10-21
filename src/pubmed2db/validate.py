@@ -64,6 +64,7 @@ from .export import (
     pub_month,
 )
 from .parse import _publication_types
+from .status import load_gaps
 from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
@@ -202,6 +203,12 @@ _ESUMMARY_BATCH = 200
 #: the comparison). Far more than this means the previous manifest describes a
 #: different corpus, which no amount of fetching will explain.
 _DROP_CONFIRM_LIMIT = 200_000
+
+#: How many unexplained drops `check_drops_since` asks PubMed about when its
+#: answer cannot excuse them (a continuing database, or one with load gaps):
+#: one esummary request, enough to say whether records were lost or deletions
+#: missed, without spending minutes confirming a FAIL.
+_DROP_DIAGNOSE_SAMPLE = _ESUMMARY_BATCH
 
 #: A sampled record whose core fields mismatch above this fraction is an error.
 _FIELD_MISMATCH_RATE = 0.20
@@ -1682,7 +1689,13 @@ def check_drops_since(
     It only asks about drops the database cannot explain, and only up to
     :data:`_DROP_CONFIRM_LIMIT` of them. On a continuing database the same
     drop means an update file's ``DeleteCitation`` was never loaded, so it
-    stays an error there even though PubMed agrees the record is gone.
+    stays an error there even though PubMed agrees the record is gone. So does
+    a rebuilt database with a gap in its files (:func:`status.load_gaps`): the
+    deletions the skipped file carried look exactly like the ones published
+    before the baseline. Where PubMed's answer cannot excuse anything, only
+    :data:`_DROP_DIAGNOSE_SAMPLE` drops are sent, to tell lost records
+    (``unexplained_drops``) from missed deletions (``missed_deletions``); both
+    are recorded when both occur.
 
     Without a database the drops cannot be attributed, so they are reported as a
     warning to review rather than silently accepted.
@@ -1719,25 +1732,32 @@ def check_drops_since(
 
     # Then ask PubMed about what the database could not explain. Only with a
     # database: without one the whole set is unattributed and stays a warning.
-    retired_upstream: list[int] = []
-    confirmation: str | None = None
     rebuilt = con is not None and _rebuilt_since(con, previous_manifest)
+    gaps = load_gaps(con) if con is not None else []
+    # PubMed agreeing is only an explanation after a clean rebuild; see the
+    # docstring. Anywhere else a sample is enough to name the failure.
+    excusable = rebuilt and not gaps
+    retired_upstream: list[int] = []
+    asked: list[int] = []
+    confirmation: str | None = None
     if unexplained and con is not None:
         if not online:
             confirmation = "offline"
-        elif len(unexplained) > _DROP_CONFIRM_LIMIT:
+        elif excusable and len(unexplained) > _DROP_CONFIRM_LIMIT:
             confirmation = "over_limit"
         else:
+            sample = unexplained if excusable else unexplained[:_DROP_DIAGNOSE_SAMPLE]
             try:
-                served = pmids_served(unexplained, api_key=api_key, email=email)
-                confirmation = "entrez"
-                retired_upstream = [p for p in unexplained if p not in served]
-                unexplained = [p for p in unexplained if p in served]
+                served = pmids_served(sample, api_key=api_key, email=email)
+                asked = sample
+                confirmation = "entrez" if len(sample) == len(unexplained) else "sampled"
+                retired_upstream = [p for p in sample if p not in served]
+                unexplained = [p for p in unexplained if p in served or p not in asked]
             except Exception as exc:
                 logger.warning("could not confirm dropped PMIDs via API: %s", exc)
                 confirmation = "unreachable"
-    # PubMed agreeing is only an explanation after a rebuild; see the docstring.
-    missed_deletions = [] if rebuilt else retired_upstream
+    missed_deletions = [] if excusable else retired_upstream
+    still_served = len(asked) - len(retired_upstream)
 
     report.checks["drops_since_previous"] = {
         "previous_manifest": str(previous_manifest),
@@ -1747,10 +1767,15 @@ def check_drops_since(
         "added": len(added),
         "explained_by_deletion": _capped(explained),
         "explained_by_deletion_count": len(explained),
-        "explained_by_pubmed": _capped(retired_upstream),
-        "explained_by_pubmed_count": len(retired_upstream),
+        # Not called "explained": on a continuing database, or one with load
+        # gaps, these are the missed deletions, and the run fails on them.
+        "retired_upstream": _capped(retired_upstream),
+        "retired_upstream_count": len(retired_upstream),
         "pubmed_confirmation": confirmation,
+        "pubmed_asked_count": len(asked),
         "database_rebuilt_since": rebuilt,
+        "load_gaps": _capped(gaps),
+        "load_gaps_count": len(gaps),
         "unexplained": _capped(unexplained),
         "unexplained_count": len(unexplained),
         "added_examples": _capped(sorted(added)),
@@ -1761,6 +1786,14 @@ def check_drops_since(
         f"deletion, {len(retired_upstream):,} no longer served by PubMed), "
         f"{len(added):,} added"
     )
+    if gaps:
+        why_missed = (
+            f"; the database never loaded {len(gaps):,} file(s) inside its range, "
+            f"e.g. {gaps[0]}"
+        )
+    else:
+        why_missed = "; the database predates the previous manifest"
+    recorded = False
     if unexplained and con is not None:
         why = {
             "offline": "; offline, so PubMed was not asked about them",
@@ -1770,6 +1803,11 @@ def check_drops_since(
             ),
             "unreachable": "; PubMed was unreachable, so they could not be attributed",
             "entrez": "; PubMed still serves them",
+            "sampled": (
+                f"; PubMed was asked about only {len(asked):,} of them, since this "
+                f"database fails the check whatever it says, and still serves "
+                f"{still_served:,} of those"
+            ),
         }[confirmation]
         next_step = {
             "offline": "; run validate online to ask PubMed whether it still serves them.",
@@ -1780,6 +1818,10 @@ def check_drops_since(
             ),
             "unreachable": "; PubMed could not be asked, so re-run validate once it is reachable.",
             "entrez": ", and PubMed still serves them.",
+            "sampled": (
+                ". Those PubMed still serves were lost; any it no longer serves are "
+                "deletions this database missed (see missed_deletions). Check `status`."
+            ),
         }[confirmation]
         report.record(
             "pmid-set-diff", "drops since previous", expectation, FAIL, observed + why,
@@ -1790,19 +1832,24 @@ def check_drops_since(
             ),
             count=len(unexplained), see="checks.drops_since_previous.unexplained",
         )
-    elif missed_deletions:
+        recorded = True
+    if missed_deletions:
         report.record(
             "pmid-set-diff", "drops since previous", expectation, FAIL,
-            f"{observed}; the database predates the previous manifest",
+            observed + why_missed,
             code="missed_deletions",
             message=(
-                "PubMed no longer serves these PMIDs, but this database, which "
-                "exported them last time, never loaded a DeleteCitation for them: "
-                "an update file was skipped or failed to load. Check `status`."
+                "PubMed no longer serves these PMIDs, but this database never loaded "
+                "a DeleteCitation for them: an update file was skipped or failed to "
+                "load (checks.drops_since_previous.load_gaps names any it can see). "
+                "Check `status`."
             ),
-            count=len(missed_deletions), see="checks.drops_since_previous.explained_by_pubmed",
+            count=len(missed_deletions), see="checks.drops_since_previous.retired_upstream",
         )
-    elif unexplained:
+        recorded = True
+    if recorded:
+        return
+    if unexplained:
         report.record(
             "pmid-set-diff", "drops since previous", expectation, WARN,
             f"{observed}; no database to attribute them",
@@ -1823,7 +1870,7 @@ def check_drops_since(
                 "them: expected on the first run after a fresh-database rebuild "
                 "(the deletions were published before the new baseline)."
             ),
-            count=len(retired_upstream), see="checks.drops_since_previous.explained_by_pubmed",
+            count=len(retired_upstream), see="checks.drops_since_previous.retired_upstream",
         )
     else:
         report.record("pmid-set-diff", "drops since previous", expectation, PASS, observed)
