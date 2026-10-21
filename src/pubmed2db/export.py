@@ -556,7 +556,7 @@ LEFT JOIN pts ON pts.pmid = la.pmid AND pts.source_file = la.source_file
 )
 
 
-def _remove_finished_mark(out_dir: Path, overwrite: bool) -> None:
+def _remove_finished_mark(out_dir: Path, overwrite: bool, *, archivable: bool) -> None:
     """Delete a previous export's ``metadata.json`` and ``SHA256SUMS`` before writing.
 
     ``metadata.json`` is the "export finished" mark. Left in place, an export
@@ -568,12 +568,17 @@ def _remove_finished_mark(out_dir: Path, overwrite: bool) -> None:
     export is about to delete that one's files, the only local copy of its
     build until ``scripts/archive_build.py`` has moved it (#24). A partial
     export, with no mark, is swept without asking. The check is here rather
-    than in ``04-export.sbatch`` so every caller gets it.
+    than in ``04-export.sbatch`` so every caller gets it. ``archivable`` is
+    whether that script can take the export: it archives the validated JSON
+    build, and ``validate`` reads no Parquet, so a Parquet export is only ever
+    moved aside or overwritten.
     """
     if not overwrite and (out_dir / METADATA_FILE).exists():
+        first = ("Archive it first (scripts/archive_build.py)" if archivable
+                 else "Move it aside first")
         raise FileExistsError(
-            f"{out_dir} holds a finished export ({METADATA_FILE} exists). Archive it "
-            "first (scripts/archive_build.py), or pass --overwrite to replace it."
+            f"{out_dir} holds a finished export ({METADATA_FILE} exists). {first}, "
+            "or pass --overwrite (EXPORT_OVERWRITE=1 under Slurm) to replace it."
         )
     for name in (METADATA_FILE, CHECKSUMS_FILE):
         (out_dir / name).unlink(missing_ok=True)
@@ -673,7 +678,7 @@ def export_json(
         raise ValueError("shards must be >= 1")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    _remove_finished_mark(out_dir, overwrite)
+    _remove_finished_mark(out_dir, overwrite, archivable=True)
 
     # Clock the whole export, not just the COPY. Materializing the snapshot is a
     # window function over the entire `article` table -- the reason export memory
@@ -827,7 +832,7 @@ def export_parquet(
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    _remove_finished_mark(out_dir, overwrite)
+    _remove_finished_mark(out_dir, overwrite, archivable=False)
     written: list[Path] = []
 
     tables = 1 + len(_VERSIONED_CHILDREN) + len(_OTHER_TABLES)

@@ -527,7 +527,9 @@ build. Everything the pipeline writes, and what to do with it:
 
 1. If `data/json/metadata.json` exists, archive the build:
    `uv run python scripts/archive_build.py`. It refuses an export that has not
-   been validated, or whose validation failed. It reads `$DATA_DIR`,
+   been validated or whose validation failed, and refuses while it cannot read
+   the database (a `load` still running), since the `source_file.csv` it writes
+   from there is the only record of NCBI's checksums. It reads `$DATA_DIR`,
    `$EXPORT_DIR` and `$MANIFEST_DIR` as `slurm/config.sh` does; logs from an
    `.sbatch` file submitted by hand rather than through `submit.sh` need
    `--logs-dir data/logs`.

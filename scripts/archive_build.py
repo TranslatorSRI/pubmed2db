@@ -11,7 +11,7 @@ build but is written elsewhere:
 - ``manifests/``: the dated ``validation_report-*.json`` for this export and
   the PMID manifest it wrote (copied: the originals in ``data/manifests/`` are
   the chain the next run diffs against, and never move);
-- ``logs/``: the Slurm step logs newer than the last archived build's;
+- ``logs/``: the Slurm step logs of this build's run (see :func:`build_logs`);
 - ``source_file.csv``: the ``source_file`` registry from the database, which is
   the only record of the MD5 NCBI published for each file (no sidecars are kept
   on disk). It is what makes the archived XML files reproducible once the
@@ -37,8 +37,11 @@ first, then the export is moved and they are renamed in beside it.
 
 The build name is read from ``metadata.json`` (``corpus.build_name``), so the
 export must have finished; the script refuses an export with no
-``metadata.json``, one whose ``validate`` run failed, and one that was never
-validated (``--without-validation`` to override the last). It never copies the
+``metadata.json``, one whose ``validate`` run failed, one that was never
+validated (``--without-validation`` to override), and one whose
+``source_file.csv`` it cannot write, say because a running ``load`` holds the
+database (``--without-source-file`` to override: once the database is wiped
+that record is gone). It never copies the
 database: at 76 GB that is published straight from ``data/pubmed.duckdb``, and
 the script prints the ``rsync`` lines for both.
 """
@@ -59,13 +62,16 @@ def fail(message: str) -> None:
 
 
 def latest_report(manifest_dir: Path, export_dir: Path, not_before: float) -> Path | None:
-    """The newest dated report that describes *this* export, if any.
+    """The newest report that describes *this* export, if any.
 
+    Newest by mtime, not by name: a hand run's ``--out`` need not be dated, and
+    ``validation_report-rerun.json`` sorts after every dated one.
     ``validate`` records ``inputs.export_dir`` absolute; a report from before it
     did holds the path as given, relative to where validate ran, and is matched
     only when this script runs from the same directory.
     """
-    candidates = sorted(manifest_dir.glob("validation_report-*.json"), reverse=True)
+    candidates = sorted(manifest_dir.glob("validation_report-*.json"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)
     for path in candidates:
         if path.stat().st_mtime < not_before:
             continue
@@ -79,23 +85,63 @@ def latest_report(manifest_dir: Path, export_dir: Path, not_before: float) -> Pa
     return None
 
 
-def newest_archived_log_mtime(builds_dir: Path) -> float:
-    """When the newest already-archived step log was written (0 if none).
+def previous_build_ended(builds_dir: Path, manifest_dir: Path, export_finished: float) -> float:
+    """When the previous build's run ended, as far as the files on disk say (0 if unknown).
 
-    Skips ``.<build>.incoming/``: a run that died before its move left this
-    build's own logs there, which would otherwise mark them already archived.
+    The newest of two things. What archived builds kept with their original
+    times: ``metadata.json``, and the reports, manifests and logs copied with
+    ``copy2`` (not ``source_file.csv``, written at archive time, nor
+    ``.<build>.incoming/``, a run that died before its move). And the newest
+    report in ``manifest_dir`` that passed or warned before this export
+    finished: the previous build's last validate, archived or not, which also
+    bounds the first archive. A failed report is skipped, since it may be an
+    earlier attempt at this build.
     """
-    return max(
-        (p.stat().st_mtime for p in builds_dir.glob("*/logs/*.out")
-         if not p.parent.parent.name.startswith(".")),
-        default=0.0,
-    )
+    kept = [p for d in builds_dir.glob("*") if d.is_dir() and not d.name.startswith(".")
+            for p in (d / "metadata.json", *d.glob("manifests/*"), *d.glob("logs/*"))
+            if p.is_file()]
+    ended = max((p.stat().st_mtime for p in kept), default=0.0)
+    for path in manifest_dir.glob("validation_report-*.json"):
+        mtime = path.stat().st_mtime
+        if ended < mtime < export_finished:
+            try:
+                status = json.loads(path.read_text()).get("status")
+            except (OSError, ValueError):
+                continue
+            if status != "fail":
+                ended = mtime
+    return ended
+
+
+def build_logs(logs_dir: Path, *, since: float, export_finished: float,
+               validated: float | None) -> list[Path]:
+    """The step logs of this build's run.
+
+    Anything written after the previous build ended (:func:`previous_build_ended`),
+    except a validate log from before this export finished, which validated an
+    earlier one, and any other step's log from after this build's validate
+    report, which belongs to the next run.
+    """
+    if not logs_dir.is_dir():
+        return []
+    logs = []
+    for path in logs_dir.glob("pubmed2db-*.out"):
+        mtime = path.stat().st_mtime
+        if mtime <= since:
+            continue
+        if path.name.startswith("pubmed2db-validate-"):
+            if mtime < export_finished:
+                continue
+        elif validated is not None and mtime > validated:
+            continue
+        logs.append(path)
+    return sorted(logs)
 
 
 def dump_source_file(db_path: Path, out: Path, cutoff_file: str | None) -> bool:
     """Copy the files this build loaded, from the ``source_file`` registry, to CSV.
 
-    Read-only; False if it could not. Rows past the cutoff are files the
+    Read-only; False, having said why, if it could not. Rows past the cutoff are files the
     database learned of after the export (a later ``download`` or ``load``),
     and rows never loaded were not in the build either: the same rows
     ``status.corpus_provenance`` counts for ``metadata.json``.
@@ -107,8 +153,8 @@ def dump_source_file(db_path: Path, out: Path, cutoff_file: str | None) -> bool:
     try:
         con = duckdb.connect(str(db_path), read_only=True)
     except duckdb.Error as exc:
-        print(f"warning: could not open {db_path} read-only ({exc}); "
-              f"no source_file.csv written", file=sys.stderr)
+        print(f"could not open {db_path} read-only ({exc}); is a load or "
+              "download still running?", file=sys.stderr)
         return False
 
     in_build = "processed_at IS NOT NULL"
@@ -135,8 +181,7 @@ def dump_source_file(db_path: Path, out: Path, cutoff_file: str | None) -> bool:
         )
     except duckdb.Error as exc:
         out.unlink(missing_ok=True)
-        print(f"warning: could not dump source_file from {db_path} ({exc}); "
-              "no source_file.csv written", file=sys.stderr)
+        print(f"could not dump source_file from {db_path} ({exc})", file=sys.stderr)
         return False
     finally:
         con.close()
@@ -161,6 +206,10 @@ def main(argv: list[str] | None = None) -> None:
                              "(a cutoff file download never synced).")
     parser.add_argument("--without-validation", action="store_true",
                         help="Archive an export that validate has not been run on.")
+    parser.add_argument("--without-source-file", action="store_true",
+                        help="Archive without source_file.csv when the database cannot "
+                             "be read. Its published MD5s are then recorded nowhere "
+                             "once the database is wiped.")
     args = parser.parse_args(argv)
 
     data_dir: Path = args.data_dir
@@ -195,8 +244,9 @@ def main(argv: list[str] | None = None) -> None:
     else:
         content = json.loads(report.read_text())
         if content.get("status") == "fail":
-            fail(f"{report} says this export failed validation; fix the export "
-                 "rather than archiving it.")
+            fail(f"{report} says this export failed validation; fix the cause, export "
+                 "again with --overwrite (EXPORT_OVERWRITE=1 ./slurm/submit.sh export "
+                 "validate), and archive that instead.")
         written = content.get("inputs", {}).get("manifest_written")
         if written and Path(written).is_file():
             manifest = Path(written)
@@ -204,11 +254,13 @@ def main(argv: list[str] | None = None) -> None:
             print(f"warning: {report.name} names the manifest {written}, which is not "
                   "there from this directory; not copying it", file=sys.stderr)
 
-    # The previous build's newest log bounds what belongs to this one; read it
-    # before this build's directory exists under builds/.
-    logs_since = newest_archived_log_mtime(builds_dir)
-    logs = sorted(p for p in logs_dir.glob("pubmed2db-*.out")
-                  if p.stat().st_mtime > logs_since) if logs_dir.is_dir() else []
+    # Read before this build's directory exists under builds/.
+    export_finished = metadata_path.stat().st_mtime
+    logs = build_logs(
+        logs_dir, since=previous_build_ended(builds_dir, manifest_dir, export_finished),
+        export_finished=export_finished,
+        validated=None if report is None else report.stat().st_mtime,
+    )
 
     # Gather everything beside the export first, so a failure here leaves the
     # export where it was and a re-run starts clean.
@@ -217,6 +269,25 @@ def main(argv: list[str] | None = None) -> None:
     if incoming.exists():
         shutil.rmtree(incoming)  # left by a run that died before the move
     incoming.mkdir()
+
+    # First, as the one step that fails for a reason outside this script (a
+    # job holding the database): nothing is copied or moved if it does.
+    cutoff = metadata.get("corpus", {}).get("cutoff_file")
+    if not db_path.is_file():
+        wrote_csv = False
+        print(f"{db_path} not found", file=sys.stderr)
+    else:
+        wrote_csv = dump_source_file(db_path, incoming / "source_file.csv", cutoff)
+    if not wrote_csv:
+        if not args.without_source_file:
+            shutil.rmtree(incoming)
+            fail("no source_file.csv, the only record of the MD5 NCBI published for "
+                 "each file once the database is wiped. Fix the cause and re-run, or "
+                 "pass --without-source-file.")
+        print("note: archiving without source_file.csv (--without-source-file)")
+    else:
+        print(f"wrote {dest / 'source_file.csv'} (the files this build loaded, "
+              "with the MD5 NCBI published for each)")
 
     if report is not None:
         (incoming / "manifests").mkdir()
@@ -234,16 +305,8 @@ def main(argv: list[str] | None = None) -> None:
             shutil.copy2(log, incoming / "logs" / log.name)
         print(f"copied {len(logs)} step log(s) -> {dest / 'logs'}")
     else:
-        print(f"note: no step logs in {logs_dir} newer than the last archived build's; "
+        print(f"note: no step logs of this build's run in {logs_dir}; "
               "pass --logs-dir if the jobs wrote them elsewhere")
-
-    if db_path.is_file():
-        cutoff = metadata.get("corpus", {}).get("cutoff_file")
-        if dump_source_file(db_path, incoming / "source_file.csv", cutoff):
-            print(f"wrote {dest / 'source_file.csv'} (the files this build loaded, "
-                  "with the MD5 NCBI published for each)")
-    else:
-        print(f"note: {db_path} not found; no source_file.csv written")
 
     shutil.move(str(export_dir), str(dest))
     print(f"moved {export_dir} -> {dest}")

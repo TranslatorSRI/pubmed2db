@@ -798,10 +798,14 @@ def test_a_finished_export_is_refused_without_overwrite(loaded_con, tmp_path):
     """
     from pubmed2db.export import export_json, export_parquet
 
-    for exporter, out in ((export_json, tmp_path / "json"), (export_parquet, tmp_path / "parquet")):
+    # archive_build.py takes only the validated JSON build, so only JSON names it.
+    for exporter, out, advice in (
+        (export_json, tmp_path / "json", "archive_build"),
+        (export_parquet, tmp_path / "parquet", "Move it aside"),
+    ):
         exporter(loaded_con, out)
         before = sorted(p.name for p in out.iterdir())
-        with pytest.raises(FileExistsError, match="archive_build"):
+        with pytest.raises(FileExistsError, match=advice):
             exporter(loaded_con, out)
         assert sorted(p.name for p in out.iterdir()) == before
         exporter(loaded_con, out, overwrite=True)

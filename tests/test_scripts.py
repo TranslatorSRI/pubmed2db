@@ -75,6 +75,11 @@ def data_dir(tmp_path: Path) -> Path:
     previous = data / "builds" / "2026sep26" / "logs"
     previous.mkdir(parents=True)
     _touch_at(previous / "pubmed2db-load-100.out", now - 20_000, "previous build")
+
+    # An empty registry: archiving refuses without the source_file.csv it dumps.
+    from pubmed2db.db import connect
+
+    connect(data / "pubmed.duckdb").close()
     return data
 
 
@@ -148,6 +153,21 @@ def test_archive_refuses_a_failed_validation(data_dir: Path) -> None:
     result = run(ARCHIVE, "--data-dir", str(data_dir))
     assert result.returncode == 1
     assert "failed validation" in result.stderr
+    # export refuses the finished export too, so the way out has to be named.
+    assert "--overwrite" in result.stderr and "EXPORT_OVERWRITE=1" in result.stderr
+
+
+def test_archive_judges_the_newest_report_by_time_not_name(data_dir: Path) -> None:
+    """A hand run's undated --out must not hide a later dated report that failed."""
+    manifests = data_dir / "manifests"
+    now = time.time()
+    rerun = json.loads((manifests / "validation_report-20261020.json").read_text())
+    _touch_at(manifests / "validation_report-rerun.json", now - 200, json.dumps(rerun))
+    rerun["status"] = "fail"
+    _touch_at(manifests / "validation_report-20261020.json", now - 100, json.dumps(rerun))
+    result = run(ARCHIVE, "--data-dir", str(data_dir))
+    assert result.returncode == 1
+    assert "validation_report-20261020.json says this export failed" in result.stderr
 
 
 def test_archive_needs_a_name_when_the_cutoff_was_never_synced(data_dir: Path) -> None:
@@ -185,6 +205,44 @@ def test_archive_dumps_the_source_file_registry(data_dir: Path) -> None:
     assert "left 1 file(s) after the cutoff" in result.stdout
     assert "left 1 file(s) the database never loaded" in result.stdout
     assert "pubmed.duckdb HOST:" in result.stdout
+
+
+def test_archive_refuses_without_the_source_file_registry(data_dir: Path) -> None:
+    """A database it cannot read (a running load holds it) stops the archive."""
+    (data_dir / "pubmed.duckdb").write_text("held by another process")
+    result = run(ARCHIVE, "--data-dir", str(data_dir))
+    assert result.returncode == 1
+    assert "--without-source-file" in result.stderr
+    assert (data_dir / "json" / "metadata.json").is_file()
+    assert sorted(p.name for p in (data_dir / "builds").iterdir()) == ["2026sep26"]
+
+    result = run(ARCHIVE, "--data-dir", str(data_dir), "--without-source-file")
+    assert result.returncode == 0, result.stderr
+    dest = data_dir / "builds" / "2026oct19"
+    assert (dest / "metadata.json").is_file() and not (dest / "source_file.csv").exists()
+
+
+def test_archive_takes_only_this_runs_logs(data_dir: Path) -> None:
+    """The previous build's logs stay out even when that build archived none.
+
+    Its archived metadata.json and report still say when it ended, and its
+    validate log, written after its report, predates this export.
+    """
+    now = time.time()
+    previous = data_dir / "builds" / "2026sep26"
+    for log in (previous / "logs").iterdir():
+        log.unlink()
+    (previous / "logs").rmdir()
+    _touch_at(previous / "metadata.json", now - 12_000, "{}")
+    logs = data_dir / "logs"
+    _touch_at(logs / "pubmed2db-validate-101.out", now - 9_000, "previous build")
+    _touch_at(logs / "pubmed2db-validate-202.out", now - 50, "this build")
+    _touch_at(logs / "pubmed2db-download-300.out", now - 10, "the next run")
+    result = run(ARCHIVE, "--data-dir", str(data_dir))
+    assert result.returncode == 0, result.stderr
+    assert sorted(p.name for p in (data_dir / "builds" / "2026oct19" / "logs").iterdir()) == [
+        "pubmed2db-export-201.out", "pubmed2db-load-200.out", "pubmed2db-validate-202.out",
+    ]
 
 
 def test_archive_reads_reports_from_an_overridden_manifest_dir(data_dir: Path) -> None:
