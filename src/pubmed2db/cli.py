@@ -242,8 +242,19 @@ def load(ctx: click.Context, force: bool) -> None:
     default=True,
     help="Parquet: export only the latest version (default) or full history.",
 )
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    help=(
+        "Replace a finished export (one with a metadata.json) in OUT. Without "
+        "it, archive that export first with scripts/archive_build.py."
+    ),
+)
 @click.pass_context
-def export(ctx: click.Context, fmt: str, out: str, shards: int | None, gzip_output: bool, latest: bool) -> None:
+def export(
+    ctx: click.Context, fmt: str, out: str, shards: int | None, gzip_output: bool,
+    latest: bool, overwrite: bool,
+) -> None:
     """Export the latest abstracts to JSON, or the database to Parquet."""
     from .export import export_json, export_parquet
     from .status import export_readiness
@@ -275,10 +286,15 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int | None, gzip_outp
             con.execute("PRAGMA enable_progress_bar")
 
         click.echo(f"Starting {fmt} export to {out}...")
-        if fmt == "json":
-            paths = export_json(con, out, shards=shards, gzip_output=gzip_output)
-        else:
-            paths = export_parquet(con, out, latest=latest)
+        try:
+            if fmt == "json":
+                paths = export_json(
+                    con, out, shards=shards, gzip_output=gzip_output, overwrite=overwrite
+                )
+            else:
+                paths = export_parquet(con, out, latest=latest, overwrite=overwrite)
+        except FileExistsError as exc:
+            raise click.ClickException(str(exc)) from exc
         click.echo(
             f"Wrote {len(paths)} file(s) to {out} (peak RSS {peak_rss_gib():.1f} GiB)."
         )

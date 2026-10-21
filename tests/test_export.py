@@ -278,7 +278,7 @@ def test_reexport_removes_stale_shards(loaded_con, tmp_path):
 
     out = tmp_path / "json"
     export_json(loaded_con, out, shards=2)
-    export_json(loaded_con, out, shards=1, gzip_output=True)
+    export_json(loaded_con, out, shards=1, gzip_output=True, overwrite=True)
 
     # The COPY writer names shards from FILENAME_PATTERN '{i}', so the exact
     # stem is DuckDB's business -- what matters is that exactly one shard is
@@ -445,14 +445,14 @@ def test_a_failed_re_export_does_not_look_finished(loaded_con, tmp_path, monkeyp
     from pubmed2db import export
 
     for run in (
-        lambda: export.export_json(loaded_con, tmp_path / "json"),
-        lambda: export.export_parquet(loaded_con, tmp_path / "parquet"),
+        lambda **kw: export.export_json(loaded_con, tmp_path / "json", **kw),
+        lambda **kw: export.export_parquet(loaded_con, tmp_path / "parquet", **kw),
     ):
         run()
         with monkeypatch.context() as patch:
             patch.setattr(export, "write_export_metadata", lambda *a, **k: 1 / 0)
             with pytest.raises(ZeroDivisionError):
-                run()
+                run(overwrite=True)
     for out in (tmp_path / "json", tmp_path / "parquet"):
         assert not (out / "metadata.json").exists()
         assert not (out / "SHA256SUMS").exists()
@@ -788,3 +788,27 @@ def test_sha256sums_verifies_with_the_standard_tool(loaded_con, tmp_path):
         pytest.skip("no sha256sum or shasum on this machine")
     checked = subprocess.run([*tool, "-c", "SHA256SUMS"], cwd=out, capture_output=True, text=True)
     assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
+def test_a_finished_export_is_refused_without_overwrite(loaded_con, tmp_path):
+    """A finished export is the only local copy of its build until it is archived.
+
+    The guard lives in the export itself, not only in 04-export.sbatch, so
+    `pubmed2db export` run by hand cannot delete it either (#24).
+    """
+    from pubmed2db.export import export_json, export_parquet
+
+    # archive_build.py takes only the validated JSON build, so only JSON names it.
+    for exporter, out, advice in (
+        (export_json, tmp_path / "json", "archive_build"),
+        (export_parquet, tmp_path / "parquet", "Move it aside"),
+    ):
+        exporter(loaded_con, out)
+        before = sorted(p.name for p in out.iterdir())
+        with pytest.raises(FileExistsError, match=advice):
+            exporter(loaded_con, out)
+        assert sorted(p.name for p in out.iterdir()) == before
+        exporter(loaded_con, out, overwrite=True)
+        # A partial export (no metadata.json: a run that died) is swept unasked.
+        (out / "metadata.json").unlink()
+        exporter(loaded_con, out)

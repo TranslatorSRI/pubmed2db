@@ -110,12 +110,20 @@ if [[ "$dry_run" == "0" ]] && ! command -v sbatch >/dev/null 2>&1; then
     exit 69
 fi
 
-# Fail before submitting a chain that would die hours later on a missing email,
-# rather than after the load has already run.
+# Fail before submitting a chain that would die hours later on a missing email
+# or an unarchived export, rather than after the load has already run.
 for step in "${requested[@]}"; do
     if [[ "$step" == "validate" && "${VALIDATE_OFFLINE:-0}" != "1" && -z "$NCBI_EMAIL" ]]; then
         echo "error: NCBI_EMAIL is unset, and validate is an online run by default." >&2
         echo "Set NCBI_EMAIL=you@example.org, or VALIDATE_OFFLINE=1 to skip the Entrez checks." >&2
+        exit 64
+    fi
+    # export refuses a finished export it was not told to replace (#24), but
+    # only once its job starts: in an `all` chain, after download and load have
+    # spent their allocations. Archive it first (scripts/archive_build.py).
+    if [[ "$step" == "export" && "${EXPORT_OVERWRITE:-0}" != "1" && -f "$EXPORT_DIR/metadata.json" ]]; then
+        echo "error: $EXPORT_DIR/metadata.json exists: the previous build has not been archived." >&2
+        echo "Run uv run python scripts/archive_build.py first, or set EXPORT_OVERWRITE=1 to replace it." >&2
         exit 64
     fi
 done

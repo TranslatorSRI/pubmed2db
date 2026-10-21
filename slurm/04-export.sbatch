@@ -35,6 +35,16 @@ cd "${SLURM_SUBMIT_DIR:-$PWD}"
 source slurm/config.sh
 log_run_settings
 
+# `export` refuses to run over a finished export (one with a metadata.json),
+# the only local copy of its build until scripts/archive_build.py has moved it
+# to $DATA_DIR/builds/<build>/ (#24). The check is in export itself, so a
+# hand-run export gets it too; EXPORT_OVERWRITE=1 ./slurm/submit.sh export
+# replaces the build instead.
+overwrite_args=()
+if [[ "${EXPORT_OVERWRITE:-0}" == "1" ]]; then
+    overwrite_args=(--overwrite)
+fi
+
 temp_args=()
 if [[ -n "$DUCKDB_TEMP_DIR" ]]; then
     # DuckDB errors rather than falling back if the spill directory is missing,
@@ -52,4 +62,5 @@ fi
 # could not be created) are exactly the cases that must not die here.
 env PUBMED2DB_DUCKDB_MEMORY_LIMIT="$EXPORT_MEMORY_LIMIT" \
   uv run pubmed2db --data-dir "$DATA_DIR" ${temp_args[@]+"${temp_args[@]}"} \
-    export --format json --out "$EXPORT_DIR" --shards "$SHARDS"
+    export --format json --out "$EXPORT_DIR" --shards "$SHARDS" \
+    ${overwrite_args[@]+"${overwrite_args[@]}"}

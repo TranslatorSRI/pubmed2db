@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
+import time
+from pathlib import Path
 
 import pytest
 
@@ -68,6 +71,15 @@ def _fake_eutils_factory(articles, *, entrez_count=2):
             wanted = [int(x) for x in params["id"].split(",")]
             body = "".join(articles[p] for p in wanted if p in articles)
             return f"<PubmedArticleSet>{body}</PubmedArticleSet>".encode()
+        if endpoint == "esummary.fcgi":
+            # Shaped like the live response: every ID asked about is named, a
+            # missing one with "error".
+            wanted = params["id"].split(",")
+            result = {"uids": wanted}
+            for uid in wanted:
+                result[uid] = {"uid": uid} if int(uid) in articles else {
+                    "uid": uid, "error": "cannot get document summary"}
+            return json.dumps({"result": result}).encode()
         raise AssertionError(f"unexpected endpoint {endpoint}")
 
     return fake
@@ -549,7 +561,10 @@ def test_drops_explained_by_recorded_deletion(export_dir, loaded_con, tmp_path):
 
 
 def test_unexplained_drop_is_an_error(export_dir, loaded_con, tmp_path):
-    """A PMID that vanished without a recorded deletion fails the run."""
+    """A PMID that vanished without a recorded deletion fails an offline run.
+
+    Offline there is no second opinion to ask, so the database's word is final.
+    """
     manifest = tmp_path / "prev.txt.gz"
     validate.write_manifest({1001, 1003, 4242}, manifest)
 
@@ -560,6 +575,287 @@ def test_unexplained_drop_is_an_error(export_dir, loaded_con, tmp_path):
     assert drops["unexplained"] == [4242]
     assert report["status"] == "fail"
     assert any(e["code"] == "unexplained_drops" for e in report["errors"])
+    assert drops["pubmed_confirmation"] == "offline"
+
+
+def test_a_drop_pubmed_no_longer_serves_is_a_warning(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """The fresh-database rebuild: deletions the new database never loaded.
+
+    A database built from a new baseline has no deleted_pmid row for anything
+    PubMed retired between the previous build and that baseline, so by the
+    database alone every such drop failed the run, no manifest was written, and
+    the next run diffed against the same old manifest and failed the same way.
+    Asked online, PubMed does not serve 4242 either, which explains the drop:
+    a warning (so the manifest is still written) rather than an error.
+    """
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
+    manifest = _manifest_from_before_the_database(tmp_path, {1001, 1003, 4242})
+    manifest_out = tmp_path / "next.txt.gz"
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest,
+        manifest_out=manifest_out, email="me@example.com",
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["pubmed_confirmation"] == "entrez"
+    assert drops["database_rebuilt_since"] is True
+    assert drops["retired_upstream"] == [4242]
+    assert drops["unexplained"] == []
+    assert report["status"] == "warn"
+    assert any(w["code"] == "drops_retired_upstream" for w in report["warnings"])
+    assert not any(e["code"] == "unexplained_drops" for e in report["errors"])
+    assert manifest_out.exists()
+
+
+def _manifest_from_before_the_database(tmp_path, pmids, *, copied=False):
+    """A previous manifest written before the database existed: a rebuild.
+
+    ``copied`` gives the file a fresh mtime, as ``cp -r`` would, leaving only
+    the gzip header to say when it was written.
+    """
+    manifest = tmp_path / "prev.txt.gz"
+    an_hour_ago = time.time() - 3600
+    with gzip.GzipFile(manifest, "wb", mtime=an_hour_ago) as handle:
+        handle.write("".join(f"{p}\n" for p in sorted(pmids)).encode())
+    if not copied:
+        os.utime(manifest, (an_hour_ago, an_hour_ago))
+    return manifest
+
+
+def test_a_copied_manifest_still_marks_a_rebuild(export_dir, loaded_con, monkeypatch, tmp_path):
+    """The gzip header, not the file's mtime, says when a manifest was written."""
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
+    manifest = _manifest_from_before_the_database(tmp_path, {1001, 1003, 4242}, copied=True)
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    assert report["checks"]["drops_since_previous"]["database_rebuilt_since"] is True
+    assert any(w["code"] == "drops_retired_upstream" for w in report["warnings"])
+
+
+def test_a_drop_pubmed_no_longer_serves_fails_a_continuing_database(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """The same drop on a database that exported it last time: a missed update file.
+
+    A continuing database loads every update file, so a record PubMed retired
+    has its DeleteCitation here unless a file was skipped. PubMed agreeing the
+    record is gone does not explain how *this* database lost it.
+    """
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1003, 4242}, manifest)
+    manifest_out = tmp_path / "next.txt.gz"
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest,
+        manifest_out=manifest_out, email="me@example.com",
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["database_rebuilt_since"] is False
+    assert drops["retired_upstream"] == [4242]
+    assert report["status"] == "fail"
+    assert any(e["code"] == "missed_deletions" for e in report["errors"])
+    assert not manifest_out.exists()
+
+
+def test_a_rebuilt_database_with_a_load_gap_does_not_excuse_retired_drops(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """A fresh build that skipped an update file missed that file's deletions.
+
+    They look exactly like the deletions published before the new baseline, so
+    being rebuilt is not enough: every file inside the build's range must have
+    loaded, or a warning run writes a manifest that buries the gap for good.
+    """
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
+    # 25n0002 is loaded; register 25n0004 as loaded too, leaving 25n0003 out.
+    loaded_con.execute(
+        "INSERT INTO source_file (file_name, kind, year_yy, file_number, file_order_key, "
+        "processed_at) VALUES ('pubmed25n0004.xml.gz', 'update', 25, 4, 25000004, now())"
+    )
+    manifest = _manifest_from_before_the_database(tmp_path, {1001, 1003, 4242})
+    manifest_out = tmp_path / "next.txt.gz"
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest,
+        manifest_out=manifest_out, email="me@example.com",
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["database_rebuilt_since"] is True
+    assert drops["load_gaps"] == ["pubmed25n0003.xml.gz"]
+    assert drops["retired_upstream"] == [4242]
+    assert report["status"] == "fail"
+    error = next(e for e in report["errors"] if e["code"] == "missed_deletions")
+    assert "load_gaps" in error["message"]
+    assert not any(w["code"] == "drops_retired_upstream" for w in report["warnings"])
+    assert not manifest_out.exists()
+
+
+def test_lost_records_and_missed_deletions_are_both_reported(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """One error must not hide the other: they send the operator different ways."""
+    served = dict(_EFETCH)
+    served[4242] = _EFETCH[1003].replace("1003", "4242")
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(served))
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1003, 4242, 4243}, manifest)
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["unexplained"] == [4242]
+    assert drops["retired_upstream"] == [4243]
+    codes = {e["code"]: e["count"] for e in report["errors"]}
+    assert codes["unexplained_drops"] == 1
+    assert codes["missed_deletions"] == 1
+
+
+def test_a_continuing_database_asks_pubmed_about_a_sample_only(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """Where PubMed's answer cannot excuse a drop, a sample names the failure.
+
+    On a continuing database every unexplained drop fails, whatever PubMed says,
+    so confirming all of them would spend rate-limited requests on a verdict
+    already reached.
+    """
+    asked: list[str] = []
+    fake = _fake_eutils_factory(_EFETCH)
+
+    def counting(endpoint, params, **kwargs):
+        if endpoint == "esummary.fcgi":
+            asked.extend(params["id"].split(","))
+        return fake(endpoint, params, **kwargs)
+
+    monkeypatch.setattr(validate, "_eutils", counting)
+    monkeypatch.setattr(validate, "_DROP_DIAGNOSE_SAMPLE", 2)
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1003, 4242, 4243, 4244}, manifest)
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert len(asked) == 2 and set(asked) < {"4242", "4243", "4244"}
+    assert drops["pubmed_confirmation"] == "sampled"
+    assert drops["retired_upstream"] == sorted(int(p) for p in asked)
+    assert drops["unexplained"] == sorted({4242, 4243, 4244} - {int(p) for p in asked})
+    codes = {e["code"] for e in report["errors"]}
+    assert codes == {"unexplained_drops", "missed_deletions"}
+
+
+def test_a_degraded_esummary_response_is_not_an_explanation(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """A response that does not mention a PMID says nothing about it.
+
+    NCBI can answer 200 with an error body or a truncated one. Reading every
+    PMID missing from that as "PubMed dropped it" would turn lost records into a
+    warning, and the warning run's manifest would bury them for good.
+    """
+    fake = _fake_eutils_factory(_EFETCH)
+
+    def degraded(endpoint, params, **kwargs):
+        if endpoint == "esummary.fcgi":
+            return b'{"esummaryresult": ["Unable to obtain query #1"]}'
+        return fake(endpoint, params, **kwargs)
+
+    monkeypatch.setattr(validate, "_eutils", degraded)
+    manifest = _manifest_from_before_the_database(tmp_path, {1001, 1003, 4242})
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["pubmed_confirmation"] == "unreachable"
+    assert drops["retired_upstream"] == []
+    assert drops["unexplained"] == [4242]
+    assert report["status"] == "fail"
+
+
+def test_pmids_served_needs_an_answer_for_every_pmid(monkeypatch):
+    """A well-formed response that leaves a PMID out raises rather than guessing."""
+    def partial(endpoint, params, **_):
+        return json.dumps({"result": {"uids": ["1001"], "1001": {"uid": "1001"}}}).encode()
+
+    monkeypatch.setattr(validate, "_eutils", partial)
+    with pytest.raises(RuntimeError, match="did not answer"):
+        validate.pmids_served([1001, 4242], api_key=None, email=None)
+
+
+def test_a_drop_pubmed_still_serves_is_an_error(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """A PMID PubMed still serves but the export lost is the real failure."""
+    served = dict(_EFETCH)
+    served[4242] = _EFETCH[1003].replace("1003", "4242")
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(served))
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1003, 4242}, manifest)
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["pubmed_confirmation"] == "entrez"
+    assert drops["unexplained"] == [4242]
+    assert drops["retired_upstream"] == []
+    assert report["status"] == "fail"
+    error = next(e for e in report["errors"] if e["code"] == "unexplained_drops")
+    assert "still serves" in error["message"]
+
+
+def test_too_many_unexplained_drops_are_not_sent_to_pubmed(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """Past the cap the previous manifest is suspect, not the export."""
+    def no_esummary(endpoint, params, **_):
+        if endpoint == "esummary.fcgi":
+            raise AssertionError("esummary must not be called over the limit")
+        return _fake_eutils_factory(_EFETCH)(endpoint, params)
+
+    monkeypatch.setattr(validate, "_eutils", no_esummary)
+    monkeypatch.setattr(validate, "_DROP_CONFIRM_LIMIT", 1)
+    # Rebuilt: a continuing database only ever sends a sample, so has no cap.
+    manifest = _manifest_from_before_the_database(tmp_path, {1001, 1003, 4242, 4243})
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["pubmed_confirmation"] == "over_limit"
+    assert drops["unexplained"] == [4242, 4243]
+    assert report["status"] == "fail"
+    error = next(e for e in report["errors"] if e["code"] == "unexplained_drops")
+    assert "without --previous-manifest" in error["message"]
+    assert "run validate online" not in error["message"]
+
+
+def test_unreachable_pubmed_leaves_drops_unexplained(
+    export_dir, loaded_con, monkeypatch, tmp_path
+):
+    """No answer is not an explanation: the run fails and says why."""
+    def dead(endpoint, params, **_):
+        raise RuntimeError("eutils down")
+
+    monkeypatch.setattr(validate, "_eutils", dead)
+    manifest = tmp_path / "prev.txt.gz"
+    validate.write_manifest({1001, 1003, 4242}, manifest)
+
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    drops = report["checks"]["drops_since_previous"]
+    assert drops["pubmed_confirmation"] == "unreachable"
+    assert drops["unexplained"] == [4242]
+    error = next(e for e in report["errors"] if e["code"] == "unexplained_drops")
+    assert "reachable" in error["message"]
+    assert "run validate online" not in error["message"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1170,3 +1466,14 @@ def test_export_metadata_catches_a_changed_or_missing_shard(loaded_con, tmp_path
     check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
     assert check["status"] == "skip"
     assert report["data_model_version"] is None
+
+
+def test_report_records_absolute_paths(export_dir, tmp_path, monkeypatch):
+    """05-validate.sbatch passes paths relative to SLURM_SUBMIT_DIR; the report
+    must not, or archive_build.py run from elsewhere cannot match it to its export."""
+    monkeypatch.chdir(export_dir.parent)
+    report = validate.run_validation(
+        Path(export_dir.name), online=False, manifest_out=Path("pmids.txt.gz")
+    )
+    assert report["inputs"]["export_dir"] == str(export_dir.resolve())
+    assert report["inputs"]["manifest_written"] == str((export_dir.parent / "pmids.txt.gz").resolve())
