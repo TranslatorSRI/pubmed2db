@@ -520,3 +520,28 @@ def test_cli_load_no_stage_ignores_shards(staged_download):
     assert "Loaded 2 file(s)" in result.stdout
     assert "fresh shard(s)" not in result.stderr
     assert (staged_download / "stage" / "pubmed25n0001").is_dir()
+
+
+def test_connect_checkpoint_threshold_replaces_the_default(tmp_path):
+    """The setting that stops every file's COMMIT from checkpointing reaches
+    DuckDB, and the group option carries it (the load step passes it by env)."""
+    from pubmed2db.db import connect
+
+    con = connect(tmp_path / "default.duckdb")
+    try:
+        default = _as_bytes(_setting(con, "checkpoint_threshold"))
+    finally:
+        con.close()
+    con = connect(tmp_path / "big.duckdb", checkpoint_threshold="4GB")
+    try:
+        assert _as_bytes(_setting(con, "checkpoint_threshold")) > default
+    finally:
+        con.close()
+
+    result = _run_cli(
+        "--db", str(tmp_path / "cli.duckdb"), "--checkpoint-threshold", "2GB", "status"
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "checkpoint_threshold=1.8 GiB" in result.stderr or "checkpoint_threshold=2" in (
+        result.stderr
+    )

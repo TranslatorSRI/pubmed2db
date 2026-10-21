@@ -99,6 +99,13 @@ unset _export_dir_given _manifest_dir_given
 : "${LOAD_MEMORY_LIMIT=48GB}"
 : "${EXPORT_MEMORY_LIMIT=160GB}"
 
+# The WAL size at which a COMMIT also checkpoints, for the load only. DuckDB's
+# default is 16 MiB, which every file exceeds, so the serial loader
+# checkpointed on every COMMIT; measured locally while a database grew to
+# 26 GB, 4GB took DuckDB's per-file cost from ~0.9 s to ~0.3 s. Same `=`
+# semantics as the memory limits: empty leaves DuckDB's default in place.
+: "${LOAD_CHECKPOINT_THRESHOLD=4GB}"
+
 # Fast local scratch for DuckDB to spill into, e.g. /local/scratch/duckdb_tmp
 # on a node that has one. Empty leaves DuckDB's default (next to the database
 # file), which is what every ht1 run has actually used: the old default path
@@ -132,7 +139,8 @@ log_run_settings() {
     for name in SLURM_JOB_ID SLURM_JOB_NAME SLURMD_NODENAME SLURM_MEM_PER_NODE \
                 SLURM_CPUS_PER_TASK DATA_DIR EXPORT_DIR MANIFEST_DIR STAGE_DIR \
                 STAGE_WORKERS LOAD_FILES_PER_TXN SHARDS \
-                VALIDATE_SAMPLE_TOTAL LOAD_MEMORY_LIMIT EXPORT_MEMORY_LIMIT \
+                VALIDATE_SAMPLE_TOTAL LOAD_MEMORY_LIMIT LOAD_CHECKPOINT_THRESHOLD \
+                EXPORT_MEMORY_LIMIT \
                 DUCKDB_TEMP_DIR UV_CACHE_DIR; do
         echo "  $name=${!name-}"
     done

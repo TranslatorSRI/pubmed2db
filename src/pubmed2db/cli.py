@@ -157,6 +157,16 @@ def _sync_options(f):
     ),
 )
 @click.option(
+    "--checkpoint-threshold",
+    default=None,
+    envvar="PUBMED2DB_DUCKDB_CHECKPOINT_THRESHOLD",
+    show_envvar=True,
+    help=(
+        "WAL size at which a COMMIT also checkpoints, e.g. '4GB' (default: DuckDB's "
+        "16 MiB, which makes every file's COMMIT a checkpoint)."
+    ),
+)
+@click.option(
     "--stage-dir",
     default=None,
     envvar="PUBMED2DB_STAGE_DIR",
@@ -172,6 +182,7 @@ def main(
     threads: int | None,
     temp_dir: str | None,
     memory_limit: str | None,
+    checkpoint_threshold: str | None,
     stage_dir: str | None,
     verbose: bool,
 ) -> None:
@@ -189,6 +200,7 @@ def main(
     ctx.obj["threads"] = threads
     ctx.obj["temp_dir"] = temp_dir
     ctx.obj["memory_limit"] = memory_limit
+    ctx.obj["checkpoint_threshold"] = checkpoint_threshold
     ctx.obj["verbose"] = verbose
 
 
@@ -206,20 +218,22 @@ def _connect(ctx: click.Context, *, read_only: bool = False):
             threads=ctx.obj["threads"],
             temp_directory=ctx.obj["temp_dir"],
             memory_limit=ctx.obj["memory_limit"],
+            checkpoint_threshold=ctx.obj["checkpoint_threshold"],
             read_only=read_only,
         )
     except IncompatibleDatabase as exc:
         raise click.ClickException(f"{ctx.obj['db']}: {exc}") from exc
-    memory_limit, threads, temp_directory = con.execute(
+    memory_limit, threads, temp_directory, checkpoint_threshold = con.execute(
         "SELECT current_setting('memory_limit'), current_setting('threads'), "
-        "current_setting('temp_directory')"
+        "current_setting('temp_directory'), current_setting('checkpoint_threshold')"
     ).fetchone()
     log.info(
-        "DuckDB %s: memory_limit=%s, threads=%s, temp_directory=%s",
+        "DuckDB %s: memory_limit=%s, threads=%s, temp_directory=%s, checkpoint_threshold=%s",
         duckdb.__version__,
         memory_limit,
         threads,
         temp_directory,
+        checkpoint_threshold,
     )
     return con
 
@@ -296,9 +310,23 @@ def stage(ctx: click.Context, workers: int | None, force: bool) -> None:
 )
 @click.option("--no-stage", is_flag=True, help="Ignore staged shards; parse every file here.")
 @click.option("--keep-stage", is_flag=True, help="Leave shards in place after loading them.")
+@click.option(
+    "--no-preserve-insertion-order",
+    is_flag=True,
+    help=(
+        "Let DuckDB reorder rows within a transaction for a parallel insert. Nothing "
+        "downstream reads insertion order, but a file's rows then stop being contiguous, "
+        "which is what keeps a reload's DELETE cheap; measure before adopting."
+    ),
+)
 @click.pass_context
 def load(
-    ctx: click.Context, force: bool, files_per_txn: int | None, no_stage: bool, keep_stage: bool
+    ctx: click.Context,
+    force: bool,
+    files_per_txn: int | None,
+    no_stage: bool,
+    keep_stage: bool,
+    no_preserve_insertion_order: bool,
 ) -> None:
     """Parse downloaded files into the database (full history).
 
@@ -308,6 +336,8 @@ def load(
     time, or `pubmed2db update` to do everything.
     """
     with closing(_connect(ctx)) as con:
+        if no_preserve_insertion_order:
+            con.execute("SET preserve_insertion_order = false")
         _load_local(
             con,
             force=force,

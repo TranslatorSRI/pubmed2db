@@ -626,10 +626,10 @@ Notes on running it under Slurm specifically:
   reassurance.) `validate` creates the parent directory itself, so the path
   needs no setup.
 
-## DuckDB tuning: `--threads`, `--memory-limit` and `--temp-dir`
+## DuckDB tuning: `--threads`, `--memory-limit`, `--temp-dir` and `--checkpoint-threshold`
 
-All three are **group-level** options, so they go before the subcommand, and all
-three also read an environment variable — usually the easier form in a batch
+All four are **group-level** options, so they go before the subcommand, and all
+four also read an environment variable — usually the easier form in a batch
 script:
 
 ```bash
@@ -644,9 +644,19 @@ uv run pubmed2db --memory-limit "$EXPORT_MEMORY_LIMIT" \
   --temp-dir /local/scratch/duckdb_tmp export ...
 ```
 
-The sbatch scripts already do this — `EXPORT_MEMORY_LIMIT`, `LOAD_MEMORY_LIMIT`
-and `DUCKDB_TEMP_DIR` in `slurm/config.sh` are where to change it. The forms
-above are for running a step by hand.
+The sbatch scripts already do this — `EXPORT_MEMORY_LIMIT`, `LOAD_MEMORY_LIMIT`,
+`LOAD_CHECKPOINT_THRESHOLD` and `DUCKDB_TEMP_DIR` in `slurm/config.sh` are
+where to change it. The forms above are for running a step by hand.
+
+**`--checkpoint-threshold`** is the WAL size at which a COMMIT also
+checkpoints. DuckDB's default is 16 MiB, which every PubMed file exceeds, so
+the serial loader checkpointed on every file's COMMIT. Measured locally with
+`scripts/benchmark_load.py --synthetic 400` while the database grew to 26 GB,
+`4GB` took DuckDB's per-file cost from ~0.9 s to ~0.3 s (insert 0.43 → 0.23 s,
+commit 0.39 → 0.06 s), which is why `04-load.sbatch` passes
+`LOAD_CHECKPOINT_THRESHOLD=4GB`. The price is a WAL that can reach that size
+before it is folded into the database file, replayed on the next open after a
+crash. Only the load sets it; the export writes nothing.
 
 **DuckDB reads your allocation, not the node.** Both of its sized defaults come
 from the Slurm cgroup, measured on duckdb 1.5.4: `threads` from the CPU quota

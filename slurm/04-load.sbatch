@@ -40,6 +40,7 @@ log_run_settings
 # PUBMED2DB_DUCKDB_MEMORY_LIMIT would silently cap the 256G export at this
 # figure too.
 env PUBMED2DB_DUCKDB_MEMORY_LIMIT="$LOAD_MEMORY_LIMIT" \
+    PUBMED2DB_DUCKDB_CHECKPOINT_THRESHOLD="$LOAD_CHECKPOINT_THRESHOLD" \
   uv run pubmed2db --data-dir "$DATA_DIR" --stage-dir "$STAGE_DIR" load \
     --files-per-txn "$LOAD_FILES_PER_TXN"
 

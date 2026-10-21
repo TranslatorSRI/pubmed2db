@@ -825,3 +825,26 @@ def test_load_reads_the_stage_directory_config_names() -> None:
     load = (SLURM_DIR / "04-load.sbatch").read_text()
     assert '--stage-dir "$STAGE_DIR"' in stage and '--stage-dir "$STAGE_DIR"' in load
     assert '--files-per-txn "$LOAD_FILES_PER_TXN"' in load
+
+
+def test_load_passes_its_checkpoint_threshold_without_exporting_it() -> None:
+    """Like the memory limit: per invocation via `env`, so a shell-wide value
+    cannot reach the export, and empty leaves DuckDB's default in place."""
+    load = (SLURM_DIR / "04-load.sbatch").read_text()
+    assert 'PUBMED2DB_DUCKDB_CHECKPOINT_THRESHOLD="$LOAD_CHECKPOINT_THRESHOLD"' in load
+    assert "export LOAD_CHECKPOINT_THRESHOLD" not in (SLURM_DIR / "config.sh").read_text()
+
+    def threshold(**env: str) -> str:
+        result = subprocess.run(
+            ["bash", "-c", 'source slurm/config.sh; printf "%s" "$LOAD_CHECKPOINT_THRESHOLD"'],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT), **env},
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    assert threshold() == "4GB"
+    assert threshold(LOAD_CHECKPOINT_THRESHOLD="") == ""
+    assert threshold(LOAD_CHECKPOINT_THRESHOLD="1GB") == "1GB"
