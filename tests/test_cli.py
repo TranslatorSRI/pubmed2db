@@ -54,8 +54,17 @@ def test_cli_export_warns_on_wrong_format_flag(tmp_path, loaded_db):
 
     result = CliRunner().invoke(
         main,
-        ["--db", str(db_path), "export", "--format", "parquet",
-         "--out", str(tmp_path / "out"), "--shards", "4"],
+        [
+            "--db",
+            str(db_path),
+            "export",
+            "--format",
+            "parquet",
+            "--out",
+            str(tmp_path / "out"),
+            "--shards",
+            "4",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert "--shards only applies to --format json" in result.output
@@ -153,9 +162,7 @@ def test_connect_applies_duckdb_tuning(tmp_path):
     from pubmed2db.db import connect
 
     spill = tmp_path / "spill"
-    con = connect(
-        tmp_path / "tuned.duckdb", threads=2, temp_directory=spill, memory_limit="1GB"
-    )
+    con = connect(tmp_path / "tuned.duckdb", threads=2, temp_directory=spill, memory_limit="1GB")
     try:
         assert con.execute("SELECT current_setting('threads')").fetchone()[0] == 2
         assert con.execute("SELECT current_setting('temp_directory')").fetchone()[0] == str(spill)
@@ -171,8 +178,17 @@ def test_cli_threads_and_temp_dir_options(tmp_path, loaded_db):
 
     result = CliRunner().invoke(
         main,
-        ["--db", str(db_path), "--threads", "2", "--memory-limit", "1GB",
-         "--temp-dir", str(tmp_path / "spill"), "status"],
+        [
+            "--db",
+            str(db_path),
+            "--threads",
+            "2",
+            "--memory-limit",
+            "1GB",
+            "--temp-dir",
+            str(tmp_path / "spill"),
+            "status",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert "Export:    ready" in result.output
@@ -186,8 +202,7 @@ def _setting(con, name: str) -> str:
 #: sized from the machine — on a large-memory cluster node that is TiB, so a
 #: GiB-only ladder turns this test into a KeyError on exactly the hardware it
 #: is written for.
-_UNITS = {"bytes": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3,
-          "TiB": 1024**4, "PiB": 1024**5}
+_UNITS = {"bytes": 1, "KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "TiB": 1024**4, "PiB": 1024**5}
 
 
 def _as_bytes(value: str) -> float:
@@ -301,7 +316,9 @@ def test_cli_export_then_validate_needs_no_flags(staged_download):
     do, with no --gzip on one side and nothing on the other.
     """
     db_path = staged_download / "cli.duckdb"
-    assert _run_cli("--data-dir", str(staged_download), "--db", str(db_path), "load").returncode == 0
+    assert (
+        _run_cli("--data-dir", str(staged_download), "--db", str(db_path), "load").returncode == 0
+    )
 
     out_dir = staged_download / "out"
     export = _run_cli("--db", str(db_path), "export", "--format", "json", "--out", str(out_dir))
@@ -326,9 +343,15 @@ def test_cli_rejects_a_non_positive_shard_count(tmp_path):
     result = CliRunner().invoke(
         main,
         [
-            "--db", str(tmp_path / "cli.duckdb"),
-            "export", "--format", "json", "--out", str(tmp_path / "out"),
-            "--shards", "0",
+            "--db",
+            str(tmp_path / "cli.duckdb"),
+            "export",
+            "--format",
+            "json",
+            "--out",
+            str(tmp_path / "out"),
+            "--shards",
+            "0",
         ],
     )
     assert result.exit_code != 0
@@ -430,7 +453,8 @@ def test_every_command_logs_the_duckdb_settings_it_runs_with(tmp_path, caplog):
 
     with caplog.at_level(logging.INFO, logger="pubmed2db.cli"):
         result = CliRunner().invoke(
-            main, ["--db", str(tmp_path / "x.duckdb"), "--memory-limit", "1GB", "status"],
+            main,
+            ["--db", str(tmp_path / "x.duckdb"), "--memory-limit", "1GB", "status"],
         )
     assert result.exit_code == 0, result.output
     [line] = [r.getMessage() for r in caplog.records if r.getMessage().startswith("DuckDB ")]

@@ -21,9 +21,9 @@ def test_fmt_duration(seconds, expected):
 @pytest.mark.parametrize(
     "elapsed,done,remaining,expected",
     [
-        (100.0, 0, 5, "?"),        # nothing finished yet, so no rate to project
+        (100.0, 0, 5, "?"),  # nothing finished yet, so no rate to project
         (100.0, 5, 0, "done"),
-        (100.0, 5, 5, "1m 40s"),   # 20 s/item x 5 remaining
+        (100.0, 5, 5, "1m 40s"),  # 20 s/item x 5 remaining
     ],
 )
 def test_eta_str(elapsed, done, remaining, expected):
@@ -42,7 +42,7 @@ def test_peak_rss_is_a_high_water_mark():
     during = peak_rss_gib()
     assert during >= before
     del ballast
-    assert peak_rss_gib() >= during   # freeing memory does not lower it
+    assert peak_rss_gib() >= during  # freeing memory does not lower it
 
 
 def test_current_rss_is_optional_but_plausible():

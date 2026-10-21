@@ -46,12 +46,16 @@ def test_load_journals(con, monkeypatch):
         "SELECT title, abbreviation_medline FROM journal WHERE nlm_catalog_id = '0410462'"
     ).fetchone()
     assert row == ("Nature", "Nature")
-    assert con.execute(
-        "SELECT count(*) FROM journal_issn WHERE nlm_catalog_id = '0410462'"
-    ).fetchone()[0] == 2
+    assert (
+        con.execute(
+            "SELECT count(*) FROM journal_issn WHERE nlm_catalog_id = '0410462'"
+        ).fetchone()[0]
+        == 2
+    )
     # A closed vocabulary in the data model's documentation.
-    assert {r[0] for r in con.execute("SELECT DISTINCT issn_type FROM journal_issn").fetchall()} \
-        == {"Print", "Electronic"}
+    assert {
+        r[0] for r in con.execute("SELECT DISTINCT issn_type FROM journal_issn").fetchall()
+    } == {"Print", "Electronic"}
 
 
 def test_load_journals_keeps_data_when_overview_is_empty(con, monkeypatch, tmp_path):
@@ -204,21 +208,19 @@ def test_load_journals_takes_years_from_the_catalog_and_titles_from_j_entrez(con
     monkeypatch.setattr(
         load_mod, "_ensure_journal_overview", lambda: FIXTURES / "J_Entrez_sample.txt"
     )
-    monkeypatch.setattr(
-        "pubmed2db.load._ensure_serfile", lambda: [FIXTURES / "serfile_sample.xml"]
-    )
+    monkeypatch.setattr("pubmed2db.load._ensure_serfile", lambda: [FIXTURES / "serfile_sample.xml"])
     assert load_journals(con) == 2
 
     # Title stays J_Entrez's ("Nature"), not the catalog's ("Nature.").
     assert con.execute(
-        "SELECT title, start_year, end_year, active FROM journal"
-        " WHERE nlm_catalog_id = '0410462'"
+        "SELECT title, start_year, end_year, active FROM journal WHERE nlm_catalog_id = '0410462'"
     ).fetchone() == ("Nature", 1869, None, True)
 
     # A catalog-only journal is not inserted; J_Entrez defines the row set.
-    assert con.execute(
-        "SELECT count(*) FROM journal WHERE nlm_catalog_id = '9999999'"
-    ).fetchone()[0] == 0
+    assert (
+        con.execute("SELECT count(*) FROM journal WHERE nlm_catalog_id = '9999999'").fetchone()[0]
+        == 0
+    )
 
 
 def test_load_journals_keeps_journals_the_catalog_does_not_cover(con, monkeypatch, tmp_path):
@@ -235,8 +237,7 @@ def test_load_journals_keeps_journals_the_catalog_does_not_cover(con, monkeypatc
 
     assert load_journals(con) == 2
     assert con.execute(
-        "SELECT title, start_year, end_year, active FROM journal"
-        " WHERE nlm_catalog_id = '0410462'"
+        "SELECT title, start_year, end_year, active FROM journal WHERE nlm_catalog_id = '0410462'"
     ).fetchone() == ("Nature", None, None, None)
 
 
@@ -270,9 +271,7 @@ def test_load_journals_keeps_loaded_years_when_the_catalog_is_unreachable(con, m
     monkeypatch.setattr(
         load_mod, "_ensure_journal_overview", lambda: FIXTURES / "J_Entrez_sample.txt"
     )
-    monkeypatch.setattr(
-        "pubmed2db.load._ensure_serfile", lambda: [FIXTURES / "serfile_sample.xml"]
-    )
+    monkeypatch.setattr("pubmed2db.load._ensure_serfile", lambda: [FIXTURES / "serfile_sample.xml"])
     load_journals(con)
 
     def boom():
@@ -281,8 +280,7 @@ def test_load_journals_keeps_loaded_years_when_the_catalog_is_unreachable(con, m
     monkeypatch.setattr("pubmed2db.load._ensure_serfile", boom)
     assert load_journals(con) == 2
     assert con.execute(
-        "SELECT title, start_year, end_year, active FROM journal"
-        " WHERE nlm_catalog_id = '0410462'"
+        "SELECT title, start_year, end_year, active FROM journal WHERE nlm_catalog_id = '0410462'"
     ).fetchone() == ("Nature", 1869, None, True)
 
 
@@ -446,7 +444,9 @@ def test_serfile_head_falls_back_and_survives_network_trouble(monkeypatch):
     monkeypatch.setattr(
         load_mod.requests,
         "head",
-        lambda *a, **k: Response({"ETag": '"e"', "Content-Length": "90", "Content-Encoding": "gzip"}),
+        lambda *a, **k: Response(
+            {"ETag": '"e"', "Content-Length": "90", "Content-Encoding": "gzip"}
+        ),
     )
     assert load_mod._serfile_head("https://x") == ('"e"', None)
 
@@ -626,9 +626,7 @@ def test_load_journals_keeps_loaded_years_when_the_baseline_is_broken(con, monke
     monkeypatch.setattr(
         load_mod, "_ensure_journal_overview", lambda: FIXTURES / "J_Entrez_sample.txt"
     )
-    monkeypatch.setattr(
-        "pubmed2db.load._ensure_serfile", lambda: [FIXTURES / "serfile_sample.xml"]
-    )
+    monkeypatch.setattr("pubmed2db.load._ensure_serfile", lambda: [FIXTURES / "serfile_sample.xml"])
     load_journals(con)
 
     broken = tmp_path / "serfilebase.2026.xml"

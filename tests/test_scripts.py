@@ -24,7 +24,9 @@ FRESH = REPO_ROOT / "scripts" / "fresh_database.py"
 def run(script: Path, *args: str, stdin: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(script), *args],
-        capture_output=True, text=True, input=stdin,
+        capture_output=True,
+        text=True,
+        input=stdin,
     )
 
 
@@ -48,22 +50,47 @@ def data_dir(tmp_path: Path) -> Path:
     for i in range(2):
         _touch_at(export / f"pubmed_metadata_{i}.ndjson.gz", now - 600, "shard")
     _touch_at(export / "SHA256SUMS", now - 500, "x  pubmed_metadata_0.ndjson.gz\n")
-    _touch_at(export / "metadata.json", now - 500, json.dumps(
-        {"records": 2, "corpus": {"build_name": "2026oct19", "cutoff_file": "pubmed26n1700.xml.gz"}}
-    ))
+    _touch_at(
+        export / "metadata.json",
+        now - 500,
+        json.dumps(
+            {
+                "records": 2,
+                "corpus": {"build_name": "2026oct19", "cutoff_file": "pubmed26n1700.xml.gz"},
+            }
+        ),
+    )
 
     manifests = data / "manifests"
     manifests.mkdir()
     _touch_at(manifests / "pmids-20260926.txt.gz", now - 10_000, "old")
-    _touch_at(manifests / "validation_report-20260926.json", now - 10_000, json.dumps(
-        {"status": "warn", "inputs": {"export_dir": str(export),
-                                     "manifest_written": str(manifests / "pmids-20260926.txt.gz")}}
-    ))
+    _touch_at(
+        manifests / "validation_report-20260926.json",
+        now - 10_000,
+        json.dumps(
+            {
+                "status": "warn",
+                "inputs": {
+                    "export_dir": str(export),
+                    "manifest_written": str(manifests / "pmids-20260926.txt.gz"),
+                },
+            }
+        ),
+    )
     _touch_at(manifests / "pmids-20261020.txt.gz", now - 100, "new")
-    _touch_at(manifests / "validation_report-20261020.json", now - 100, json.dumps(
-        {"status": "warn", "inputs": {"export_dir": str(export),
-                                     "manifest_written": str(manifests / "pmids-20261020.txt.gz")}}
-    ))
+    _touch_at(
+        manifests / "validation_report-20261020.json",
+        now - 100,
+        json.dumps(
+            {
+                "status": "warn",
+                "inputs": {
+                    "export_dir": str(export),
+                    "manifest_written": str(manifests / "pmids-20261020.txt.gz"),
+                },
+            }
+        ),
+    )
 
     logs = data / "logs"
     logs.mkdir()
@@ -108,7 +135,8 @@ def test_archive_moves_the_export_and_gathers_its_evidence(data_dir: Path) -> No
 
     # Only the logs newer than the last archived build's, and not submit.log.
     assert sorted(p.name for p in (dest / "logs").iterdir()) == [
-        "pubmed2db-export-201.out", "pubmed2db-load-200.out",
+        "pubmed2db-export-201.out",
+        "pubmed2db-load-200.out",
     ]
     assert (data_dir / "logs" / "pubmed2db-load-200.out").is_file()
 
@@ -187,8 +215,7 @@ def test_archive_dumps_the_source_file_registry(data_dir: Path) -> None:
     from pubmed2db.db import connect, register_source_file
 
     with closing(connect(data_dir / "pubmed.duckdb")) as con:
-        register_source_file(con, "pubmed26n0001.xml.gz", kind="baseline",
-                             published_md5="abc123")
+        register_source_file(con, "pubmed26n0001.xml.gz", kind="baseline", published_md5="abc123")
         register_source_file(con, "pubmed26n1700.xml.gz", kind="update")
         # Synced after the export: not part of the build whose cutoff is 1700.
         register_source_file(con, "pubmed26n1701.xml.gz", kind="update")
@@ -241,7 +268,9 @@ def test_archive_takes_only_this_runs_logs(data_dir: Path) -> None:
     result = run(ARCHIVE, "--data-dir", str(data_dir))
     assert result.returncode == 0, result.stderr
     assert sorted(p.name for p in (data_dir / "builds" / "2026oct19" / "logs").iterdir()) == [
-        "pubmed2db-export-201.out", "pubmed2db-load-200.out", "pubmed2db-validate-202.out",
+        "pubmed2db-export-201.out",
+        "pubmed2db-load-200.out",
+        "pubmed2db-validate-202.out",
     ]
 
 
@@ -251,11 +280,14 @@ def test_archive_reads_reports_from_an_overridden_manifest_dir(data_dir: Path) -
     (data_dir / "manifests").rename(elsewhere)
     result = subprocess.run(
         [sys.executable, str(ARCHIVE), "--data-dir", str(data_dir)],
-        capture_output=True, text=True, env={**os.environ, "MANIFEST_DIR": str(elsewhere)},
+        capture_output=True,
+        text=True,
+        env={**os.environ, "MANIFEST_DIR": str(elsewhere)},
     )
     assert result.returncode == 0, result.stderr
-    assert (data_dir / "builds" / "2026oct19" / "manifests"
-            / "validation_report-20261020.json").is_file()
+    assert (
+        data_dir / "builds" / "2026oct19" / "manifests" / "validation_report-20261020.json"
+    ).is_file()
 
 
 def test_archive_says_when_it_finds_no_logs(data_dir: Path) -> None:
@@ -285,7 +317,8 @@ def test_archive_recovers_from_a_run_that_died_before_the_move(data_dir: Path) -
     dest = data_dir / "builds" / "2026oct19"
     assert not stale.exists()
     assert sorted(p.name for p in (dest / "logs").iterdir()) == [
-        "pubmed2db-export-201.out", "pubmed2db-load-200.out",
+        "pubmed2db-export-201.out",
+        "pubmed2db-load-200.out",
     ]
 
 
@@ -331,7 +364,9 @@ def test_fresh_database_moves_the_old_year_and_deletes_the_database(two_years: P
     assert "pubmed.duckdb" not in after and "pubmed.duckdb.wal" not in after
 
     # Everything else is exactly as it was.
-    untouched = {p for p in before if p.startswith(("manifests/", "logs/", "builds/", "pubmed2db/"))}
+    untouched = {
+        p for p in before if p.startswith(("manifests/", "logs/", "builds/", "pubmed2db/"))
+    }
     assert untouched and untouched <= after
     assert "serial catalog unavailable" in result.stdout
     assert "drops_retired_upstream" in result.stdout
@@ -347,21 +382,27 @@ def test_fresh_database_clears_spill_files_from_a_configured_temp_dir(
     (temp / "someone-elses.txt").write_text("keep")
     result = subprocess.run(
         [sys.executable, str(FRESH), "--data-dir", str(two_years), "--keep-year", "2026", "--yes"],
-        capture_output=True, text=True, env={**os.environ, "DUCKDB_TEMP_DIR": str(temp)},
+        capture_output=True,
+        text=True,
+        env={**os.environ, "DUCKDB_TEMP_DIR": str(temp)},
     )
     assert result.returncode == 0, result.stderr
     assert sorted(p.name for p in temp.iterdir()) == ["someone-elses.txt"]
     assert "1 DuckDB spill file(s)" in result.stdout
 
 
-def test_fresh_database_follows_data_dir_from_the_environment(two_years: Path, tmp_path: Path) -> None:
+def test_fresh_database_follows_data_dir_from_the_environment(
+    two_years: Path, tmp_path: Path
+) -> None:
     """As the Slurm config and archive_build.py do: never a stale ./data instead."""
     elsewhere = tmp_path / "elsewhere"
     (elsewhere / "data").mkdir(parents=True)
     (elsewhere / "data" / "pubmed.duckdb").write_text("a stale database")
     result = subprocess.run(
         [sys.executable, str(FRESH), "--keep-year", "2026", "--yes"],
-        capture_output=True, text=True, cwd=elsewhere,
+        capture_output=True,
+        text=True,
+        cwd=elsewhere,
         env={**os.environ, "DATA_DIR": str(two_years)},
     )
     assert result.returncode == 0, result.stderr
@@ -448,7 +489,9 @@ def test_fresh_database_checks_an_overridden_export_dir(two_years: Path) -> None
     (elsewhere / "metadata.json").write_text("{}")
     result = subprocess.run(
         [sys.executable, str(FRESH), "--data-dir", str(two_years), "--keep-year", "2026", "--yes"],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
         env={**os.environ, "EXPORT_DIR": str(elsewhere)},
     )
     assert result.returncode == 1

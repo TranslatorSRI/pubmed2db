@@ -74,9 +74,7 @@ def load_gaps(con: duckdb.DuckDBPyConnection) -> list[str]:
 
 def last_run(con: duckdb.DuckDBPyConnection, step: str) -> datetime | None:
     """When ``step`` was last recorded in ``pipeline_run`` (or ``None``)."""
-    row = con.execute(
-        "SELECT last_run_at FROM pipeline_run WHERE step = ?", [step]
-    ).fetchone()
+    row = con.execute("SELECT last_run_at FROM pipeline_run WHERE step = ?", [step]).fetchone()
     return row[0] if row else None
 
 

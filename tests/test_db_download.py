@@ -41,8 +41,14 @@ def test_register_source_file_upserts(con):
 @pytest.mark.parametrize(
     "text,expected",
     [
-        ("MD5(pubmed25n0001.xml.gz)= 0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef"),
-        ("0123456789ABCDEF0123456789ABCDEF  pubmed25n0001.xml.gz", "0123456789abcdef0123456789abcdef"),
+        (
+            "MD5(pubmed25n0001.xml.gz)= 0123456789abcdef0123456789abcdef",
+            "0123456789abcdef0123456789abcdef",
+        ),
+        (
+            "0123456789ABCDEF0123456789ABCDEF  pubmed25n0001.xml.gz",
+            "0123456789abcdef0123456789abcdef",
+        ),
         ("no checksum here", None),
     ],
 )
@@ -86,8 +92,20 @@ class _FakeEnsure:
         return self.path
 
 
-def _sync_kind(con, monkeypatch, tmp_path, *, urls, body, registry=None, limit=None,
-               ensure_module=None, verify=False, last_modified=None, failed=None):
+def _sync_kind(
+    con,
+    monkeypatch,
+    tmp_path,
+    *,
+    urls,
+    body,
+    registry=None,
+    limit=None,
+    ensure_module=None,
+    verify=False,
+    last_modified=None,
+    failed=None,
+):
     """Run download._sync_kind against a fake listing/server."""
     from pubmed2db import download
 
@@ -291,9 +309,12 @@ def test_known_file_without_a_checksum_is_not_treated_as_new(con, monkeypatch, t
         registry={file_name: None},
     )
 
-    assert con.execute(
-        "SELECT downloaded_at FROM source_file WHERE file_name = ?", [file_name]
-    ).fetchone()[0] == before
+    assert (
+        con.execute(
+            "SELECT downloaded_at FROM source_file WHERE file_name = ?", [file_name]
+        ).fetchone()[0]
+        == before
+    )
 
 
 def test_a_missing_local_file_is_verified_when_refetched(con, monkeypatch, tmp_path):
@@ -328,15 +349,28 @@ def test_sync_records_when_ncbi_posted_each_file(con, monkeypatch, tmp_path):
     from datetime import UTC, datetime
 
     url = "https://example.invalid/updatefiles/pubmed26n1636.xml.gz"
-    _sync_kind(con, monkeypatch, tmp_path, urls=[url], body=f"MD5(x)= {_GOOD_MD5}",
-               last_modified="Thu, 24 Sep 2026 18:05:18 GMT")
+    _sync_kind(
+        con,
+        monkeypatch,
+        tmp_path,
+        urls=[url],
+        body=f"MD5(x)= {_GOOD_MD5}",
+        last_modified="Thu, 24 Sep 2026 18:05:18 GMT",
+    )
     posted = con.execute("SELECT published_at FROM source_file").fetchone()[0]
     assert posted == datetime(2026, 9, 24, 18, 5, 18, tzinfo=UTC)
 
     # A later sync whose header is missing or garbled keeps what we knew.
     for header in (None, "not a date"):
-        _sync_kind(con, monkeypatch, tmp_path, urls=[url], body=f"MD5(x)= {_GOOD_MD5}",
-                   registry={"pubmed26n1636.xml.gz": _GOOD_MD5}, last_modified=header)
+        _sync_kind(
+            con,
+            monkeypatch,
+            tmp_path,
+            urls=[url],
+            body=f"MD5(x)= {_GOOD_MD5}",
+            registry={"pubmed26n1636.xml.gz": _GOOD_MD5},
+            last_modified=header,
+        )
         assert con.execute("SELECT published_at FROM source_file").fetchone()[0] == posted
 
 

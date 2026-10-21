@@ -17,6 +17,7 @@ from .db import connect
 
 log = logging.getLogger(__name__)
 
+
 def _load_local(con, *, force: bool, require_files: bool) -> None:
     """Load every downloaded file, reporting the counts the CLI prints.
 
@@ -33,15 +34,15 @@ def _load_local(con, *, force: bool, require_files: bool) -> None:
     loaded, failed = load_files(con, files, force=force)
     click.echo(f"Loaded {loaded} file(s); {len(files)} local file(s) checked.")
     if failed:
-        raise click.ClickException(
-            f"{len(failed)} file(s) failed to load: {', '.join(failed)}"
-        )
+        raise click.ClickException(f"{len(failed)} file(s) failed to load: {', '.join(failed)}")
 
 
 def _sync_options(f):
     """Shared ``--baseline/--updates/--limit/--verify`` options for ``download``
     and ``update``, which both call :func:`pubmed2db.download.sync`."""
-    f = click.option("--verify/--no-verify", default=True, help="Verify downloaded files against MD5.")(f)
+    f = click.option(
+        "--verify/--no-verify", default=True, help="Verify downloaded files against MD5."
+    )(f)
     f = click.option(
         "--limit",
         type=click.IntRange(min=1),
@@ -155,7 +156,10 @@ def _connect(ctx: click.Context, *, read_only: bool = False):
     ).fetchone()
     log.info(
         "DuckDB %s: memory_limit=%s, threads=%s, temp_directory=%s",
-        duckdb.__version__, memory_limit, threads, temp_directory,
+        duckdb.__version__,
+        memory_limit,
+        threads,
+        temp_directory,
     )
     return con
 
@@ -177,7 +181,9 @@ def _sync(con, **options) -> list:
 @main.command()
 @_sync_options
 @click.pass_context
-def download(ctx: click.Context, baseline: bool, updates: bool, limit: int | None, verify: bool) -> None:
+def download(
+    ctx: click.Context, baseline: bool, updates: bool, limit: int | None, verify: bool
+) -> None:
     """Download baseline/update files and record MD5 checksums."""
     with closing(_connect(ctx)) as con:
         results = _sync(con, baseline=baseline, updates=updates, limit=limit, verify=verify)
@@ -252,8 +258,13 @@ def load(ctx: click.Context, force: bool) -> None:
 )
 @click.pass_context
 def export(
-    ctx: click.Context, fmt: str, out: str, shards: int | None, gzip_output: bool,
-    latest: bool, overwrite: bool,
+    ctx: click.Context,
+    fmt: str,
+    out: str,
+    shards: int | None,
+    gzip_output: bool,
+    latest: bool,
+    overwrite: bool,
 ) -> None:
     """Export the latest abstracts to JSON, or the database to Parquet."""
     from .export import export_json, export_parquet
@@ -295,49 +306,101 @@ def export(
                 paths = export_parquet(con, out, latest=latest, overwrite=overwrite)
         except FileExistsError as exc:
             raise click.ClickException(str(exc)) from exc
-        click.echo(
-            f"Wrote {len(paths)} file(s) to {out} (peak RSS {peak_rss_gib():.1f} GiB)."
-        )
+        click.echo(f"Wrote {len(paths)} file(s) to {out} (peak RSS {peak_rss_gib():.1f} GiB).")
 
 
 @main.command()
 @click.argument("directory", type=click.Path(exists=True, file_okay=False))
-@click.option("--previous-report", type=click.Path(exists=True, dir_okay=False), default=None,
-              help="Prior validation_report.json to compare coverage against.")
-@click.option("--previous-manifest", type=click.Path(exists=True, dir_okay=False), default=None,
-              help="Prior pmids.txt.gz manifest; reports which PMIDs disappeared "
-                   "since that export.")
-@click.option("--manifest", "manifest", type=click.Path(dir_okay=False), default=None,
-              help="Write this export's sorted PMID manifest here (gzipped), for a "
-                   "later run to diff against with --previous-manifest. Skipped "
-                   "when the run fails, so a bad export cannot become the next "
-                   "run's baseline.")
-@click.option("--sample-size", type=int, default=15, show_default=True,
-              help="Records sampled PER SHARD for API field validation, so the "
-                   "total is this times the shard count. Since the JSON export "
-                   "writes one shard per writer thread, that count follows the "
-                   "export's allocation rather than being fixed — the report's "
-                   "'N/shard x M shards' line says what a given run actually "
-                   "checked.")
-@click.option("--drop-sample", type=int, default=10, show_default=True,
-              help="Dropped PMIDs sampled for deletion confirmation.")
-@click.option("--seed", type=int, default=0, show_default=True,
-              help="Seed for reproducible sampling.")
-@click.option("--abstract-threshold", type=float, default=0.90, show_default=True,
-              help="Minimum abstract similarity ratio before it counts as a mismatch.")
-@click.option("--online/--offline", default=True, show_default=True,
-              help="Run the Entrez API checks, or offline structure/DB checks only.")
-@click.option("--api-key", default=None, envvar="NCBI_API_KEY",
-              help="NCBI API key (raises the rate limit to 10 req/s).")
-@click.option("--email", default=None, envvar="NCBI_EMAIL",
-              help="Contact email sent to NCBI, per their usage etiquette.")
-@click.option("--entrez-low", type=float, default=0.95, show_default=True,
-              help="Lower bound of the acceptable exported/Entrez fraction. "
-                   "Widen for a partial export (e.g. a --limit test run).")
-@click.option("--entrez-high", type=float, default=1.05, show_default=True,
-              help="Upper bound of the acceptable exported/Entrez fraction.")
-@click.option("--out", type=click.Path(dir_okay=False), default=None,
-              help="Report path (default: <directory>/validation_report.json).")
+@click.option(
+    "--previous-report",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Prior validation_report.json to compare coverage against.",
+)
+@click.option(
+    "--previous-manifest",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Prior pmids.txt.gz manifest; reports which PMIDs disappeared since that export.",
+)
+@click.option(
+    "--manifest",
+    "manifest",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Write this export's sorted PMID manifest here (gzipped), for a "
+    "later run to diff against with --previous-manifest. Skipped "
+    "when the run fails, so a bad export cannot become the next "
+    "run's baseline.",
+)
+@click.option(
+    "--sample-size",
+    type=int,
+    default=15,
+    show_default=True,
+    help="Records sampled PER SHARD for API field validation, so the "
+    "total is this times the shard count. Since the JSON export "
+    "writes one shard per writer thread, that count follows the "
+    "export's allocation rather than being fixed — the report's "
+    "'N/shard x M shards' line says what a given run actually "
+    "checked.",
+)
+@click.option(
+    "--drop-sample",
+    type=int,
+    default=10,
+    show_default=True,
+    help="Dropped PMIDs sampled for deletion confirmation.",
+)
+@click.option(
+    "--seed", type=int, default=0, show_default=True, help="Seed for reproducible sampling."
+)
+@click.option(
+    "--abstract-threshold",
+    type=float,
+    default=0.90,
+    show_default=True,
+    help="Minimum abstract similarity ratio before it counts as a mismatch.",
+)
+@click.option(
+    "--online/--offline",
+    default=True,
+    show_default=True,
+    help="Run the Entrez API checks, or offline structure/DB checks only.",
+)
+@click.option(
+    "--api-key",
+    default=None,
+    envvar="NCBI_API_KEY",
+    help="NCBI API key (raises the rate limit to 10 req/s).",
+)
+@click.option(
+    "--email",
+    default=None,
+    envvar="NCBI_EMAIL",
+    help="Contact email sent to NCBI, per their usage etiquette.",
+)
+@click.option(
+    "--entrez-low",
+    type=float,
+    default=0.95,
+    show_default=True,
+    help="Lower bound of the acceptable exported/Entrez fraction. "
+    "Widen for a partial export (e.g. a --limit test run).",
+)
+@click.option(
+    "--entrez-high",
+    type=float,
+    default=1.05,
+    show_default=True,
+    help="Upper bound of the acceptable exported/Entrez fraction.",
+)
+@click.option(
+    "--out",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Report path (default: <directory>/validation_report.json).",
+)
 @click.option("--fail-on-warn", is_flag=True, help="Exit non-zero on warnings too.")
 @click.pass_context
 def validate(
@@ -463,12 +526,11 @@ def status(ctx: click.Context) -> None:
                 f"only 20{s['baseline_years'][-1]:02d} is exported"
             )
             click.echo(
-                '           the older year(s) are dead weight — see the README\'s '
+                "           the older year(s) are dead weight — see the README's "
                 '"Re-running after a gap"'
             )
         click.echo(
-            f"Journals:  {s['journals']} loaded; "
-            f"last refresh: {_fmt_ts(s['journals_refreshed'])}"
+            f"Journals:  {s['journals']} loaded; last refresh: {_fmt_ts(s['journals_refreshed'])}"
         )
         click.echo(
             f"Load:      {s['loaded_files']} of {s['downloaded_files']} downloaded "
@@ -485,8 +547,11 @@ def status(ctx: click.Context) -> None:
             posted = provenance["cutoff_published_at"]
             click.echo(
                 f"           cutoff: {provenance['cutoff_file']}"
-                + (f", posted by NCBI {posted} (build name {provenance['build_name']})"
-                   if posted else " (posting time unknown)")
+                + (
+                    f", posted by NCBI {posted} (build name {provenance['build_name']})"
+                    if posted
+                    else " (posting time unknown)"
+                )
             )
         if s["skipped_records"]:
             # Records the loader could not store: extractor rejections plus book
@@ -532,9 +597,7 @@ def update(
             n = load_journals(con)
             click.echo(f"Loaded {n} journals.")
         except Exception as exc:  # noqa: BLE001 - any failure here is non-fatal
-            click.echo(
-                f"Journal refresh failed ({exc}); keeping the existing journals.", err=True
-            )
+            click.echo(f"Journal refresh failed ({exc}); keeping the existing journals.", err=True)
         _load_local(con, force=force, require_files=False)
 
 

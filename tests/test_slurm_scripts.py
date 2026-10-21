@@ -50,9 +50,13 @@ def run_submit(*args: str, **env: str) -> subprocess.CompletedProcess[str]:
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT),
-             "EXPORT_DIR": "/nonexistent/pubmed2db-export",
-             "MANIFEST_DIR": "/nonexistent/pubmed2db-manifests", **env},
+        env={
+            "PATH": "/usr/bin:/bin",
+            "HOME": str(REPO_ROOT),
+            "EXPORT_DIR": "/nonexistent/pubmed2db-export",
+            "MANIFEST_DIR": "/nonexistent/pubmed2db-manifests",
+            **env,
+        },
     )
 
 
@@ -197,15 +201,17 @@ def test_online_validate_without_an_email_is_refused_before_submitting() -> None
 def test_an_unarchived_export_is_refused_before_submitting(tmp_path: Path) -> None:
     """`all` would otherwise run download and load, then die at export."""
     (tmp_path / "metadata.json").write_text("{}")
-    result = run_submit("--dry-run", "all", NCBI_EMAIL="someone@example.org",
-                        EXPORT_DIR=str(tmp_path))
+    result = run_submit(
+        "--dry-run", "all", NCBI_EMAIL="someone@example.org", EXPORT_DIR=str(tmp_path)
+    )
     assert result.returncode == 64
     assert "archive_build.py" in result.stderr
     assert "sbatch" not in result.stdout
 
     for args, env in ((("load",), {}), (("all",), {"EXPORT_OVERWRITE": "1"})):
-        result = run_submit("--dry-run", *args, NCBI_EMAIL="someone@example.org",
-                            EXPORT_DIR=str(tmp_path), **env)
+        result = run_submit(
+            "--dry-run", *args, NCBI_EMAIL="someone@example.org", EXPORT_DIR=str(tmp_path), **env
+        )
         assert result.returncode == 0, result.stderr
 
 
@@ -365,11 +371,7 @@ def test_the_api_key_is_exported_when_set_and_not_when_unset(sandbox: Path) -> N
     """Exported empty, click sees "" -- a key that is present but blank -- rather
     than nothing at all, so the export is conditional."""
     stub = sandbox / "bin" / "uv"
-    stub.write_text(
-        '#!/bin/sh\n'
-        'echo "UV_ARGS: $*"\n'
-        'echo "KEY_SEEN: ${NCBI_API_KEY-<unset>}"\n'
-    )
+    stub.write_text('#!/bin/sh\necho "UV_ARGS: $*"\necho "KEY_SEEN: ${NCBI_API_KEY-<unset>}"\n')
     stub.chmod(0o755)
 
     with_key = run_validate(sandbox, NCBI_EMAIL="me@example.org", NCBI_API_KEY="s3cret")
@@ -455,9 +457,7 @@ def test_a_trailing_slash_on_manifest_dir_still_excludes_todays_manifest(
     (manifests(sandbox) / f"pmids-{today}.txt.gz").touch()
     (manifests(sandbox) / "pmids-20260805.txt.gz").touch()
 
-    result = run_validate(
-        sandbox, NCBI_EMAIL="me@example.org", MANIFEST_DIR="data/manifests/"
-    )
+    result = run_validate(sandbox, NCBI_EMAIL="me@example.org", MANIFEST_DIR="data/manifests/")
     assert result.returncode == 0, result.stderr
     assert "--previous-manifest data/manifests/pmids-20260805.txt.gz" in result.stdout
     assert f"--previous-manifest data/manifests//pmids-{today}" not in result.stdout
@@ -477,10 +477,7 @@ def test_validate_feeds_the_newest_earlier_report_back(sandbox: Path) -> None:
 
     result = run_validate(sandbox, NCBI_EMAIL="me@example.org")
     assert result.returncode == 0, result.stderr
-    assert (
-        "--previous-report data/manifests/validation_report-20260805.json"
-        in result.stdout
-    )
+    assert "--previous-report data/manifests/validation_report-20260805.json" in result.stdout
     assert f"--previous-report data/manifests/validation_report-{today}" not in result.stdout
 
 
@@ -509,7 +506,9 @@ def test_shards_tracks_the_export_allocation() -> None:
     def shards(**env: str) -> str:
         result = subprocess.run(
             ["bash", "-c", 'source slurm/config.sh; printf "%s" "$SHARDS"'],
-            cwd=REPO_ROOT, capture_output=True, text=True,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
             env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT), **env},
         )
         assert result.returncode == 0, result.stderr
@@ -544,7 +543,9 @@ def test_spill_dir_is_opt_in() -> None:
     """
     result = subprocess.run(
         ["bash", "-c", 'source slurm/config.sh; printf "%s" "$DUCKDB_TEMP_DIR"'],
-        cwd=REPO_ROOT, capture_output=True, text=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
         env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT)},
     )
     assert result.returncode == 0, result.stderr
@@ -563,7 +564,9 @@ def test_an_empty_value_stays_empty(name: str) -> None:
     """
     result = subprocess.run(
         ["bash", "-c", f'source slurm/config.sh; printf "%s" "${name}"'],
-        cwd=REPO_ROOT, capture_output=True, text=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
         env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT), name: ""},
     )
     assert result.returncode == 0, result.stderr
@@ -578,7 +581,9 @@ def test_a_clearable_setting_still_has_a_default(name: str) -> None:
     """`=` must not turn the setting into "empty unless you always pass it"."""
     result = subprocess.run(
         ["bash", "-c", f'source slurm/config.sh; printf "%s" "${name}"'],
-        cwd=REPO_ROOT, capture_output=True, text=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
         env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT)},
     )
     assert result.returncode == 0, result.stderr
@@ -634,7 +639,9 @@ def test_every_step_logs_the_settings_it_runs_with(sandbox: Path, script: Path) 
     """
     result = subprocess.run(
         ["bash", f"slurm/{script.name}"],
-        cwd=sandbox, capture_output=True, text=True,
+        cwd=sandbox,
+        capture_output=True,
+        text=True,
         env={
             "PATH": f"{sandbox / 'bin'}:/usr/bin:/bin",
             "HOME": str(sandbox),
@@ -667,7 +674,9 @@ def _submit_with_stub_sbatch(tmp: Path, *args: str) -> subprocess.CompletedProce
     sbatch.chmod(0o755)
     return subprocess.run(
         ["bash", str(SUBMIT), *args],
-        cwd=REPO_ROOT, capture_output=True, text=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
         env={
             "PATH": f"{tmp}:/usr/bin:/bin",
             "HOME": str(REPO_ROOT),
@@ -734,8 +743,9 @@ def test_manifests_at_the_old_default_path_stop_the_run(sandbox: Path) -> None:
     assert result.returncode == 64
     assert "MANIFEST_DIR=data/manifests" in result.stderr
 
-    result = run_validate(sandbox, NCBI_EMAIL="me@example.org", DATA_DIR=str(elsewhere),
-                          MANIFEST_DIR="data/manifests")
+    result = run_validate(
+        sandbox, NCBI_EMAIL="me@example.org", DATA_DIR=str(elsewhere), MANIFEST_DIR="data/manifests"
+    )
     assert result.returncode == 0, result.stderr
 
 

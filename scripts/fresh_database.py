@@ -98,16 +98,32 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--data-dir", type=Path, default=Path(os.environ.get("DATA_DIR") or "data"),
-                        help="The pipeline's --data-dir (default: $DATA_DIR, else data).")
-    parser.add_argument("--export-dir", type=Path, default=None,
-                        help="Where export writes (default: $EXPORT_DIR, else <data-dir>/json).")
-    parser.add_argument("--temp-dir", type=Path, default=None,
-                        help="DuckDB's configured spill directory, if any (default: "
-                             "$DUCKDB_TEMP_DIR, else $PUBMED2DB_DUCKDB_TEMP_DIR).")
-    parser.add_argument("--keep-year", type=int, default=None,
-                        help="The baseline year to keep, e.g. 2027 (default: the one NCBI "
-                             "serves now). Every other year's XML is moved.")
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=Path(os.environ.get("DATA_DIR") or "data"),
+        help="The pipeline's --data-dir (default: $DATA_DIR, else data).",
+    )
+    parser.add_argument(
+        "--export-dir",
+        type=Path,
+        default=None,
+        help="Where export writes (default: $EXPORT_DIR, else <data-dir>/json).",
+    )
+    parser.add_argument(
+        "--temp-dir",
+        type=Path,
+        default=None,
+        help="DuckDB's configured spill directory, if any (default: "
+        "$DUCKDB_TEMP_DIR, else $PUBMED2DB_DUCKDB_TEMP_DIR).",
+    )
+    parser.add_argument(
+        "--keep-year",
+        type=int,
+        default=None,
+        help="The baseline year to keep, e.g. 2027 (default: the one NCBI "
+        "serves now). Every other year's XML is moved.",
+    )
     parser.add_argument("--yes", action="store_true", help="Do not ask; proceed.")
     args = parser.parse_args(argv)
 
@@ -116,21 +132,34 @@ def main(argv: list[str] | None = None) -> None:
     cache_dirs = [cache / "baseline", cache / "updates"]
     archive = data_dir / "pubmed-archive"
     db_path = data_dir / "pubmed.duckdb"
-    to_delete = [p for p in (db_path, db_path.with_suffix(".duckdb.wal"),
-                             db_path.with_suffix(".duckdb.tmp")) if p.exists()]
+    to_delete = [
+        p
+        for p in (db_path, db_path.with_suffix(".duckdb.wal"), db_path.with_suffix(".duckdb.tmp"))
+        if p.exists()
+    ]
     temp_dir = args.temp_dir or next(
-        (Path(v) for v in (os.environ.get("DUCKDB_TEMP_DIR"),
-                           os.environ.get("PUBMED2DB_DUCKDB_TEMP_DIR")) if v), None)
+        (
+            Path(v)
+            for v in (
+                os.environ.get("DUCKDB_TEMP_DIR"),
+                os.environ.get("PUBMED2DB_DUCKDB_TEMP_DIR"),
+            )
+            if v
+        ),
+        None,
+    )
     spill = sorted(temp_dir.glob("duckdb_temp_*")) if temp_dir and temp_dir.is_dir() else []
 
     export_dir = args.export_dir or Path(os.environ.get("EXPORT_DIR") or data_dir / "json")
     metadata = export_dir / "metadata.json"
     if metadata.is_file():
-        fail(f"{metadata} exists: a finished export has not been archived, and the "
-             "database it came from is about to be deleted. Run\n"
-             f"  uv run python scripts/archive_build.py --data-dir {data_dir} "
-             f"--export-dir {export_dir}\n"
-             "first (or delete the export yourself if it is not wanted).")
+        fail(
+            f"{metadata} exists: a finished export has not been archived, and the "
+            "database it came from is about to be deleted. Run\n"
+            f"  uv run python scripts/archive_build.py --data-dir {data_dir} "
+            f"--export-dir {export_dir}\n"
+            "first (or delete the export yourself if it is not wanted)."
+        )
 
     if args.keep_year is not None:
         keep = args.keep_year % 100
@@ -138,8 +167,10 @@ def main(argv: list[str] | None = None) -> None:
         try:
             keep = ncbi_baseline_year()
         except Exception as exc:  # noqa: BLE001 - any failure means the same thing
-            fail(f"could not read NCBI's baseline listing ({exc}); pass --keep-year "
-                 "with the year of the baseline the fresh database should load.")
+            fail(
+                f"could not read NCBI's baseline listing ({exc}); pass --keep-year "
+                "with the year of the baseline the fresh database should load."
+            )
     years = files_by_year(cache_dirs)
     moves: list[tuple[Path, Path]] = []
     for year, paths in sorted(years.items()):
@@ -150,26 +181,33 @@ def main(argv: list[str] | None = None) -> None:
 
     print(f"Fresh database under {data_dir}:")
     if moves:
-        print(f"  move {len(moves)} file(s) from superseded baseline year(s) "
-              f"{', '.join(f'20{y:02d}' for y in sorted(years) if y != keep)} "
-              f"to {archive}/ (kept, not deleted)")
+        print(
+            f"  move {len(moves)} file(s) from superseded baseline year(s) "
+            f"{', '.join(f'20{y:02d}' for y in sorted(years) if y != keep)} "
+            f"to {archive}/ (kept, not deleted)"
+        )
     elif years:
-        print(f"  only NCBI's current baseline year (20{keep:02d}) on disk; nothing to "
-              "move, and the fresh load re-parses all of it")
+        print(
+            f"  only NCBI's current baseline year (20{keep:02d}) on disk; nothing to "
+            "move, and the fresh load re-parses all of it"
+        )
     else:
         print(f"  no PubMed files under {cache}")
     if keep not in years:
-        print(f"  (the 20{keep:02d} baseline is not downloaded yet; `submit.sh all` "
-              "fetches it)")
+        print(f"  (the 20{keep:02d} baseline is not downloaded yet; `submit.sh all` fetches it)")
     for path in to_delete:
         print(f"  delete {path}")
     if not to_delete:
         print(f"  {db_path} does not exist; nothing to delete")
     if spill:
-        print(f"  delete {len(spill)} DuckDB spill file(s) in {temp_dir} (left by a job "
-              "that died; make sure none is running)")
-    print(f"  leave {data_dir / 'manifests'}, {data_dir / 'logs'}, {data_dir / 'builds'} "
-          f"and {data_dir / 'pubmed2db'} as they are")
+        print(
+            f"  delete {len(spill)} DuckDB spill file(s) in {temp_dir} (left by a job "
+            "that died; make sure none is running)"
+        )
+    print(
+        f"  leave {data_dir / 'manifests'}, {data_dir / 'logs'}, {data_dir / 'builds'} "
+        f"and {data_dir / 'pubmed2db'} as they are"
+    )
 
     if not moves and not to_delete and not spill:
         print("Nothing to do.")

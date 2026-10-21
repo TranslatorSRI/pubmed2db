@@ -78,7 +78,11 @@ def code_version() -> str:
         try:
             described = subprocess.run(
                 ["git", "describe", "--always", "--dirty", "--match", "v*"],
-                cwd=repo, capture_output=True, text=True, timeout=10, check=True,
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
             ).stdout.strip()
         except (OSError, subprocess.SubprocessError):
             described = ""
@@ -129,7 +133,7 @@ def check_compatible(con: duckdb.DuckDBPyConnection) -> None:
                 "1.0 renamed and dropped columns that cannot be migrated in place. "
                 "Rebuild it: move the file aside and run `pubmed2db load` "
                 "(the downloaded files are reused). See the README's "
-                "\"`load --force` or a fresh database?\"."
+                '"`load --force` or a fresh database?".'
             )
         return
     try:
@@ -209,9 +213,9 @@ def check_migrated(con: duckdb.DuckDBPyConnection) -> None:
         want = shape(fresh)["relations"]
     have = shape(con)["relations"]
     wrong = sorted(
-        name for name, relation in want.items()
-        if relation["kind"] == "table"
-        and have.get(name, {}).get("columns") != relation["columns"]
+        name
+        for name, relation in want.items()
+        if relation["kind"] == "table" and have.get(name, {}).get("columns") != relation["columns"]
     )
     if wrong:
         raise IncompatibleDatabase(
@@ -280,13 +284,15 @@ def describe(con: duckdb.DuckDBPyConnection) -> list[dict]:
     for name, kind, comment in relations:
         comment = comment or ""
         first_word = comment.split(".", 1)[0].strip().lower()
-        described.append({
-            "name": name,
-            "kind": kind,
-            "tier": first_word if first_word in TIERS else None,
-            "comment": comment,
-            "columns": columns.get(name, []),
-        })
+        described.append(
+            {
+                "name": name,
+                "kind": kind,
+                "tier": first_word if first_word in TIERS else None,
+                "comment": comment,
+                "columns": columns.get(name, []),
+            }
+        )
     return described
 
 
@@ -335,7 +341,9 @@ def only_adds(old: dict, new: dict) -> list[str]:
                 problems.append(f"{name}'s {key} changed from {before[key]} to {after[key]}")
         if before["kind"] == "table":
             if after["columns"][: len(before["columns"])] != before["columns"]:
-                problems.append(f"{name}'s existing columns changed (new ones may only be appended)")
+                problems.append(
+                    f"{name}'s existing columns changed (new ones may only be appended)"
+                )
         else:
             missing = [c for c in before["columns"] if c not in after["columns"]]
             if missing:
@@ -383,8 +391,7 @@ def render_reference(relations: list[dict]) -> str:
             lines.append("")
     lines += ["## Views", "", "| View | Meaning |", "| --- | --- |"]
     lines += [
-        f"| `{r['name']}` | {_cell(r['comment'])} |"
-        for r in relations if r["kind"] == "view"
+        f"| `{r['name']}` | {_cell(r['comment'])} |" for r in relations if r["kind"] == "view"
     ]
     lines += ["", REFERENCE_END]
     return "\n".join(lines)
