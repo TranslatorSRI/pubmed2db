@@ -636,8 +636,12 @@ Releases, and the dated data builds they produce, follow
 [`docs/Releases.md`](./docs/Releases.md).
 
 Helper scripts live in `scripts/` and document themselves — run one with
-`--help` for its usage and options. `benchmark_load.py` times parsing against
-insertion for a given file, which is where [`slurm/README.md`](slurm/README.md)'s
+`--help` for its usage and options. `benchmark_load.py` times a file's parse
+and each phase of its load (delete, insert, commit) separately, and with
+`--synthetic N --db PATH` grows an on-disk database from a few files to see
+what changes with size; its knobs (`--checkpoint-threshold`, `--files-per-txn`,
+`--no-preserve-insertion-order`, `--skip-delete`) are the candidate settings,
+which is where [`slurm/README.md`](slurm/README.md)'s
 memory and wall-time figures come from; `archive_build.py` and
 `fresh_database.py` are the two steps of
 [Between runs](#between-runs-what-to-keep-archive-and-delete).
