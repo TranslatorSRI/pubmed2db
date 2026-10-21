@@ -42,11 +42,16 @@ dependencies = [
 pubmed2db = "pubmed2db.cli:main"
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=9",
-    # The linters CI runs (.github/workflows/lint.yml). uv.lock pins the exact
-    # versions, so a dev box and CI format alike; a new ruff can reformat code,
-    # so raise it on purpose, with its reformat in its own commit.
+dev = ["pytest>=9"]
+
+[dependency-groups]
+# The linters CI runs (.github/workflows/lint.yml). uv.lock pins the exact
+# versions, so a dev box and CI format alike; a new ruff can reformat code, so
+# raise it on purpose, with its reformat in its own commit. A group rather than
+# part of the dev extra so each CI job installs only what it runs: the lint job
+# installs these two alone (`--only-group lint`), the test jobs leave them out.
+# Not a default group, so a plain `uv sync` on the cluster leaves them out too.
+lint = [
     "ruff>=0.17.1",
     "rumdl>=0.3.0",
 ]
