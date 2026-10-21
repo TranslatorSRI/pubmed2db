@@ -339,10 +339,10 @@ def test_load_logs_phase_timings(con, gz_fixture, caplog):
 
     messages = [r.getMessage() for r in caplog.records]
     loaded = next(m for m in messages if m.startswith("loaded "))
-    for phase in ("parse ", "insert ", "commit "):
+    for phase in ("parse ", "build ", "delete ", "insert ", "commit "):
         assert phase in loaded, loaded
     timing = next(m for m in messages if m.startswith("timing "))
-    for phase in ("delete ", "insert ", "registry ", "commit "):
+    for phase in ("delete ", "build ", "insert ", "registry ", "commit "):
         assert phase in timing, timing
 
     # A caller-supplied record is filled in, phase by phase, and the phases are

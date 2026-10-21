@@ -363,20 +363,25 @@ def load_file(
     # so on its own a growing number says nothing about whether this process is
     # actually holding more memory than it was ten files ago.
     current = current_rss_gib()
-    # Parse, insert and commit are the three phases that can grow apart: at
-    # corpus scale the parse is flat (~2 s) while the rest follows the size of
-    # the database, and the commit is where DuckDB checkpoints (#68).
+    # The phases that can grow apart, at INFO because a Slurm run rarely has
+    # -v: the parse and the build are Python and flat (~2 s), the rest is
+    # DuckDB's and follows the size of the database. The delete is on its own
+    # because #68 named it the suspect, and the commit because it is where
+    # DuckDB checkpoints. `insert` takes in the registry upsert, one row; the
+    # DEBUG line has it apart, with the slowest tables.
     logger.info(
         "loaded %s: %d articles, %d deletions, %d failed to parse, "
-        "%d book record(s) skipped (parse %.1fs, insert %.1fs, commit %.1fs; "
-        "RSS %s, peak %.1f GiB)",
+        "%d book record(s) skipped (parse %.1fs, build %.1fs, delete %.1fs, "
+        "insert %.1fs, commit %.1fs; RSS %s, peak %.1f GiB)",
         source_file,
         n_articles,
         len(parsed.deleted_pmids),
         parsed.n_failed,
         parsed.n_book_records,
         parse_seconds,
-        timing.delete + timing.insert + timing.registry,
+        timing.build,
+        timing.delete,
+        timing.insert + timing.registry,
         timing.commit,
         "n/a" if current is None else f"{current:.1f} GiB",
         peak_rss_gib(),
