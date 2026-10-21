@@ -426,22 +426,17 @@ _DAY_FOR_DATE_SQL = (
 #: ``medline_date`` is blank, so a value of one non-breaking space that an
 #: ASCII trim calls non-empty and ``.strip()`` calls empty does not pad a
 #: string — it makes the two implementations emit entirely different dates.
+_STRIPPED_YEAR_SQL = _strip_sql("COALESCE(la.pub_year, '')")
+_ASSEMBLED_DATE_SQL = _strip_sql(
+    "concat_ws(' ', "
+    f"NULLIF({_STRIPPED_YEAR_SQL}, ''), "
+    f"NULLIF({_MONTH_FOR_DATE_SQL}, ''), "
+    f"{_DAY_FOR_DATE_SQL})"
+)
 _PUB_DATE_SQL = f"""CASE
         WHEN {_strip_sql("COALESCE(la.medline_date, '')")} <> ''
             THEN {_strip_sql("la.medline_date")}
-        ELSE {
-    _strip_sql(
-        "concat_ws(' ', "
-        + ", ".join(
-            [
-                "NULLIF(" + _strip_sql("COALESCE(la.pub_year, '')") + ", '')",
-                "NULLIF(" + _MONTH_FOR_DATE_SQL + ", '')",
-                _DAY_FOR_DATE_SQL,
-            ]
-        )
-        + ")"
-    )
-}
+        ELSE {_ASSEMBLED_DATE_SQL}
     END"""
 
 #: ``_year_from_medline_date``'s fallback, same pattern, same pinning test
