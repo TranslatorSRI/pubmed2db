@@ -17,7 +17,6 @@ from pubmed2db import datamodel
 from pubmed2db.datamodel import DATA_MODEL_VERSION, IncompatibleDatabase
 from pubmed2db.db import connect
 
-
 # --- version -----------------------------------------------------------------
 
 
@@ -236,7 +235,7 @@ def test_timestamps_are_instants_not_wall_clock_times(con, gz_fixture):
     """Before 1.0 these were naive TIMESTAMPs holding the loading machine's
     local time, mixed with Python's UTC: unreadable without knowing the node's
     time zone. Now each is an aware instant, comparable from anywhere."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import UTC, datetime, timedelta
 
     from pubmed2db.load import load_file
 
@@ -245,7 +244,7 @@ def test_timestamps_are_instants_not_wall_clock_times(con, gz_fixture):
         "SELECT s.downloaded_at, s.processed_at, max(a.loaded_at) FROM source_file s "
         "JOIN article a ON a.source_file = s.file_name GROUP BY ALL"
     ).fetchone()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for value in (downloaded, processed, loaded):
         assert value.tzinfo is not None
         assert abs(now - value) < timedelta(minutes=5)

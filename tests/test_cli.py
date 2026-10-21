@@ -340,7 +340,7 @@ def test_cli_update_survives_a_failed_journal_refresh(staged_download, monkeypat
     skip the load -- `update` is documented for scheduled runs."""
     from pathlib import Path
 
-    from pubmed2db import cli, download, load
+    from pubmed2db import download, load
 
     files = [
         (path, "baseline" if path.parent.name == "baseline" else "update")

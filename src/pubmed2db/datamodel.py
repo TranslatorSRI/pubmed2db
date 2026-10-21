@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -159,7 +159,7 @@ def _set(con: duckdb.DuckDBPyConnection, key: str, value: str) -> None:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def stamp(con: duckdb.DuckDBPyConnection) -> None:

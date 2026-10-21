@@ -325,13 +325,13 @@ def test_a_missing_local_file_is_verified_when_refetched(con, monkeypatch, tmp_p
 def test_sync_records_when_ncbi_posted_each_file(con, monkeypatch, tmp_path):
     """The sidecar's Last-Modified is the file's publication time: the last
     update file's is the build's cutoff (#57)."""
-    from datetime import datetime, timezone
+    from datetime import UTC, datetime
 
     url = "https://example.invalid/updatefiles/pubmed26n1636.xml.gz"
     _sync_kind(con, monkeypatch, tmp_path, urls=[url], body=f"MD5(x)= {_GOOD_MD5}",
                last_modified="Thu, 24 Sep 2026 18:05:18 GMT")
     posted = con.execute("SELECT published_at FROM source_file").fetchone()[0]
-    assert posted == datetime(2026, 9, 24, 18, 5, 18, tzinfo=timezone.utc)
+    assert posted == datetime(2026, 9, 24, 18, 5, 18, tzinfo=UTC)
 
     # A later sync whose header is missing or garbled keeps what we knew.
     for header in (None, "not a date"):

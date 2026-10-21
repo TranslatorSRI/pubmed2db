@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
 
@@ -126,7 +126,7 @@ def register_source_file(
     about when the file was posted.
     """
     year_yy, file_number, order_key = parse_file_name(file_name)
-    ts = datetime.now(timezone.utc) if mark_downloaded else None
+    ts = datetime.now(UTC) if mark_downloaded else None
     con.execute(
         """
         INSERT INTO source_file

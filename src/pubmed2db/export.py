@@ -13,7 +13,7 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -796,7 +796,7 @@ def write_export_metadata(
         "format": fmt,
         "records": records,
         **({} if article_versions is None else {"article_versions": article_versions}),
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "generated_by": datamodel.code_version(),
         "database": datamodel.metadata(con),
         "corpus": corpus_provenance(con),

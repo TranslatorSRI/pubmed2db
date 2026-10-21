@@ -10,7 +10,7 @@ tables were wiped). The CLI turns these into actionable errors/warnings.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import duckdb
 
@@ -189,7 +189,7 @@ def build_name(cutoff_published_at: datetime | None) -> str | None:
 
     if cutoff_published_at is None:
         return None
-    day = cutoff_published_at.astimezone(timezone.utc)
+    day = cutoff_published_at.astimezone(UTC)
     return f"{day.year}{_MONTH_ABBR[day.month - 1].lower()}{day.day:02d}"
 
 
@@ -230,7 +230,7 @@ def corpus_provenance(con: duckdb.DuckDBPyConnection) -> dict:
         "cutoff_file": last,
         # In UTC, not the session's zone: this lands in a file other people read.
         "cutoff_published_at": (
-            None if published is None else published.astimezone(timezone.utc).isoformat()
+            None if published is None else published.astimezone(UTC).isoformat()
         ),
         "files_loaded": files,
         "article_versions_loaded": articles or 0,

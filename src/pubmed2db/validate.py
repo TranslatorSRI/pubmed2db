@@ -32,7 +32,6 @@ sections skipped otherwise.
 from __future__ import annotations
 
 import difflib
-from collections import Counter
 import gzip
 import hashlib
 import io
@@ -41,6 +40,7 @@ import logging
 import random
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -51,15 +51,15 @@ import requests
 from lxml import etree
 
 from .export import (
+    _MONTH_ABBR,
     ID_PREFIXES,
     JSON_FIELDS,
-    METADATA_FILE,
     MESH_PREFIX,
-    _MONTH_ABBR,
+    METADATA_FILE,
+    _year_from_medline_date,
     file_sha256,
     normalize_day,
     normalize_month,
-    _year_from_medline_date,
     pub_date,
     pub_month,
 )

@@ -174,7 +174,7 @@ def test_curie_sql_is_derived_from_id_prefixes():
     reach the validator alone — reporting every sampled record as a mismatch
     against a correct export.
     """
-    from pubmed2db.export import ID_PREFIXES, MESH_PREFIX, _LATEST_METADATA_SQL
+    from pubmed2db.export import _LATEST_METADATA_SQL, ID_PREFIXES, MESH_PREFIX
 
     for id_type, prefix in ID_PREFIXES.items():
         assert f"'{id_type}'" in _LATEST_METADATA_SQL
@@ -349,7 +349,6 @@ def test_placeholder_looking_fields_survive_to_the_export(con, gz_fixture, tmp_p
     """A validation run flagged two records as exporting blank where Entrez has a
     value: a non-numeric `<Issue>Suppl</Issue>` and an `<ArticleTitle>` of the
     literal "[Not Available].". Neither is dropped anywhere in the pipeline."""
-    import json
 
     from pubmed2db.export import export_json
     from pubmed2db.load import load_file
