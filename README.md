@@ -543,7 +543,8 @@ data-model bump)
 1. Steps 1–2 above.
 2. `uv run python scripts/fresh_database.py`. It shows what it will do and asks:
    move every year's XML but the baseline NCBI serves now to
-   `data/pubmed-archive/<year>/`, delete the database. At the year boundary
+   `data/pubmed-archive/<year>/`, delete the database and any spill files a
+   dead job left (in `$DUCKDB_TEMP_DIR` too). At the year boundary
    that is all of last year's, before the new baseline is downloaded in step 3;
    mid-year it moves nothing. It asks NCBI which year that is (`--keep-year 2027`
    names it instead), and leaves `manifests/`, `logs/`, `builds/` and the
@@ -553,7 +554,8 @@ data-model bump)
    PubMed retired between the previous build and the new baseline, which the
    new database never saw a `DeleteCitation` for. Read the list in the dated
    report; an *error* (`unexplained_drops`) means PubMed still serves a PMID the
-   export lost.
+   export lost, and `missed_deletions` means the fresh load skipped a file
+   (`load_gaps` names it).
 
 ## Notes
 

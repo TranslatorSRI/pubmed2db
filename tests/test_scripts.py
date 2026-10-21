@@ -279,6 +279,23 @@ def test_fresh_database_moves_the_old_year_and_deletes_the_database(two_years: P
     assert "drops_retired_upstream" in result.stdout
 
 
+def test_fresh_database_clears_spill_files_from_a_configured_temp_dir(
+    two_years: Path, tmp_path: Path
+) -> None:
+    """DUCKDB_TEMP_DIR may be shared: only DuckDB's own files go, not the directory."""
+    temp = tmp_path / "scratch-tmp"
+    temp.mkdir()
+    (temp / "duckdb_temp_storage_S32K-0.tmp").write_text("spill")
+    (temp / "someone-elses.txt").write_text("keep")
+    result = subprocess.run(
+        [sys.executable, str(FRESH), "--data-dir", str(two_years), "--keep-year", "2026", "--yes"],
+        capture_output=True, text=True, env={**os.environ, "DUCKDB_TEMP_DIR": str(temp)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert sorted(p.name for p in temp.iterdir()) == ["someone-elses.txt"]
+    assert "1 DuckDB spill file(s)" in result.stdout
+
+
 def test_fresh_database_refuses_while_a_finished_export_is_unarchived(two_years: Path) -> None:
     (two_years / "json" / "metadata.json").write_text("{}")
     before = _listing(two_years)

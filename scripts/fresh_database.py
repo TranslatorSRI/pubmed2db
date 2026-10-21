@@ -23,7 +23,13 @@ showing you the plan and asking:
    superseded. Mid-year, NCBI's year is the one on disk, nothing moves, and the
    fresh ``load`` re-parses it all, which is the point of a mid-year rebuild.
    ``--keep-year`` names the year instead of asking NCBI.
-3. **Delete the database**, its write-ahead log and its spill directory.
+3. **Delete the database**, its write-ahead log and its spill files: the
+   default ``<db>.tmp`` directory, and DuckDB's ``duckdb_temp_*`` files in a
+   configured one (``--temp-dir``, default ``$DUCKDB_TEMP_DIR`` as
+   ``slurm/config.sh`` sets it, else ``$PUBMED2DB_DUCKDB_TEMP_DIR``). A
+   configured directory may be shared, so only those files go, never the
+   directory. DuckDB removes them on a clean exit, so any left are from a job
+   that died.
 
 Left alone, deliberately: ``data/manifests/`` (the next ``validate`` diffs the
 rebuilt corpus against the last build's manifest, which is the one comparison
@@ -49,7 +55,7 @@ import shutil
 import sys
 from pathlib import Path
 
-_YEAR = re.compile(r"^pubmed(\d{2})n\d+\.xml\.gz$")
+from pubmed2db.db import parse_file_name
 
 #: pubmed_downloader's BASELINE_URL, written out rather than imported: importing
 #: it sets up pystow, which writes under ~/.data unless PYSTOW_HOME is set.
@@ -68,9 +74,11 @@ def files_by_year(cache_dirs: list[Path]) -> dict[int, list[Path]]:
         if not directory.is_dir():
             continue
         for path in sorted(directory.iterdir()):
-            match = _YEAR.match(path.name)
-            if match:
-                years.setdefault(int(match.group(1)), []).append(path)
+            try:
+                year_yy = parse_file_name(path.name)[0]
+            except ValueError:
+                continue
+            years.setdefault(year_yy, []).append(path)
     return years
 
 
@@ -94,6 +102,9 @@ def main(argv: list[str] | None = None) -> None:
                         help="The pipeline's --data-dir (default: data).")
     parser.add_argument("--export-dir", type=Path, default=None,
                         help="Where export writes (default: $EXPORT_DIR, else <data-dir>/json).")
+    parser.add_argument("--temp-dir", type=Path, default=None,
+                        help="DuckDB's configured spill directory, if any (default: "
+                             "$DUCKDB_TEMP_DIR, else $PUBMED2DB_DUCKDB_TEMP_DIR).")
     parser.add_argument("--keep-year", type=int, default=None,
                         help="The baseline year to keep, e.g. 2027 (default: the one NCBI "
                              "serves now). Every other year's XML is moved.")
@@ -107,6 +118,10 @@ def main(argv: list[str] | None = None) -> None:
     db_path = data_dir / "pubmed.duckdb"
     to_delete = [p for p in (db_path, db_path.with_suffix(".duckdb.wal"),
                              db_path.with_suffix(".duckdb.tmp")) if p.exists()]
+    temp_dir = args.temp_dir or next(
+        (Path(v) for v in (os.environ.get("DUCKDB_TEMP_DIR"),
+                           os.environ.get("PUBMED2DB_DUCKDB_TEMP_DIR")) if v), None)
+    spill = sorted(temp_dir.glob("duckdb_temp_*")) if temp_dir and temp_dir.is_dir() else []
 
     export_dir = args.export_dir or Path(os.environ.get("EXPORT_DIR") or data_dir / "json")
     metadata = export_dir / "metadata.json"
@@ -150,10 +165,13 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  delete {path}")
     if not to_delete:
         print(f"  {db_path} does not exist; nothing to delete")
+    if spill:
+        print(f"  delete {len(spill)} DuckDB spill file(s) in {temp_dir} (left by a job "
+              "that died; make sure none is running)")
     print(f"  leave {data_dir / 'manifests'}, {data_dir / 'logs'}, {data_dir / 'builds'} "
           f"and {data_dir / 'pubmed2db'} as they are")
 
-    if not moves and not to_delete:
+    if not moves and not to_delete and not spill:
         print("Nothing to do.")
         return
     if not args.yes:
@@ -176,6 +194,10 @@ def main(argv: list[str] | None = None) -> None:
         else:
             path.unlink()
         print(f"deleted {path}")
+    for path in spill:
+        path.unlink()
+    if spill:
+        print(f"deleted {len(spill)} spill file(s) in {temp_dir}")
 
     print()
     print("Next: ./slurm/submit.sh all   (a fresh database needs `journals` too;")
