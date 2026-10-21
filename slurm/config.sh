@@ -7,17 +7,43 @@
 #
 # The `:=` form means "unless already set", so an exported value wins.
 
+# Whether EXPORT_DIR and MANIFEST_DIR were set, read before the defaults below
+# fill them in; see the check after them.
+_export_dir_given=${EXPORT_DIR+x}
+_manifest_dir_given=${MANIFEST_DIR+x}
+
 # Where downloads and the DuckDB database live (the CLI's --data-dir).
 : "${DATA_DIR:=data}"
 
 # Where the JSON export is written, and where validate looks for it.
-: "${EXPORT_DIR:=data/json}"
+: "${EXPORT_DIR:=$DATA_DIR/json}"
 
 # Where PMID manifests accumulate. Deliberately *outside* EXPORT_DIR: one shared
 # name would mean a run overwrites the manifest it is diffing against, and a
 # manifest inside the export directory survives the next export while
 # describing the previous corpus. See slurm/README.md.
-: "${MANIFEST_DIR:=data/manifests}"
+: "${MANIFEST_DIR:=$DATA_DIR/manifests}"
+
+# Until both defaulted under DATA_DIR, they were data/json and data/manifests
+# whatever DATA_DIR said. A deployment with DATA_DIR set elsewhere keeps its
+# manifest chain, and perhaps an unarchived export, at those old paths, and
+# following the new defaults silently would cost it both: validate finds no
+# previous manifest and skips the drop check, and the export is invisible to
+# the archive guard. So refuse until the operator moves them or names the old
+# path. Paths are relative to the repo root, where every caller sources this.
+if [[ -z "$_export_dir_given" && -f data/json/metadata.json \
+      && ! -f "$EXPORT_DIR/metadata.json" ]]; then
+    echo "error: a finished export is in data/json, but EXPORT_DIR now defaults to $EXPORT_DIR." >&2
+    echo "Archive it (uv run python scripts/archive_build.py --export-dir data/json) or set EXPORT_DIR=data/json." >&2
+    exit 64
+fi
+if [[ -z "$_manifest_dir_given" ]] && compgen -G "data/manifests/pmids-*.txt.gz" >/dev/null \
+      && ! compgen -G "$MANIFEST_DIR/pmids-*.txt.gz" >/dev/null; then
+    echo "error: the PMID manifests are in data/manifests, but MANIFEST_DIR now defaults to $MANIFEST_DIR." >&2
+    echo "Move them there, or set MANIFEST_DIR=data/manifests, so validate keeps diffing against them." >&2
+    exit 64
+fi
+unset _export_dir_given _manifest_dir_given
 
 # JSON shard count. Since the COPY rewrite this is also the export's *thread*
 # count -- PER_THREAD_OUTPUT gives one file per writer thread, so export_json

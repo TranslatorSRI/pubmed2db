@@ -14,7 +14,7 @@ uses PubMed's own field names.
 
 All three outputs — the database, the Parquet export and the NDJSON export —
 follow one versioned **data model**, currently 1.0.0, documented for consumers in
-[`docs/DataModel.md`](./docs/DataModel.md): what every table and field means,
+[`docs/data-model/`](./docs/data-model/README.md): what every table and field means,
 what PubMed data is left out, and how the design was decided. Each output carries
 its version, and the database documents its own columns
 (`SELECT table_name, column_name, comment FROM duckdb_columns()`).
@@ -110,8 +110,11 @@ Both exports finish by writing `metadata.json` into the output directory: the
 data model version, the record count, the corpus cutoff (the last file loaded,
 and when NCBI posted it), and a SHA-256 per file. The same hashes go into
 `SHA256SUMS`, so `sha256sum -c SHA256SUMS` checks a download with no JSON parser.
-`validate` checks the shards against `metadata.json`, and `status` prints the
-same cutoff.
+Both files are deleted when an export starts, so a directory holding a
+`metadata.json` is one whose export finished: `export` refuses to run over one
+until it has been archived, unless given `--overwrite` (see
+[Between runs](#between-runs-what-to-keep-archive-and-delete)). `validate`
+checks the shards against `metadata.json`, and `status` prints the same cutoff.
 
 ### How the JSON export is written
 
@@ -363,10 +366,24 @@ uv run pubmed2db validate data/json-new \
     --manifest data/manifests/pmids-20260921.txt.gz
 ```
 
-A dropped PMID is fine if the database recorded a `DeleteCitation` for it; one
-that vanished *without* a recorded deletion is an **error**, since it means
-records were lost rather than retired. With no database available the drops can't
-be attributed, so they downgrade to a warning to review.
+A dropped PMID is fine if the database recorded a `DeleteCitation` for it, or
+if PubMed no longer serves it either (asked online, for the drops the database
+cannot explain). One that PubMed *still* serves is an **error**, since it means
+records were lost rather than retired. Drops PubMed has retired but no loaded
+file deleted are a **warning** (`drops_retired_upstream`) only on a database
+created since the previous manifest: that is the expected result of the first
+run after a [fresh database](#load---force-or-a-fresh-database), which never
+loads the update files that carried those deletions. On a continuing database
+they are an **error** (`missed_deletions`), because it means an update file
+was skipped, and so they are on a rebuilt database with a gap in its files
+(a number inside the loaded range that never loaded, listed as `load_gaps`).
+Where PubMed's answer cannot excuse a drop, validate asks about only one
+request's worth (200), enough to say whether records were lost or deletions
+missed; both errors are reported when both happen. Offline, or with no database available, the drops can't be
+attributed: offline they stay errors, and without a database they downgrade to
+a warning to review. More than 200,000 unexplained drops are not looked up and
+fail the run; the message says how to restart the manifest chain if that much
+really changed.
 
 The coverage check expects the export to be within ±5% of the live PubMed total
 (the 2026-07-30 full run came in at 99.90% of it). A **partial** export — from a
@@ -405,7 +422,7 @@ Two ways to apply one, and they are not interchangeable:
 > **A database from before data model 1.0 must be rebuilt.** Every command
 > refuses one, naming the problem and leaving the file untouched: 1.0 renamed and
 > dropped columns (see
-> [`docs/DataModel.md`](./docs/DataModel.md#changelog)),
+> [the data model changelog](./docs/data-model/Changelog.md)),
 > which no migration can do in place. The same holds for a database from another
 > major version. An older *minor* version is upgraded on open, since it only
 > lacks columns.
@@ -466,21 +483,81 @@ drops quietly — keeps last year's row as its newest version and stays in every
 export from then on. A database built from the new baseline simply doesn't
 contain it.
 
-Either way, delete the previous year's files yourself:
+Either way, get the previous year's files out of the download cache yourself.
+`download` never removes anything: once PubMed drops a file from its listing we
+stop hearing about it, so a full extra copy of the corpus sits in `data/` until
+you move it — for 2026 that is 51 GB of baseline plus 13 GB of updates. And
+`load` reads every `*.xml.gz` in `data/pubmed/baseline/` and
+`data/pubmed/updates/`, registered or not, so files left there are parsed
+straight back into a fresh database. `scripts/fresh_database.py` moves the
+superseded year to `data/pubmed-archive/<year>/`, which nothing reads, and
+deletes the database in the same step (see
+[Between runs](#between-runs-what-to-keep-archive-and-delete)). To reclaim
+the disk instead of keeping the files:
 
 ```bash
-rm data/pubmed/baseline/pubmed25n*.xml.gz data/pubmed/updates/pubmed25n*.xml.gz
+rm -r data/pubmed-archive/2025
 ```
-
-`download` never removes anything. Once PubMed drops a file from its listing we
-stop hearing about it, so a full extra copy of the corpus sits in `data/` until
-you clear it — for 2026 that is 51 GB of baseline plus 13 GB of updates.
 
 Verification is on by default, but only hashes files that are new or whose
 published checksum changed — re-running `download` over an unchanged baseline
 costs no local I/O. Corruption happens at download time, which stays covered.
 `--no-verify` skips the hashing entirely; either way the `.md5` sidecars are
 still fetched, so a changed published checksum is always detected.
+
+### Between runs: what to keep, archive and delete
+
+The data directory mixes three lifetimes: files that stay for the life of the
+machine, a database that lives for months, and an export that belongs to one
+build. Everything the pipeline writes, and what to do with it:
+
+| Path (under `--data-dir`) | Written by | Lifetime |
+| --- | --- | --- |
+| `pubmed/baseline/`, `pubmed/updates/` | `download` | Keep. `load` parses every `*.xml.gz` here, so a superseded baseline year must *leave* these two directories before a fresh database is loaded: `scripts/fresh_database.py` moves it to `pubmed-archive/<year>/`. |
+| `pubmed-archive/<year>/` | `fresh_database.py` | The kept XML; nothing reads it. `rm -r` it if you do not want it. |
+| `pubmed.duckdb` (+ `.wal`, `.tmp/`) | every command | Months: one database per baseline year, or until a major data-model bump. Deleted by `fresh_database.py`. |
+| `pubmed2db/serfile/`, `pubmed/J_Entrez.txt` | `journals` | Caches. The catalog prunes itself and `J_Entrez.txt` is refetched every run; nothing to do. |
+| `json/` | `export` | **One build.** `metadata.json` marks it finished; `scripts/archive_build.py` moves it to `builds/<build>/`, and `export` refuses to overwrite it until then (`--overwrite`, or `EXPORT_OVERWRITE=1` under Slurm). |
+| `builds/<build>/` | `archive_build.py` | Until published (and after, as long as you like). Laid out as on stars: shards, `metadata.json` and `SHA256SUMS` at the top, `manifests/`, `logs/`, `source_file.csv`. |
+| `manifests/` | `validate` (via Slurm) | **Permanent, in place.** The dated PMID manifests and reports are the chain each `validate` diffs against. Never move or delete them; `archive_build.py` copies, not moves. |
+| `logs/` | `submit.sh` | Permanent. Step logs are copied into each build; `submit.log` is the record of every submission. |
+| `ncbi/`, `README.md` | pystow | Noise; ignore. |
+
+**Before a new run on the same database**
+
+1. If `data/json/metadata.json` exists, archive the build:
+   `uv run python scripts/archive_build.py`. It refuses an export that has not
+   been validated or whose validation failed, and refuses while it cannot read
+   the database (a `load` still running), since the `source_file.csv` it writes
+   from there is the only record of NCBI's checksums. It reads `$DATA_DIR`,
+   `$EXPORT_DIR` and `$MANIFEST_DIR` as `slurm/config.sh` does; logs from an
+   `.sbatch` file submitted by hand rather than through `submit.sh` need
+   `--logs-dir data/logs`.
+2. If you publish the database as well as the export, copy
+   `data/pubmed.duckdb` now — the next `download`/`load` changes it. The script
+   prints both `rsync` lines.
+3. Nothing else. Manifests and logs accumulate by design, and `download`,
+   `journals` and `load` are incremental.
+
+**Before a new run on a fresh database** (a new baseline year, or a major
+data-model bump)
+
+1. Steps 1–2 above.
+2. `uv run python scripts/fresh_database.py`. It shows what it will do and asks:
+   move every year's XML but the baseline NCBI serves now to
+   `data/pubmed-archive/<year>/`, delete the database and any spill files a
+   dead job left (in `$DUCKDB_TEMP_DIR` too). At the year boundary
+   that is all of last year's, before the new baseline is downloaded in step 3;
+   mid-year it moves nothing. It asks NCBI which year that is (`--keep-year 2027`
+   names it instead), and leaves `manifests/`, `logs/`, `builds/` and the
+   catalog cache.
+3. `./slurm/submit.sh all` — a fresh database needs `journals` too.
+4. Expect the first `validate` to warn `drops_retired_upstream`: the PMIDs
+   PubMed retired between the previous build and the new baseline, which the
+   new database never saw a `DeleteCitation` for. Read the list in the dated
+   report; an *error* (`unexplained_drops`) means PubMed still serves a PMID the
+   export lost, and `missed_deletions` means the fresh load skipped a file
+   (`load_gaps` names it).
 
 ## Notes
 
@@ -559,4 +636,6 @@ Releases, and the dated data builds they produce, follow
 Helper scripts live in `scripts/` and document themselves — run one with
 `--help` for its usage and options. `benchmark_load.py` times parsing against
 insertion for a given file, which is where [`slurm/README.md`](slurm/README.md)'s
-memory and wall-time figures come from.
+memory and wall-time figures come from; `archive_build.py` and
+`fresh_database.py` are the two steps of
+[Between runs](#between-runs-what-to-keep-archive-and-delete).

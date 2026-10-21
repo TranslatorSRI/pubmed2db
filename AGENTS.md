@@ -9,7 +9,7 @@ Everything a user needs — commands, options, operational notes, the year-bound
 rebuild — is in [`README.md`](./README.md); deferred work and known limitations
 are in [`FUTURE.md`](./FUTURE.md); how a release and its data build are cut is in
 [`docs/Releases.md`](./docs/Releases.md); what the outputs *mean*, for the
-people who consume them, is in [`docs/DataModel.md`](./docs/DataModel.md). This
+people who consume them, is in [`docs/data-model/`](./docs/data-model/README.md). This
 file is the map plus the handful of decisions you cannot see from the code.
 
 ## Layout
@@ -31,7 +31,7 @@ explains its part; this table is only a map.
 | `src/pubmed2db/util.py` | Shared helpers for the long steps: progress/ETA, durations, peak RSS. |
 | `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`, `status`, `validate`. |
 | `slurm/` | One `sbatch` script per pipeline step, `config.sh`, and `submit.sh`. See [`slurm/README.md`](./slurm/README.md). |
-| `docs/` | Longer write-ups, named in CamelCase (`JournalCatalog.md`). |
+| `docs/` | Longer write-ups, named in CamelCase (`JournalCatalog.md`). `data-model/` is the exception: the data model's contract (`README.md`), its `Changelog.md` and its generated `Reference.md`. |
 
 ## Decisions that are not visible from the code
 
@@ -50,7 +50,7 @@ explains its part; this table is only a map.
   Then write `tests/data_model/<MAJOR.MINOR>.json` with
   `python -m pubmed2db.datamodel --golden`; there is one file per
   `MAJOR.MINOR`, because a patch cannot change the shape. Every bump, patch
-  included, also needs an entry in `docs/DataModel.md`'s changelog saying, per
+  included, also needs an entry in `docs/data-model/Changelog.md` saying, per
   output, what consumers must do; a test checks that it exists. That per-output
   table is the deliberate alternative to an extra version level for "breaks
   some consumers but not others". **Never edit an existing version's
@@ -61,10 +61,13 @@ explains its part; this table is only a map.
     `Provenance.` or `Internal.`; `datamodel.describe` reads the tier from
     there. Only internal tables (`pipeline_run`) are outside the contract.
   - **The comments are the data dictionary, and the doc is generated from
-    them.** `docs/DataModel.md`'s column reference is
-    `datamodel.render_reference`; edit the `COMMENT ON` in `schema.sql`, then
-    run `python -m pubmed2db.datamodel --docs docs/DataModel.md`. A test fails
-    on a stale block, so don't hand-edit it.
+    them.** `docs/data-model/Reference.md` is `datamodel.render_reference`;
+    edit the `COMMENT ON` in `schema.sql`, then run
+    `python -m pubmed2db.datamodel --docs docs/data-model/Reference.md`. A test
+    fails on a stale block, so don't hand-edit it. It and the changelog are
+    separate from the README so the contract prose stays short enough to read
+    whole; the three link each other by absolute URL on `main`, and
+    `test_links_between_the_data_model_docs_resolve` checks those links.
   - **Pre-1.0 databases are refused, not migrated.** `check_compatible` runs
     *before* `schema.sql`, so a refused file is untouched. That is why the old
     `ALTER TABLE` migrations, and the NULL-`type_name` export warning they
@@ -87,6 +90,43 @@ explains its part; this table is only a map.
     the CRC (measured 2026-10-19). Only a hash catches an intact shard that
     isn't the one this export wrote (a leftover from another build) or damage
     to a `--no-gzip` export.
+  - **`metadata.json` is also the "finished" mark the between-runs scripts
+    key on.** `export` refuses to run while one exists in its output
+    directory unless given `--overwrite` (it deletes the previous shards
+    first, #24; the check is in `export.py`, not the Slurm script, so a
+    hand-run export gets it too, and `submit.sh` repeats it before submitting
+    so an `all` chain does not run its load first), and
+    `scripts/archive_build.py` moves the directory to `data/builds/<build>/`
+    named from its `corpus.build_name`. Two things there are deliberate:
+    `data/manifests/` is copied and never moved, because the dated files are
+    the chain every `validate` diffs against; and `scripts/fresh_database.py`
+    *moves* a superseded baseline year out of `data/pubmed/{baseline,updates}`
+    rather than deleting it, because `load` globs those two directories
+    (registered or not) and the operator keeps the XML. `source_file.csv` in
+    each build is the only surviving record of the MD5 NCBI published per
+    file; no sidecars are kept on disk.
+  - **`validate` asks PubMed about drops the database cannot explain**
+    (`check_drops_since`), because a database built fresh from a new baseline
+    never loaded the update files that carried the deletions published before
+    it. Judged by `deleted_pmid` alone, the first run after every rebuild
+    failed, wrote no manifest, and so failed again the next time. A drop PubMed
+    still serves is the error; one it no longer serves is the
+    `drops_retired_upstream` warning, **but only on a database created after
+    the previous manifest** (`pubmed2db_metadata.created_at` against the
+    write time in the manifest's gzip header, which a `cp -r` of the data
+    directory keeps and the file's mtime does not) **and with no gap in its
+    files** (`status.load_gaps`):
+    a skipped update file's deletions look exactly like the ones published
+    before the baseline. On a continuing database the same drop means an update
+    file was missed, and stays a `missed_deletions` error; there PubMed's
+    answer only names the failure, so one batch is sampled
+    (`_DROP_DIAGNOSE_SAMPLE`) rather than all of them. The lookup is
+    `pmids_served`, on esummary rather than efetch, because esummary names
+    every ID it was asked about (a missing one with `"error"`): efetch's
+    recovering parser skips what it cannot read, which made a degraded
+    response read as "retired". On a clean rebuild it is capped at
+    `_DROP_CONFIRM_LIMIT`, and a run over the cap fails, so the cap has to sit
+    well above a year's deletions or the chain never recovers.
 
 - **Reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
   as-is, no upstream changes.** We take its file listings, its cache layout and

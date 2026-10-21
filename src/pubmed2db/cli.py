@@ -131,7 +131,7 @@ def main(
     ctx.obj["verbose"] = verbose
 
 
-def _connect(ctx: click.Context):
+def _connect(ctx: click.Context, *, read_only: bool = False):
     """Open the database with the group-level DuckDB tuning options applied.
 
     Logs what DuckDB actually runs with, which is not always what was asked
@@ -145,6 +145,7 @@ def _connect(ctx: click.Context):
             threads=ctx.obj["threads"],
             temp_directory=ctx.obj["temp_dir"],
             memory_limit=ctx.obj["memory_limit"],
+            read_only=read_only,
         )
     except IncompatibleDatabase as exc:
         raise click.ClickException(f"{ctx.obj['db']}: {exc}") from exc
@@ -241,8 +242,19 @@ def load(ctx: click.Context, force: bool) -> None:
     default=True,
     help="Parquet: export only the latest version (default) or full history.",
 )
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    help=(
+        "Replace a finished export (one with a metadata.json) in OUT. Without "
+        "it, archive that export first with scripts/archive_build.py."
+    ),
+)
 @click.pass_context
-def export(ctx: click.Context, fmt: str, out: str, shards: int | None, gzip_output: bool, latest: bool) -> None:
+def export(
+    ctx: click.Context, fmt: str, out: str, shards: int | None, gzip_output: bool,
+    latest: bool, overwrite: bool,
+) -> None:
     """Export the latest abstracts to JSON, or the database to Parquet."""
     from .export import export_json, export_parquet
     from .status import export_readiness
@@ -274,10 +286,15 @@ def export(ctx: click.Context, fmt: str, out: str, shards: int | None, gzip_outp
             con.execute("PRAGMA enable_progress_bar")
 
         click.echo(f"Starting {fmt} export to {out}...")
-        if fmt == "json":
-            paths = export_json(con, out, shards=shards, gzip_output=gzip_output)
-        else:
-            paths = export_parquet(con, out, latest=latest)
+        try:
+            if fmt == "json":
+                paths = export_json(
+                    con, out, shards=shards, gzip_output=gzip_output, overwrite=overwrite
+                )
+            else:
+                paths = export_parquet(con, out, latest=latest, overwrite=overwrite)
+        except FileExistsError as exc:
+            raise click.ClickException(str(exc)) from exc
         click.echo(
             f"Wrote {len(paths)} file(s) to {out} (peak RSS {peak_rss_gib():.1f} GiB)."
         )
@@ -359,13 +376,17 @@ def validate(
     con = None
     db_path = Path(ctx.obj["db"])
     if db_path.exists():
+        # Read-only: validate only reads, so it must not need the write lock
+        # (another job may hold it) or a writable mount.
         try:
-            candidate = _connect(ctx)
-        except click.ClickException as exc:
+            candidate = _connect(ctx, read_only=True)
+        except (click.ClickException, duckdb.Error) as exc:
             # The checks that need it are optional, and the export can be
-            # validated without them: a database from another data model is a
-            # reason to skip those, not to refuse the whole run.
-            click.echo(f"Warning: not using the database: {exc.message}", err=True)
+            # validated without them: a database from another data model, or
+            # one locked by a running load, is a reason to skip those, not to
+            # refuse the whole run.
+            message = exc.message if isinstance(exc, click.ClickException) else str(exc)
+            click.echo(f"Warning: not using the database: {message}", err=True)
         else:
             if articles_loaded(candidate):
                 con = candidate

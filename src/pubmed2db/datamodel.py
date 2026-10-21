@@ -4,7 +4,7 @@ One version number covers every output — the DuckDB database, the Parquet expo
 (the same tables as files) and the NDJSON export (a projection of them) — so a
 consumer of any of them pins one thing. It is **not** the code version: the
 code version says how the *code* changed, this one how consumers' code is
-affected, and `docs/DataModel.md` says what each bump means. It is standard
+affected, and `docs/data-model/README.md` says what each bump means. It is standard
 semantic versioning: a patch fixes values without changing the shape or meaning
 of anything, a minor bump only *adds* (a table, a column, a view, an NDJSON
 field), and a major bump renames, removes or changes the meaning of one.
@@ -29,7 +29,7 @@ import duckdb
 from . import __version__
 
 #: The data model this code reads and writes. See the module docstring, and
-#: `docs/DataModel.md` for when to bump it.
+#: `docs/data-model/README.md` for when to bump it.
 DATA_MODEL_VERSION = "1.0.0"
 
 #: The table holding :data:`DATA_MODEL_VERSION` and who built the database.
@@ -112,7 +112,8 @@ def check_compatible(con: duckdb.DuckDBPyConnection) -> None:
     exactly as it was. Accepted: an empty database (it is about to be created),
     or one at the same major version and a minor version no newer than ours —
     an older minor only lacks columns that ``schema.sql``'s additive migrations
-    then add. A newer minor is refused too: ``load`` inserts ``BY POSITION``, so
+    then add, which :func:`check_migrated` confirms before :func:`stamp` raises
+    its version. A newer minor is refused too: ``load`` inserts ``BY POSITION``, so
     old code writing into a table that has grown a column would misalign rows.
     The patch level never decides: it cannot change the shape.
     """
@@ -164,8 +165,8 @@ def stamp(con: duckdb.DuckDBPyConnection) -> None:
     Runs after ``schema.sql`` on every open. On a new database it writes all
     three creation keys; on an older one it raises the stored version to ours,
     which for a minor is only correct because ``schema.sql`` has just added the
-    columns that version introduced. A patch's fixes reach rows already loaded
-    only when they are reloaded; its changelog says whether that is needed, and
+    columns that version introduced (:func:`check_migrated` holds it to that). A patch's fixes reach rows already loaded
+    only when they are reloaded; its entry in `docs/data-model/Changelog.md` says whether that is needed, and
     ``last_loaded_by`` says which code did the loading. Never lowered: older code
     opening a newer-patch database leaves its version alone.
     """
@@ -175,6 +176,43 @@ def stamp(con: duckdb.DuckDBPyConnection) -> None:
         _set(con, "created_by", code_version())
     if stored is None or parse_version(stored) < parse_version(DATA_MODEL_VERSION):
         _set(con, "data_model_version", DATA_MODEL_VERSION)
+
+
+def needs_migration(con: duckdb.DuckDBPyConnection) -> bool:
+    """Whether the database is an older minor version than this code's."""
+    stored = stored_version(con)
+    return stored is not None and parse_version(stored)[:2] < parse_version(DATA_MODEL_VERSION)[:2]
+
+
+def check_migrated(con: duckdb.DuckDBPyConnection) -> None:
+    """Raise :class:`IncompatibleDatabase` unless every table now has this code's columns.
+
+    Run after ``schema.sql`` on a database from an older minor version, and
+    before :func:`stamp` raises its version. A column added to a ``CREATE
+    TABLE`` without its matching ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS``
+    reaches a new database but not a migrated one, and nothing else would
+    notice: ``load`` inserts ``BY POSITION``, so it would fail on, or misalign,
+    every row. The comparison is against a fresh in-memory database built from
+    the same ``schema.sql``.
+    """
+    from .db import init_schema
+
+    with duckdb.connect() as fresh:
+        init_schema(fresh)
+        want = shape(fresh)["relations"]
+    have = shape(con)["relations"]
+    wrong = sorted(
+        name for name, relation in want.items()
+        if relation["kind"] == "table"
+        and have.get(name, {}).get("columns") != relation["columns"]
+    )
+    if wrong:
+        raise IncompatibleDatabase(
+            f"this database is data model {stored_version(con)}, and migrating it to "
+            f"{DATA_MODEL_VERSION} left these tables without this version's columns: "
+            f"{', '.join(wrong)}. schema.sql is missing an ALTER TABLE for each; "
+            "this is a pubmed2db bug, so report it."
+        )
 
 
 def record_load(con: duckdb.DuckDBPyConnection) -> None:
@@ -196,7 +234,7 @@ def metadata(con: duckdb.DuckDBPyConnection) -> dict[str, str]:
 # --- the data model's shape, read back from a database --------------------------
 
 #: The stability tiers a table or view's comment starts with, as ``"Stable."``.
-#: `docs/DataModel.md` defines them; only ``internal`` is outside the contract.
+#: `docs/data-model/README.md` defines them; only ``internal`` is outside the contract.
 TIERS = ("stable", "provenance", "internal")
 
 
@@ -205,8 +243,8 @@ def describe(con: duckdb.DuckDBPyConnection) -> list[dict]:
 
     The comments are ``schema.sql``'s ``COMMENT ON`` statements, so this is the
     data dictionary as shipped. It is what `tests/test_data_model.py` pins and
-    what :func:`render_reference` turns into the reference half of
-    `docs/DataModel.md`. Relations are sorted by name and columns are in
+    what :func:`render_reference` turns into
+    `docs/data-model/Reference.md`. Relations are sorted by name and columns are in
     table order.
     """
     relations = con.execute(
@@ -301,8 +339,8 @@ def only_adds(old: dict, new: dict) -> list[str]:
     return problems
 
 
-#: The markers around the generated half of `docs/DataModel.md`.
-REFERENCE_BEGIN = "<!-- BEGIN GENERATED REFERENCE: python -m pubmed2db.datamodel --docs docs/DataModel.md -->"
+#: The markers around the generated part of `docs/data-model/Reference.md`.
+REFERENCE_BEGIN = "<!-- BEGIN GENERATED REFERENCE: python -m pubmed2db.datamodel --docs docs/data-model/Reference.md -->"
 REFERENCE_END = "<!-- END GENERATED REFERENCE -->"
 
 
@@ -311,7 +349,7 @@ def _cell(text: str) -> str:
 
 
 def render_reference(relations: list[dict]) -> str:
-    """The column reference of `docs/DataModel.md`, rendered from :func:`describe`.
+    """The column reference, `docs/data-model/Reference.md`, rendered from :func:`describe`.
 
     Generated rather than written so that the document and the comments shipped
     in the database cannot say different things: a test regenerates it and
@@ -323,7 +361,7 @@ def render_reference(relations: list[dict]) -> str:
     for tier in TIERS:
         for relation in (r for r in tables if r["tier"] == tier):
             lines += [
-                f"### `{relation['name']}`",
+                f"## `{relation['name']}`",
                 "",
                 relation["comment"],
                 "",
@@ -336,7 +374,7 @@ def render_reference(relations: list[dict]) -> str:
                 for c in relation["columns"]
             ]
             lines.append("")
-    lines += ["### Views", "", "| View | Meaning |", "| --- | --- |"]
+    lines += ["## Views", "", "| View | Meaning |", "| --- | --- |"]
     lines += [
         f"| `{r['name']}` | {_cell(r['comment'])} |"
         for r in relations if r["kind"] == "view"
@@ -366,7 +404,7 @@ def main(argv: list[str] | None = None) -> None:
     `tests/test_data_model.py` compares every fresh database against; run it as
     part of a deliberate version bump, never to make a failing test pass.
     ``--docs PATH`` rewrites the generated column reference in
-    `docs/DataModel.md` after a comment in ``schema.sql`` changes.
+    `docs/data-model/Reference.md` after a comment in ``schema.sql`` changes.
     """
     import argparse
     import json

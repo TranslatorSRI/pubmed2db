@@ -34,6 +34,7 @@ from __future__ import annotations
 import difflib
 from collections import Counter
 import gzip
+import hashlib
 import io
 import json
 import logging
@@ -41,6 +42,7 @@ import random
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -48,7 +50,6 @@ import duckdb
 import requests
 from lxml import etree
 
-from .datamodel import stored_version
 from .export import (
     ID_PREFIXES,
     JSON_FIELDS,
@@ -63,6 +64,7 @@ from .export import (
     pub_month,
 )
 from .parse import _publication_types
+from .status import load_gaps
 from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
@@ -187,6 +189,26 @@ _MAX_EXAMPLES = 20
 
 #: efetch accepts many IDs per request; batch to stay well under URL limits.
 _EFETCH_BATCH = 20
+
+#: esummary accepts many IDs per request, and `pmids_served` only needs to know
+#: which exist, so it asks for far more per request than efetch does.
+_ESUMMARY_BATCH = 200
+
+#: Most unexplained drops `check_drops_since` will ask PubMed about. At
+#: _ESUMMARY_BATCH per request that is 1,000 requests: ~100 s with an API key
+#: (10/s), ~6 min without (3/s). The first run after a fresh-database rebuild
+#: has the deletions PubMed published between the previous build and the new
+#: baseline (not measured; set well above any plausible year's worth, since a
+#: run over the limit fails and so cannot write the manifest that would end
+#: the comparison). Far more than this means the previous manifest describes a
+#: different corpus, which no amount of fetching will explain.
+_DROP_CONFIRM_LIMIT = 200_000
+
+#: How many unexplained drops `check_drops_since` asks PubMed about when its
+#: answer cannot excuse them (a continuing database, or one with load gaps):
+#: one esummary request, enough to say whether records were lost or deletions
+#: missed, without spending minutes confirming a FAIL.
+_DROP_DIAGNOSE_SAMPLE = _ESUMMARY_BATCH
 
 #: A sampled record whose core fields mismatch above this fraction is an error.
 _FIELD_MISMATCH_RATE = 0.20
@@ -353,7 +375,8 @@ def find_shards(export_dir: Path) -> list[Path]:
 
 
 def check_export_metadata(
-    export_dir: Path, shards: list[Path], records_total: int, report: Report
+    export_dir: Path, shards: list[Path], records_total: int, report: Report,
+    sha256: dict[str, str] | None = None,
 ) -> dict | None:
     """Hold the directory to the ``metadata.json`` its export wrote; return that metadata.
 
@@ -363,7 +386,11 @@ def check_export_metadata(
     Damage is caught earlier and without this: a truncated or corrupted gzip
     shard fails ``shard-readable``. An export without the file (one from before
     data model 1.0) is a ``skip``: nothing to check against, not a failure.
+
+    ``sha256`` is the hashes :func:`check_structure` took while it read the
+    shards; a shard missing from it (one that read did not finish) is hashed here.
     """
+    sha256 = sha256 or {}
     path = export_dir / METADATA_FILE
     if not path.is_file():
         report.record(
@@ -375,6 +402,9 @@ def check_export_metadata(
         metadata = json.loads(path.read_text())
         listed = {f["name"]: f for f in metadata["files"]}
         expected_records = metadata["records"]
+        # `bool` is an `int`; neither a string nor `true` is a record count.
+        if not isinstance(expected_records, int) or isinstance(expected_records, bool):
+            raise TypeError(f"records is {expected_records!r}, not an integer")
     except (OSError, ValueError, KeyError, TypeError) as exc:
         report.record(
             "export-metadata", "structure", f"{METADATA_FILE} matches the shards", FAIL,
@@ -389,7 +419,10 @@ def check_export_metadata(
     problems += [f"{name}: present but not listed" for name in sorted(found - set(listed))]
     for shard in shards:
         entry = listed.get(shard.name)
-        if entry is not None and file_sha256(shard) != entry.get("sha256"):
+        if entry is None:
+            continue
+        digest = sha256.get(shard.name) or file_sha256(shard)
+        if digest != entry.get("sha256"):
             problems.append(f"{shard.name}: checksum differs from {METADATA_FILE}")
     if records_total != expected_records:
         problems.append(f"{records_total:,} record(s) read, {expected_records:,} exported")
@@ -573,6 +606,29 @@ def read_manifest(path: Path) -> set[int]:
         return {int(line) for line in handle if line.strip()}
 
 
+def manifest_written_at(path: Path) -> float:
+    """When a manifest was written, as a POSIX timestamp.
+
+    Read from the gzip header's MTIME, which :func:`write_manifest` sets at
+    write time and which a copy (``cp -r``, ``rsync`` without ``-t``, a restore
+    from ``builds/<x>/manifests``) carries unchanged, unlike the file's mtime.
+    A plain-text manifest, or a gzip one written with MTIME 0, falls back to the
+    file's mtime. So does one whose file mtime is within the header's second:
+    that file was not copied, and its mtime is the finer of the two, which
+    matters for a database created in the same second.
+    """
+    file_mtime = path.stat().st_mtime
+    try:
+        with gzip.open(path, "rb") as handle:
+            handle.read(1)  # the header is parsed on the first read
+            header = handle.mtime
+    except (OSError, EOFError):
+        return file_mtime
+    if not header or 0 <= file_mtime - header < 1:
+        return file_mtime
+    return float(header)
+
+
 # --------------------------------------------------------------------------- #
 # Check 1: structure
 # --------------------------------------------------------------------------- #
@@ -585,6 +641,27 @@ class StructureResult:
     all_pmids: set[int] = field(default_factory=set)
     #: pmid -> exported document, for the seeded random sample only.
     sample: dict[int, dict] = field(default_factory=dict)
+    #: shard name -> SHA-256 of its bytes, taken during the same read so the
+    #: metadata check does not read every shard a second time. Absent for a
+    #: shard the read did not finish.
+    sha256: dict[str, str] = field(default_factory=dict)
+
+
+class _HashingReader(io.RawIOBase):
+    """Pass a binary file's bytes through, hashing them as they are read."""
+
+    def __init__(self, raw) -> None:
+        self._raw = raw
+        self.sha256 = hashlib.sha256()
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        n = self._raw.readinto(buffer)
+        if n:
+            self.sha256.update(memoryview(buffer)[:n])
+        return n
 
 
 def check_structure(
@@ -640,106 +717,115 @@ def check_structure(
         try:
             # The raw binary handle rather than `_open_text`, so the progress
             # line below can call `raw.tell()`: for a .gz shard that is the
-            # compressed offset, the scale `total_bytes` is measured in.
-            with path.open("rb") as raw, (
-                gzip.open(raw, "rt", encoding="utf-8") if path.name.endswith(".gz")
-                else io.TextIOWrapper(raw, encoding="utf-8")
-            ) as handle:
-                for lineno, line in enumerate(handle, start=1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        doc = json.loads(line)
-                    except json.JSONDecodeError as exc:
-                        malformed.append(
-                            {"shard": path.name, "line": lineno, "error": str(exc)}
+            # compressed offset, the scale `total_bytes` is measured in. The
+            # bytes are hashed on their way through, for check_export_metadata.
+            with path.open("rb", buffering=0) as raw:
+                hashing = _HashingReader(raw)
+                buffered = io.BufferedReader(hashing)
+                with (
+                    gzip.open(buffered, "rt", encoding="utf-8") if path.name.endswith(".gz")
+                    else io.TextIOWrapper(buffered, encoding="utf-8")
+                ) as handle:
+                    for lineno, line in enumerate(handle, start=1):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            doc = json.loads(line)
+                        except json.JSONDecodeError as exc:
+                            malformed.append(
+                                {"shard": path.name, "line": lineno, "error": str(exc)}
+                            )
+                            continue
+
+                        result.records_total += 1
+                        result.records_by_shard[path.name] = (
+                            result.records_by_shard.get(path.name, 0) + 1
                         )
-                        continue
 
-                    result.records_total += 1
-                    result.records_by_shard[path.name] = (
-                        result.records_by_shard.get(path.name, 0) + 1
-                    )
+                        keys = set(doc)
+                        for missing in EXPECTED_FIELDS - keys:
+                            missing_fields[missing] = missing_fields.get(missing, 0) + 1
+                        for extra in keys - EXPECTED_FIELDS:
+                            extra_fields[extra] = extra_fields.get(extra, 0) + 1
+                        for key, value in doc.items():
+                            if value is None:
+                                null_values.append({"shard": path.name, "line": lineno, "field": key})
 
-                    keys = set(doc)
-                    for missing in EXPECTED_FIELDS - keys:
-                        missing_fields[missing] = missing_fields.get(missing, 0) + 1
-                    for extra in keys - EXPECTED_FIELDS:
-                        extra_fields[extra] = extra_fields.get(extra, 0) + 1
-                    for key, value in doc.items():
-                        if value is None:
-                            null_values.append({"shard": path.name, "line": lineno, "field": key})
-
-                    match = _ID_RE.match(str(doc.get("id", "")))
-                    if match is None:
-                        invalid_ids.append(
-                            {"shard": path.name, "line": lineno, "id": doc.get("id")}
-                        )
-                        pmid = None
-                    else:
-                        pmid = int(match.group(1))
-                        if pmid in result.all_pmids and pmid not in duplicated:
-                            duplicated.add(pmid)
-                            duplicates.append(pmid)
-                        result.all_pmids.add(pmid)
-
-                    with_prefix.update(
-                        {c.split(":", 1)[0] for c in doc.get("identifiers") or []}
-                    )
-
-                    # Absent or null is already `record-fields`/`no-nulls`.
-                    types = doc.get("publication_types")
-                    if types is not None:
-                        if not _valid_publication_types(types):
-                            invalid_types.append({
-                                "shard": path.name, "line": lineno,
-                                "publication_types": _clip(json.dumps(types), 200),
-                            })
-                        elif any(t["name"] == "" for t in types):
-                            unnamed_types.append(
+                        match = _ID_RE.match(str(doc.get("id", "")))
+                        if match is None:
+                            invalid_ids.append(
                                 {"shard": path.name, "line": lineno, "id": doc.get("id")}
                             )
-
-                    if doc.get("pub_month") not in _VALID_MONTHS:
-                        invalid_months.append(
-                            {"shard": path.name, "line": lineno, "pub_month": doc.get("pub_month")}
-                        )
-
-                    # Reservoir sampling (Algorithm R), keyed by valid PMID.
-                    if pmid is not None:
-                        if len(reservoir) < sample_size:
-                            reservoir.append((pmid, doc))
+                            pmid = None
                         else:
-                            j = rng.randint(0, seen_in_shard)
-                            if j < sample_size:
-                                reservoir[j] = (pmid, doc)
-                        seen_in_shard += 1
+                            pmid = int(match.group(1))
+                            if pmid in result.all_pmids and pmid not in duplicated:
+                                duplicated.add(pmid)
+                                duplicates.append(pmid)
+                            result.all_pmids.add(pmid)
 
-                    # Reading the clock every record looks wasteful and is not:
-                    # `time.monotonic()` is ~25 ns against ~2.8 µs of per-record
-                    # work above (json.loads, the two set differences, the null
-                    # scan, the id regex, the reservoir draw), so gating on a
-                    # `records % N` counter instead saves ~1 s of a 7m 38s
-                    # corpus read. It would also cost the property the line is
-                    # for: progress is denominated in bytes, so a record-counted
-                    # gate would space the lines by record size rather than by
-                    # time, and these are meant to be a minute apart in a log.
-                    now = time.monotonic()
-                    if now - last_log >= _PROGRESS_INTERVAL_S and total_bytes:
-                        elapsed = now - start
-                        read = bytes_done + raw.tell()
-                        current = current_rss_gib()
-                        logger.info(
-                            "progress: %s record(s), shard %d/%d, %.1f%% of %.1f GiB "
-                            "read · elapsed %s · RSS %s · ~%s remaining",
-                            f"{result.records_total:,}", shard_index + 1, len(shards),
-                            100 * read / total_bytes, total_bytes / 1024**3,
-                            fmt_duration(elapsed),
-                            "n/a" if current is None else f"{current:.1f} GiB",
-                            eta_str(elapsed, read, total_bytes - read),
+                        with_prefix.update(
+                            {c.split(":", 1)[0] for c in doc.get("identifiers") or []}
                         )
-                        last_log = now
+
+                        # Absent or null is already `record-fields`/`no-nulls`.
+                        types = doc.get("publication_types")
+                        if types is not None:
+                            if not _valid_publication_types(types):
+                                invalid_types.append({
+                                    "shard": path.name, "line": lineno,
+                                    "publication_types": _clip(json.dumps(types), 200),
+                                })
+                            elif any(t["name"] == "" for t in types):
+                                unnamed_types.append(
+                                    {"shard": path.name, "line": lineno, "id": doc.get("id")}
+                                )
+
+                        if doc.get("pub_month") not in _VALID_MONTHS:
+                            invalid_months.append(
+                                {"shard": path.name, "line": lineno, "pub_month": doc.get("pub_month")}
+                            )
+
+                        # Reservoir sampling (Algorithm R), keyed by valid PMID.
+                        if pmid is not None:
+                            if len(reservoir) < sample_size:
+                                reservoir.append((pmid, doc))
+                            else:
+                                j = rng.randint(0, seen_in_shard)
+                                if j < sample_size:
+                                    reservoir[j] = (pmid, doc)
+                            seen_in_shard += 1
+
+                        # Reading the clock every record looks wasteful and is not:
+                        # `time.monotonic()` is ~25 ns against ~2.8 µs of per-record
+                        # work above (json.loads, the two set differences, the null
+                        # scan, the id regex, the reservoir draw), so gating on a
+                        # `records % N` counter instead saves ~1 s of a 7m 38s
+                        # corpus read. It would also cost the property the line is
+                        # for: progress is denominated in bytes, so a record-counted
+                        # gate would space the lines by record size rather than by
+                        # time, and these are meant to be a minute apart in a log.
+                        now = time.monotonic()
+                        if now - last_log >= _PROGRESS_INTERVAL_S and total_bytes:
+                            elapsed = now - start
+                            read = bytes_done + raw.tell()
+                            current = current_rss_gib()
+                            logger.info(
+                                "progress: %s record(s), shard %d/%d, %.1f%% of %.1f GiB "
+                                "read · elapsed %s · RSS %s · ~%s remaining",
+                                f"{result.records_total:,}", shard_index + 1, len(shards),
+                                100 * read / total_bytes, total_bytes / 1024**3,
+                                fmt_duration(elapsed),
+                                "n/a" if current is None else f"{current:.1f} GiB",
+                                eta_str(elapsed, read, total_bytes - read),
+                            )
+                            last_log = now
+                    # Whatever the decoder left unread (trailing padding) is
+                    # still part of the file its checksum covers.
+                    while hashing.read(1 << 20):
+                        pass
+                result.sha256[path.name] = hashing.sha256.hexdigest()
         except (OSError, EOFError) as exc:
             unreadable.append({"shard": path.name, "error": str(exc)})
 
@@ -1026,6 +1112,58 @@ def efetch_documents(
                 "abstract": _normalize(abstract),
             }
     return docs
+
+
+def pmids_served(pmids: list[int], *, api_key: str | None, email: str | None) -> set[int]:
+    """Which of ``pmids`` PubMed still serves, via esummary.
+
+    esummary names every ID it was asked about: a served one with its summary,
+    a missing one with ``"error"`` (live, 2026-10-20: PMID 99999999 comes back
+    as ``{"uid": "99999999", "error": "cannot get document summary"}``). So a
+    PMID the response does not mention at all is not evidence that PubMed
+    dropped it, and raises instead: a degraded response (an error body, a
+    truncated one) must not turn a lost record into a "retired upstream" one.
+    efetch cannot make that distinction, which is why this is not
+    :func:`efetch_documents`.
+    """
+    served: set[int] = set()
+    for start in range(0, len(pmids), _ESUMMARY_BATCH):
+        batch = pmids[start : start + _ESUMMARY_BATCH]
+        raw = _eutils(
+            "esummary.fcgi",
+            {"db": "pubmed", "id": ",".join(str(p) for p in batch), "retmode": "json"},
+            api_key=api_key, email=email,
+        )
+        try:
+            result = json.loads(raw)["result"]
+            entries = {int(uid): result[uid] for uid in result["uids"]}
+        except (ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError(f"unusable esummary response: {raw[:200]!r}") from exc
+        unanswered = set(batch) - entries.keys()
+        if unanswered:
+            raise RuntimeError(
+                f"esummary did not answer for {len(unanswered)} PMID(s), "
+                f"e.g. {min(unanswered)}"
+            )
+        served.update(p for p in batch if "error" not in entries[p])
+    return served
+
+
+def _rebuilt_since(con: duckdb.DuckDBPyConnection, manifest: Path) -> bool:
+    """Whether the database was created after ``manifest`` was written.
+
+    That is the fresh-database rebuild, the one case where a drop the database
+    cannot explain may still be legitimate. False when the creation time is
+    unknown: the strict answer. The manifest's time is
+    :func:`manifest_written_at`, so copying the data directory does not turn a
+    rebuild into a continuing database.
+    """
+    from .datamodel import metadata
+
+    created = metadata(con).get("created_at")
+    if not created:
+        return False
+    return datetime.fromisoformat(created).timestamp() > manifest_written_at(manifest)
 
 
 # --------------------------------------------------------------------------- #
@@ -1550,14 +1688,41 @@ def check_drops_since(
     all_pmids: set[int],
     previous_manifest: Path | None,
     con: duckdb.DuckDBPyConnection | None,
+    online: bool,
+    api_key: str | None,
+    email: str | None,
+    seed: int = 0,
 ) -> None:
     """Diff this export's PMID set against a previous export's manifest.
 
     This is the check the coverage counts cannot make: two exports can hold the
     same number of records while a thousand PMIDs silently swapped out. A PMID
-    the previous export shipped and this one does not is only legitimate if the
-    database recorded a ``DeleteCitation`` for it, so an *unexplained* drop is an
-    error — it means records vanished without PubMed asking for their removal.
+    the previous export shipped and this one does not is legitimate if the
+    database recorded a ``DeleteCitation`` for it, or if PubMed no longer serves
+    it either. A drop PubMed *still* serves is an error: records vanished
+    without PubMed asking for their removal.
+
+    The second test exists for the fresh-database rebuild (README, "Prefer a
+    fresh database at the year boundary"), and only applies to a database
+    created after the previous manifest was written. A database built from the new
+    baseline never loads the update files that carried the deletions published
+    between the previous build and that baseline, so its ``deleted_pmid`` cannot
+    explain them; nor can it explain a record PubMed dropped quietly, which the
+    old additive database kept. Judged by the database alone every one of those
+    was an error, the run failed, no manifest was written, and the next run
+    diffed against the same old manifest and failed again. Asking PubMed is what
+    makes the drop check usable across the one event it is most needed for.
+    It only asks about drops the database cannot explain, and only up to
+    :data:`_DROP_CONFIRM_LIMIT` of them. On a continuing database the same
+    drop means an update file's ``DeleteCitation`` was never loaded, so it
+    stays an error there even though PubMed agrees the record is gone. So does
+    a rebuilt database with a gap in its files (:func:`status.load_gaps`): the
+    deletions the skipped file carried look exactly like the ones published
+    before the baseline. Where PubMed's answer cannot excuse anything, only
+    :data:`_DROP_DIAGNOSE_SAMPLE` drops, drawn at random with ``seed``, are
+    sent, to tell lost records
+    (``unexplained_drops``) from missed deletions (``missed_deletions``); both
+    are recorded when both occur.
 
     Without a database the drops cannot be attributed, so they are reported as a
     warning to review rather than silently accepted.
@@ -1592,6 +1757,42 @@ def check_drops_since(
         explained = sorted(r[0] for r in rows)
         unexplained = sorted(dropped - set(explained))
 
+    # Then ask PubMed about what the database could not explain. Only with a
+    # database: without one the whole set is unattributed and stays a warning.
+    rebuilt = con is not None and _rebuilt_since(con, previous_manifest)
+    gaps = load_gaps(con) if con is not None else []
+    # PubMed agreeing is only an explanation after a clean rebuild; see the
+    # docstring. Anywhere else a sample is enough to name the failure.
+    excusable = rebuilt and not gaps
+    retired_upstream: list[int] = []
+    asked: list[int] = []
+    confirmation: str | None = None
+    if unexplained and con is not None:
+        if not online:
+            confirmation = "offline"
+        elif excusable and len(unexplained) > _DROP_CONFIRM_LIMIT:
+            confirmation = "over_limit"
+        else:
+            # At random, not the lowest PMIDs: a recent load that lost new
+            # records would otherwise be hidden behind old missed deletions.
+            if excusable or len(unexplained) <= _DROP_DIAGNOSE_SAMPLE:
+                sample = unexplained
+            else:
+                sample = sorted(random.Random(seed).sample(unexplained, _DROP_DIAGNOSE_SAMPLE))
+            try:
+                served = pmids_served(sample, api_key=api_key, email=email)
+                asked = sample
+                confirmation = "entrez" if len(sample) == len(unexplained) else "sampled"
+                retired_upstream = [p for p in sample if p not in served]
+                # A set: on a rebuild `asked` is every drop, up to 200,000.
+                retired = set(retired_upstream)
+                unexplained = [p for p in unexplained if p not in retired]
+            except Exception as exc:
+                logger.warning("could not confirm dropped PMIDs via API: %s", exc)
+                confirmation = "unreachable"
+    missed_deletions = [] if excusable else retired_upstream
+    still_served = len(asked) - len(retired_upstream)
+
     report.checks["drops_since_previous"] = {
         "previous_manifest": str(previous_manifest),
         "previous_count": len(previous_pmids),
@@ -1600,6 +1801,15 @@ def check_drops_since(
         "added": len(added),
         "explained_by_deletion": _capped(explained),
         "explained_by_deletion_count": len(explained),
+        # Not called "explained": on a continuing database, or one with load
+        # gaps, these are the missed deletions, and the run fails on them.
+        "retired_upstream": _capped(retired_upstream),
+        "retired_upstream_count": len(retired_upstream),
+        "pubmed_confirmation": confirmation,
+        "pubmed_asked_count": len(asked),
+        "database_rebuilt_since": rebuilt,
+        "load_gaps": _capped(gaps),
+        "load_gaps_count": len(gaps),
         "unexplained": _capped(unexplained),
         "unexplained_count": len(unexplained),
         "added_examples": _capped(sorted(added)),
@@ -1607,19 +1817,73 @@ def check_drops_since(
 
     observed = (
         f"{len(dropped):,} dropped ({len(explained):,} explained by a recorded "
-        f"deletion), {len(added):,} added"
+        f"deletion, {len(retired_upstream):,} no longer served by PubMed), "
+        f"{len(added):,} added"
     )
+    if gaps:
+        why_missed = (
+            f"; the database never loaded {len(gaps):,} file(s) inside its range, "
+            f"e.g. {gaps[0]}"
+        )
+    else:
+        why_missed = "; the database predates the previous manifest"
+    recorded = False
     if unexplained and con is not None:
+        why = {
+            "offline": "; offline, so PubMed was not asked about them",
+            "over_limit": (
+                f"; more than {_DROP_CONFIRM_LIMIT:,}, so PubMed was not asked "
+                "about them (does the previous manifest describe this corpus?)"
+            ),
+            "unreachable": "; PubMed was unreachable, so they could not be attributed",
+            "entrez": "; PubMed still serves them",
+            "sampled": (
+                f"; PubMed was asked about only {len(asked):,} of them, since this "
+                f"database fails the check whatever it says, and still serves "
+                f"{still_served:,} of those"
+            ),
+        }[confirmation]
+        next_step = {
+            "offline": "; run validate online to ask PubMed whether it still serves them.",
+            "over_limit": (
+                "; too many to ask PubMed about. If the corpus really changed this "
+                "much, review the list and start the chain again by running validate "
+                "once by hand with --manifest and without --previous-manifest."
+            ),
+            "unreachable": "; PubMed could not be asked, so re-run validate once it is reachable.",
+            "entrez": ", and PubMed still serves them.",
+            "sampled": (
+                ". Those PubMed still serves were lost; any it no longer serves are "
+                "deletions this database missed (see missed_deletions). Check `status`."
+            ),
+        }[confirmation]
         report.record(
-            "pmid-set-diff", "drops since previous", expectation, FAIL, observed,
+            "pmid-set-diff", "drops since previous", expectation, FAIL, observed + why,
             code="unexplained_drops",
             message=(
                 "PMIDs present in the previous export are missing from this one "
-                "without a recorded deletion."
+                "without a recorded deletion" + next_step
             ),
             count=len(unexplained), see="checks.drops_since_previous.unexplained",
         )
-    elif unexplained:
+        recorded = True
+    if missed_deletions:
+        report.record(
+            "pmid-set-diff", "drops since previous", expectation, FAIL,
+            observed + why_missed,
+            code="missed_deletions",
+            message=(
+                "PubMed no longer serves these PMIDs, but this database never loaded "
+                "a DeleteCitation for them: an update file was skipped or failed to "
+                "load (checks.drops_since_previous.load_gaps names any it can see). "
+                "Check `status`."
+            ),
+            count=len(missed_deletions), see="checks.drops_since_previous.retired_upstream",
+        )
+        recorded = True
+    if recorded:
+        return
+    if unexplained:
         report.record(
             "pmid-set-diff", "drops since previous", expectation, WARN,
             f"{observed}; no database to attribute them",
@@ -1629,6 +1893,18 @@ def check_drops_since(
                 "no database was available to confirm they were deleted."
             ),
             count=len(unexplained), see="checks.drops_since_previous.unexplained",
+        )
+    elif retired_upstream:
+        report.record(
+            "pmid-set-diff", "drops since previous", expectation, WARN, observed,
+            code="drops_retired_upstream",
+            message=(
+                "PubMed no longer serves these PMIDs, and this database, created "
+                "since the previous manifest, never loaded a DeleteCitation for "
+                "them: expected on the first run after a fresh-database rebuild "
+                "(the deletions were published before the new baseline)."
+            ),
+            count=len(retired_upstream), see="checks.drops_since_previous.retired_upstream",
         )
     else:
         report.record("pmid-set-diff", "drops since previous", expectation, PASS, observed)
@@ -1693,7 +1969,7 @@ def run_validation(
     )
 
     export_metadata = check_export_metadata(
-        export_dir, shards, structure.records_total, report
+        export_dir, shards, structure.records_total, report, structure.sha256
     )
 
     logger.info("checking coverage...")
@@ -1720,6 +1996,7 @@ def run_validation(
     check_drops_since(
         report, all_pmids=structure.all_pmids,
         previous_manifest=previous_manifest, con=con,
+        online=online, api_key=api_key, email=email, seed=seed,
     )
 
     # A manifest is a *baseline*: the next run diffs its export against it and
@@ -1759,20 +2036,23 @@ def run_validation(
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "duration": fmt_duration(time.monotonic() - start),
         "peak_rss_gib": round(peak_rss_gib(), 3),
-        # The data model the export follows, from its metadata.json, else from
-        # the database it was validated alongside. A consumer checks the major.
+        # The data model the export follows, from its metadata.json. A consumer
+        # checks the major. Never the database's: with no metadata.json the
+        # shards may predate it (a pre-1.0 export beside a rebuilt database),
+        # and borrowing its version would call them compatible.
         "data_model_version": (
-            export_metadata["data_model_version"] if export_metadata
-            else stored_version(con) if con is not None
-            else None
+            export_metadata.get("data_model_version") if export_metadata else None
         ),
+        # Absolute, so scripts/archive_build.py can match a report to its
+        # export from any working directory: 05-validate.sbatch passes paths
+        # relative to SLURM_SUBMIT_DIR.
         "inputs": {
-            "export_dir": str(export_dir),
+            "export_dir": str(export_dir.resolve()),
             "shards": [p.name for p in shards],
             "database": None if con is None else "available",
             "previous_report": None if previous_report is None else str(previous_report),
             "previous_manifest": None if previous_manifest is None else str(previous_manifest),
-            "manifest_written": None if manifest_written is None else str(manifest_written),
+            "manifest_written": None if manifest_written is None else str(manifest_written.resolve()),
             "online": online,
             "sample_size": sample_size,
             "drop_sample": drop_sample,

@@ -291,6 +291,21 @@ def test_corpus_provenance_names_the_cutoff(loaded_con):
     }
 
 
+def test_corpus_provenance_has_no_date_when_the_cutoff_has_none(loaded_con):
+    """A cutoff file with no posting time (copied in by rsync) names no build,
+    rather than borrowing an earlier file's date: `arg_max` skips NULLs."""
+    from pubmed2db.status import corpus_provenance
+
+    loaded_con.execute(
+        "UPDATE source_file SET published_at = TIMESTAMPTZ '2025-06-01 14:05:00+00' "
+        "WHERE file_name = 'pubmed25n0001.xml.gz'"
+    )
+    provenance = corpus_provenance(loaded_con)
+    assert provenance["cutoff_file"] == "pubmed25n0002.xml.gz"
+    assert provenance["cutoff_published_at"] is None
+    assert provenance["build_name"] is None
+
+
 def test_build_name_is_the_utc_posting_date_of_the_cutoff():
     from datetime import datetime, timedelta, timezone
 

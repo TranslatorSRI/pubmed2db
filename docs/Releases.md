@@ -23,12 +23,12 @@ once the release PR has merged.
 - **Y** for a release with substantial changes or improvements. This is the usual release, one per milestone (`v1.1.0`, `v1.2.0`).
 - **Z** for smaller improvements and fixes that shouldn't significantly change the output (`v1.1.1`).
 
-**The data model version** (`datamodel.DATA_MODEL_VERSION`, 1.0.0 since the build after `2026sep26`) is what consumers pin. It is standard semantic versioning, defined in [`docs/DataModel.md`](./DataModel.md#versioning-and-stability):
+**The data model version** (`datamodel.DATA_MODEL_VERSION`, 1.0.0 since the build after `2026sep26`) is what consumers pin. It is standard semantic versioning, defined in [`docs/data-model/README.md`](./data-model/README.md#versioning-and-stability):
 - **patch:** values fixed, shape and meaning unchanged;
 - **minor:** only additions;
 - **major:** anything renamed, removed or changed in meaning.
 
-A major bump is often breaking for one output and harmless for another (1.0.0 renamed Parquet tables and left the NDJSON untouched). So rather than a separate level for "breaks some consumers", every bump gets an entry in that doc's changelog saying, output by output, what a consumer must do. A test fails until the entry exists. A release that changes the data model says so in its release PR and GitHub release notes, and links that entry.
+A major bump is often breaking for one output and harmless for another (1.0.0 renamed Parquet tables and left the NDJSON untouched). So rather than a separate level for "breaks some consumers", every bump gets an entry in [the data model changelog](./data-model/Changelog.md) saying, output by output, what a consumer must do. A test fails until the entry exists. A release that changes the data model says so in its release PR and GitHub release notes, and links that entry.
 
 ## Steps
 
@@ -54,13 +54,15 @@ A major bump is often breaking for one output and harmless for another (1.0.0 re
    - Fix anything that belongs to a feature PR in that PR, then **merge** its branch into the release branch.
    - Merge rather than rebase: the commit the cluster ran has to stay reachable.
 
-4. **Tag the data build** on the exact commit the cluster ran, and record that commit in the release PR:
+4. **Archive, publish and tag the data build.** Once `validate` has passed, move the export out of `data/json` as a build directory, copy it (and the database, if it is published) to stars, and tag the exact commit the cluster ran, recording that commit in the release PR:
 
    ```bash
-   jq -r .corpus.build_name data/json/metadata.json      # e.g. 2026sep24
+   uv run python scripts/archive_build.py                # data/json -> data/builds/2026sep24/, prints the rsync lines
    git tag -a 2026sep24 <sha> -m "pubmed2db used to create 2026sep24"
    git push origin 2026sep24
    ```
+
+   The script prints the build name; it is `corpus.build_name` in the build's `metadata.json`. The README's ["Between runs"](../README.md#between-runs-what-to-keep-archive-and-delete) says what else the next run needs.
 
    The name is the build's **cutoff**: the UTC date NCBI posted the last file the build loaded. Every update file before it is in the build and every one after belongs to the next, so the name says what the build contains. `status` prints the same name, and `metadata.json` carries the file and the exact time (`corpus.cutoff_file`, `corpus.cutoff_published_at`).
 
