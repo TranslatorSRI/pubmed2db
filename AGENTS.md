@@ -464,9 +464,25 @@ explains its part; this table is only a map.
 ```bash
 uv sync --extra dev
 uv run pytest          # no network needed
+uv run ruff check . && uv run ruff format --check . && uv run rumdl check .
+uv run ruff check --fix . && uv run ruff format . && uv run rumdl fmt .   # to fix
 ```
 
 Tests gzip the readable XML fixtures under `tests/fixtures/` into temp
 `pubmedNNnNNNN.xml.gz` files. Scratch downloads and databases go under `./data`
 (gitignored); the CLI points `PYSTOW_HOME` at `--data-dir` so
 `pubmed_downloader` caches under `data/pubmed/{baseline,updates}/`.
+
+The lint line is what `.github/workflows/lint.yml` runs; the config is in
+`pyproject.toml`, and `uv.lock` pins both tools, since a new ruff can reformat
+code. Three things the fixers get wrong:
+
+- **ruff format reformats code inside a multi-line f-string**, and in a SQL
+  template that strands a dozen lines of Python at column 0 mid-query. Name
+  the expression first and interpolate the name (`export._ASSEMBLED_DATE_SQL`).
+- **In wrapped Markdown, a line starting with `+`, `-`, `*` or `1.` becomes a
+  list item, and one starting `#13` is a heading away from a fix.** rumdl
+  flags them (MD004/MD032, MD018), but its MD018 autofix adds the space that
+  makes the heading. Rewrap the line instead.
+- **`docs/data-model/Reference.md` is generated**, so a rumdl finding there is
+  fixed in `datamodel.render_reference`, not in the file.
