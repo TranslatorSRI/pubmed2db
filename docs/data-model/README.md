@@ -13,6 +13,7 @@ design was decided.
 
 It is written to be read without the repository, and so are its two
 companions, each linked by absolute URL like everything else outside this file:
+
 - the [changelog](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/Changelog.md), what each version changed and what
   consumers must do about it;
 - the [column reference](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/Reference.md), every table, column and view,
@@ -51,6 +52,7 @@ current code refuses their databases, and their tables differ in the ways
 | NDJSON export (`pubmed_metadata_*.ndjson.gz`) | One JSON object per current PMID, with the [DocumentMetadataAPI](https://github.com/NCATSTranslator/DocumentMetadataAPI) field names | You need citation metadata, identifiers and abstracts, and nothing else (Babel, Node Annotator) |
 
 Every export directory also holds `metadata.json`. It records:
+
 - the data model version and the export format;
 - the record count (`records`: current articles, the same in every format; an `--all` Parquet export adds `article_versions`, every version in its article file);
 - the code and database it came from;
@@ -208,6 +210,7 @@ comment starts with its tier.
 | **Internal** | `pipeline_run` | Bookkeeping for pubmed2db itself; may change in any release |
 
 pubmed2db's own code enforces the rules on the database it writes:
+
 - It refuses to open a database from another major version, or from a newer
   minor version, and leaves that database untouched.
 - It upgrades an older minor version in place, since that only adds columns.
@@ -265,7 +268,7 @@ The [column reference](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs
 what a column list can't: the grain of each table, how the tables join, and
 the traps.
 
-```
+```text
                           ┌──────────────┐
   journal ─< journal_issn │ source_file  │──< deleted_pmid
      │                    └──────┬───────┘
@@ -282,6 +285,7 @@ the traps.
 ```
 
 **Field values are verbatim.** Text is stored as PubMed wrote it:
+
 - not trimmed, and not case-folded;
 - inline markup such as `<i>` flattened to its text;
 - NULL where the element is absent.
@@ -337,6 +341,7 @@ journals` replaces them wholesale from NLM's current files. Join on
 `nlm_catalog_id`.
 
 They come from two NLM sources, deliberately:
+
 - **`J_Entrez.txt`** supplies `title` and `abbreviation_medline`. Its title is
   byte-for-byte what NCBI's own services call `fulljournalname`.
 - **The serial catalog** supplies `start_year`, `end_year` and `active`. About
@@ -408,6 +413,7 @@ fetch them that way is [#27](https://github.com/TranslatorSRI/pubmed2db/issues/2
 | An earlier copy of a PMID repeated within one file | The last copy wins | — |
 
 **Parts of records that are not stored:**
+
 - Authors the parser cannot name: no last name, or no fore name or initials,
   and no ORCID. They leave gaps in `author.position`. That was 159 of 318,366
   authors (0.05%) in the two files measured below.
@@ -418,6 +424,7 @@ fetch them that way is [#27](https://github.com/TranslatorSRI/pubmed2db/issues/2
 - Affiliations of collective authors.
 
 **PubMed elements never read.** Nothing stores:
+
 - `ReferenceList`: the citation graph. One article carries ~444 references, so
   it would be the largest table by far, and no consumer has asked for it
   ([#71](https://github.com/TranslatorSRI/pubmed2db/issues/71)).

@@ -19,11 +19,13 @@ once the release PR has merged.
 **Two version numbers, for two audiences.** The code version says how the *code* changed; the data model version says how *consumers* are affected. They move independently: a big code release can leave the data model alone, and a one-line fix can bump it.
 
 **Code versions** (`vX.Y.Z`, the release tags). Tags always carry all three components (`v1.1.0`, not `v1.1`), the same form as `pyproject.toml`'s `version`, while the milestone, release branch and release PR name only the first two. `v1.0` predates this and keeps its name.
+
 - **X** for a rewrite: a new language, framework or code organization.
 - **Y** for a release with substantial changes or improvements. This is the usual release, one per milestone (`v1.1.0`, `v1.2.0`).
 - **Z** for smaller improvements and fixes (`v1.1.1`). A Z release can still change output values, since a value fix never moves the data model version; its release notes say which values change and whether an existing database needs a reload, the same as a Y release's.
 
 **The data model version** (`datamodel.DATA_MODEL_VERSION`, 1.0.0 since the build after `2026sep26`) is what consumers pin. It is standard semantic versioning, defined in [`docs/data-model/README.md`](./data-model/README.md#versioning-and-stability):
+
 - **minor:** only additions, including a guarantee that leaves every old reading correct;
 - **major:** anything renamed, removed, or changed in meaning so that an old reading is now wrong, however mildly;
 - **patch:** not used. The version describes how to read the outputs, not what they contain, so a fix that changes values without changing how to read them is a code change, listed in the release notes with whether a database needs a reload.

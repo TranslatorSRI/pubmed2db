@@ -143,7 +143,6 @@ explains its part; this table is only a map.
     response read as "retired". On a clean rebuild it is capped at
     `_DROP_CONFIRM_LIMIT`, and a run over the cap fails, so the cap has to sit
     well above a year's deletions or the chain never recovers.
-
 - **Reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
   as-is, no upstream changes.** We take its file listings, its cache layout and
   its `Article` data model, but not its transfers (see below) or its
@@ -421,7 +420,6 @@ explains its part; this table is only a map.
   module they replace. A file that fails is skipped and the sync carries on,
   then `download` exits non-zero naming it; a SIGKILL skips `download_file`'s
   cleanup, so `download` and the catalog prune each sweep stale `.part` files.
-
 - **The `#SBATCH` headers in `slurm/` are the only place an allocation is
   written down**, and `slurm/README.md` deliberately does not repeat them — it
   carries the *evidence* (dated run tables, peak RSS, the shard-read breakdown)
