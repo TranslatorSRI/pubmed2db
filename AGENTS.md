@@ -354,10 +354,12 @@ explains its part; this table is only a map.
 - **The cgroup measurements below were taken on duckdb 1.5.4 and have not been
   re-taken.** The dependency floor is now 1.5.5, and nothing about the readings
   is version-fragile in principle — but they are measurements, and the rule that
-  produced them is *measure it, don't reason about it*. The 2026sep26 build
-  (v1.1) ran on 1.5.5 without re-taking them; the v1.2 release PR's pre-run
-  checklist carries the probe so the next build does. It is one line, inside
-  the allocation:
+  produced them is *measure it, don't reason about it*. Every Slurm step now
+  takes the reading itself: its log has a `DuckDB <version>: memory_limit=…,
+  threads=…` line, and the download, journals and validate steps pass no
+  limit, so theirs are the cgroup-derived defaults (`slurm/README.md` →
+  "Monitoring memory and runtime"). Compare them with that step's `--mem` and `--cpus-per-task`.
+  Off the pipeline, the same check is one line inside an allocation:
 
   ```bash
   srun --mem=8G --cpus-per-task=2 uv run python -c "import duckdb; c = duckdb.connect(); print(c.execute(\"SELECT current_setting('memory_limit'), current_setting('threads')\").fetchone())"
