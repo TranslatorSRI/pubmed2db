@@ -251,8 +251,8 @@ def _processed(con: duckdb.DuckDBPyConnection, source_files: list[str]) -> set[s
     ``processed_at`` has no rows: the eleven DELETEs are skipped for it.
     Measured on a 26 GB database they cost ~0.05 s on their own, but a
     transaction that has deleted makes the inserts that follow ~0.2 s slower
-    per file (`benchmark_load.py --skip-delete`), which on a fresh load is
-    paid for nothing.
+    per file (with the benchmark's ``--skip-delete``, retired once this made
+    it a no-op), which on a fresh load is paid for nothing.
     """
     rows = con.execute(
         "SELECT file_name FROM source_file WHERE processed_at IS NOT NULL AND file_name IN "
@@ -298,8 +298,11 @@ class LoadTiming:
         """One line, the slowest tables first, for the DEBUG log and the benchmark."""
         slowest = sorted(self.inserts.items(), key=lambda kv: kv[1], reverse=True)[:3]
         tables = ", ".join(f"{table} {seconds:.2f}" for table, seconds in slowest)
+        # A staged group's rows were built by `stage`, so it has no build to
+        # report, and a `build 0.00s` would read as a measurement.
+        build = f"build {self.build:.2f}s · " if self.build else ""
         return (
-            f"delete {self.delete:.2f}s · build {self.build:.2f}s · "
+            f"delete {self.delete:.2f}s · {build}"
             f"insert {self.insert:.2f}s ({tables}) · "
             f"registry {self.registry:.2f}s · commit {self.commit:.2f}s"
         )

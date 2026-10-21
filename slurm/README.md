@@ -289,8 +289,8 @@ update files add ~50 files to the count, so `04-load.sbatch` asked for 36h,
 and still does until the first staged run is measured.
 
 **Where the time goes, measured locally (2026-10-21).** The serial loader's
-phases were timed separately (`loaded` lines now carry parse, insert and
-commit seconds; `DEBUG` lines break the insert down by table) while
+phases were timed separately (`loaded` lines carry each phase's seconds;
+`DEBUG` lines break the insert down by table) while
 `scripts/benchmark_load.py --synthetic 400` grew a database to 26 GB on a
 laptop SSD by reloading five real baseline files under made-up names:
 
@@ -314,6 +314,11 @@ setting, as the mean per file over the 400 synthetic files:
 | `--files-per-txn 20` | 0.07 s | 0.37 s | 0.06 s | 0.49 s | 26.2 GiB |
 | `--no-preserve-insertion-order` | 0.05 s | 0.27 s | 0.45 s | 0.78 s | 26.3 GiB |
 | `--skip-delete` | 0 | 0.26 s | 0.44 s | 0.69 s | 26.3 GiB |
+
+The last column is the main database file alone, without the `.wal` beside
+it, which the benchmark has since started counting: under the 4GB threshold up
+to that much more can sit in the WAL, so that row's smaller file is not a
+measured saving.
 
 Two of those are now in the code: the load sets the checkpoint threshold
 (`LOAD_CHECKPOINT_THRESHOLD`, below), and a file the registry has never

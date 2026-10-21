@@ -439,3 +439,12 @@ def test_a_never_loaded_file_skips_the_delete(con, gz_fixture, monkeypatch):
     load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
     assert deleted == ["pubmed25n0001.xml.gz"]
     assert con.execute("SELECT count(*) FROM article").fetchone()[0] == 3
+
+
+def test_timing_omits_a_build_it_did_not_measure():
+    """A staged group's rows were built by `stage`, so its `loaded` line must
+    not report a build of 0.00 s as if one had been measured."""
+    from pubmed2db.load import LoadTiming
+
+    assert "build" not in LoadTiming(delete=0.1, inserts={"article": 0.2}).describe()
+    assert "build 0.50s" in LoadTiming(build=0.5, inserts={"article": 0.2}).describe()
