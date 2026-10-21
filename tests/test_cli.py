@@ -474,3 +474,74 @@ def test_version_is_pyprojects():
 
     pyproject = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())
     assert __version__ == pyproject["project"]["version"]
+
+
+def test_cli_stage_then_load(staged_download):
+    """`stage` then `load`, both flag-free, is the pipeline's shape from v1.3:
+    the shards are consumed and the registry reads as a direct load's would."""
+    db_path = staged_download / "cli.duckdb"
+    data = ("--data-dir", str(staged_download), "--db", str(db_path))
+    result = _run_cli(*data, "stage", "--workers", "2")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Staged 2 file(s); 2 local file(s) checked." in result.stdout
+    assert (staged_download / "stage" / "pubmed25n0001").is_dir()
+
+    result = _run_cli(*data, "load")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Loaded 2 file(s); 2 local file(s) checked." in result.stdout
+    assert "fresh shard(s) found" in result.stderr
+    assert not (staged_download / "stage" / "pubmed25n0001").exists()
+
+    # A second stage has nothing to do: the database says both are loaded.
+    result = _run_cli(*data, "stage")
+    assert "Staged 0 file(s)" in result.stdout, result.stdout + result.stderr
+
+    from pubmed2db.db import connect
+
+    con = connect(db_path)
+    try:
+        assert con.execute("SELECT count(*) FROM latest_article").fetchone()[0] == 2  # 1002 deleted
+        assert (
+            con.execute(
+                "SELECT count(*) FROM source_file WHERE processed_at IS NOT NULL"
+            ).fetchone()[0]
+            == 2
+        )
+    finally:
+        con.close()
+
+
+def test_cli_load_no_stage_ignores_shards(staged_download):
+    db_path = staged_download / "cli.duckdb"
+    data = ("--data-dir", str(staged_download), "--db", str(db_path))
+    assert _run_cli(*data, "stage", "--workers", "1").returncode == 0
+    result = _run_cli(*data, "load", "--no-stage")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Loaded 2 file(s)" in result.stdout
+    assert "fresh shard(s)" not in result.stderr
+    assert (staged_download / "stage" / "pubmed25n0001").is_dir()
+
+
+def test_connect_checkpoint_threshold_replaces_the_default(tmp_path):
+    """The setting that stops every file's COMMIT from checkpointing reaches
+    DuckDB, and the group option carries it (the load step passes it by env)."""
+    from pubmed2db.db import connect
+
+    con = connect(tmp_path / "default.duckdb")
+    try:
+        default = _as_bytes(_setting(con, "checkpoint_threshold"))
+    finally:
+        con.close()
+    con = connect(tmp_path / "big.duckdb", checkpoint_threshold="4GB")
+    try:
+        assert _as_bytes(_setting(con, "checkpoint_threshold")) > default
+    finally:
+        con.close()
+
+    result = _run_cli(
+        "--db", str(tmp_path / "cli.duckdb"), "--checkpoint-threshold", "2GB", "status"
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "checkpoint_threshold=1.8 GiB" in result.stderr or "checkpoint_threshold=2" in (
+        result.stderr
+    )

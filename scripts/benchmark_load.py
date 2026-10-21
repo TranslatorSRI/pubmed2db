@@ -35,11 +35,12 @@ against it:
 ``--files-per-txn N``
     N files per transaction instead of one, which is N times fewer COMMITs.
     Needs ``--db``: in memory every file gets its own database.
-``--skip-delete``
-    Skip the per-file ``DELETE ... WHERE source_file = ?`` entirely: the upper
-    bound on what skipping it for a never-loaded file could save. Refused for a
-    file the ``--db`` has already loaded, whose rows it would duplicate (the
-    versioned tables have no key to stop it).
+
+A synthetic file is never in the registry, so the load skips its DELETEs as a
+fresh corpus load does, and its ``delete_s`` is the registry lookup alone. To
+time the DELETEs themselves, load real files into a ``--db`` that already holds
+them. (``--skip-delete`` measured what skipping them saves, and was retired once
+the loader did it for every never-loaded file.)
 """
 
 from __future__ import annotations
@@ -77,7 +78,6 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--checkpoint-threshold", metavar="SIZE", help="e.g. 4GB.")
     parser.add_argument("--no-preserve-insertion-order", action="store_true")
-    parser.add_argument("--skip-delete", action="store_true")
     parser.add_argument("--memory-limit", metavar="SIZE", help="DuckDB buffer-pool cap.")
     parser.add_argument("--threads", type=int)
     args = parser.parse_args()
@@ -95,14 +95,10 @@ def main() -> None:
     # Imported after PYSTOW_HOME is set, mirroring the CLI.
     import duckdb
 
-    from pubmed2db import load
     from pubmed2db.db import connect
     from pubmed2db.load import LoadTiming, _load_parsed_rows
     from pubmed2db.parse import parse_file
     from pubmed2db.util import peak_rss_gib
-
-    if args.skip_delete:
-        load.delete_file_rows = lambda con, source_file: None
 
     def open_db() -> duckdb.DuckDBPyConnection:
         con = connect(args.db, memory_limit=args.memory_limit, threads=args.threads)
@@ -153,25 +149,13 @@ def main() -> None:
     jobs = [(name, parsed, parse_s, "baseline") for name, parsed, parse_s in parsed_files]
     if args.synthetic:
         # Carry on from the last synthetic file a previous run left, so a rerun
-        # grows the database instead of reloading (or, with --skip-delete,
-        # duplicating) the same names.
+        # grows the database instead of reloading the same names.
         last = con.execute("SELECT max(file_number) FROM source_file WHERE year_yy = 90")
         first = (last.fetchone()[0] or 0) + 1
         jobs += [
             (f"pubmed90n{i:04d}.xml.gz", parsed_files[i % len(parsed_files)][1], None, "baseline")
             for i in range(first, first + args.synthetic)
         ]
-    if args.skip_delete and con is not None:
-        names = [name for name, *_ in jobs]
-        loaded = con.execute(
-            "SELECT file_name FROM source_file WHERE list_contains(?, file_name)", [names]
-        ).fetchall()
-        if loaded:
-            raise SystemExit(
-                f"--skip-delete would duplicate the rows of {len(loaded)} file(s) "
-                f"{args.db} has already loaded, e.g. {loaded[0][0]}"
-            )
-
     print(header)
     print("-" * len(header))
 

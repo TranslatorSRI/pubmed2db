@@ -39,6 +39,7 @@ def connect(
     threads: int | None = None,
     temp_directory: str | Path | None = None,
     memory_limit: str | None = None,
+    checkpoint_threshold: str | None = None,
     read_only: bool = False,
 ) -> duckdb.DuckDBPyConnection:
     """Open (creating if needed) the DuckDB database and ensure the schema.
@@ -62,6 +63,13 @@ def connect(
     and get only the remaining quarter. Set it a margin below your allocation on
     any long load to widen that headroom.
 
+    ``checkpoint_threshold`` (e.g. ``"4GB"``) is the WAL size at which a COMMIT
+    also checkpoints; DuckDB's default is 16 MiB, which every PubMed file
+    exceeds, so a serial load checkpointed on every file. Measured locally
+    while a database grew to 26 GB, ``4GB`` took DuckDB's per-file cost from
+    ~0.9 s to ~0.3 s (``scripts/benchmark_load.py --checkpoint-threshold``),
+    at the price of a WAL that can reach that size before it is folded in.
+
     ``read_only`` opens an existing database without writing to it: it is still
     checked for compatibility, but ``schema.sql`` and the version stamp are
     skipped. For readers such as ``validate``, which then work beside another
@@ -76,6 +84,8 @@ def connect(
         config["temp_directory"] = str(temp_directory)
     if memory_limit is not None:
         config["memory_limit"] = memory_limit
+    if checkpoint_threshold is not None:
+        config["checkpoint_threshold"] = checkpoint_threshold
     con = duckdb.connect(str(path), read_only=read_only, config=config)
     try:
         # Before schema.sql, so a database we refuse is left untouched.

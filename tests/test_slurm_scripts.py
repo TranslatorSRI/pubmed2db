@@ -23,14 +23,15 @@ SLURM_DIR = REPO_ROOT / "slurm"
 SUBMIT = SLURM_DIR / "submit.sh"
 
 #: Pipeline order. The chain is only meaningful if these stay in this sequence.
-STEPS = ["download", "journals", "load", "export", "validate"]
+STEPS = ["download", "journals", "stage", "load", "export", "validate"]
 
 SCRIPTS = [
     SLURM_DIR / "01-download.sbatch",
     SLURM_DIR / "02-journals.sbatch",
-    SLURM_DIR / "03-load.sbatch",
-    SLURM_DIR / "04-export.sbatch",
-    SLURM_DIR / "05-validate.sbatch",
+    SLURM_DIR / "03-stage.sbatch",
+    SLURM_DIR / "04-load.sbatch",
+    SLURM_DIR / "05-export.sbatch",
+    SLURM_DIR / "06-validate.sbatch",
 ]
 
 pytestmark = pytest.mark.skipif(
@@ -140,7 +141,7 @@ def test_a_step_named_twice_is_submitted_once() -> None:
 
     lines = [line for line in result.stdout.splitlines() if line.startswith("sbatch")]
     assert len(lines) == len(STEPS)
-    assert sum("05-validate.sbatch" in line for line in lines) == 1
+    assert sum("06-validate.sbatch" in line for line in lines) == 1
     assert "more than once" in result.stderr
 
 
@@ -185,7 +186,7 @@ def test_single_step_has_no_dependency() -> None:
     assert result.returncode == 0, result.stderr
     lines = [line for line in result.stdout.splitlines() if line.startswith("sbatch")]
     assert len(lines) == 1
-    assert "03-load.sbatch" in lines[0]
+    assert "04-load.sbatch" in lines[0]
     assert "--dependency" not in lines[0]
 
 
@@ -218,7 +219,7 @@ def test_an_unarchived_export_is_refused_before_submitting(tmp_path: Path) -> No
 def test_offline_validate_needs_no_email() -> None:
     result = run_submit("--dry-run", "validate", VALIDATE_OFFLINE="1")
     assert result.returncode == 0, result.stderr
-    assert "05-validate.sbatch" in result.stdout
+    assert "06-validate.sbatch" in result.stdout
 
 
 def test_unknown_step_is_rejected() -> None:
@@ -261,7 +262,7 @@ def test_readme_does_not_duplicate_the_allocations() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 05-validate.sbatch: manifest selection
+# 06-validate.sbatch: manifest selection
 # --------------------------------------------------------------------------- #
 #
 # This is the only real logic in the sbatch scripts, and getting it wrong is
@@ -271,7 +272,7 @@ def test_readme_does_not_duplicate_the_allocations() -> None:
 # the command line the script would have run.
 
 
-VALIDATE_SCRIPT = SLURM_DIR / "05-validate.sbatch"
+VALIDATE_SCRIPT = SLURM_DIR / "06-validate.sbatch"
 
 
 @pytest.fixture
@@ -292,7 +293,7 @@ def sandbox(tmp_path: Path) -> Path:
 
 def run_validate(sandbox: Path, **env: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["bash", "slurm/05-validate.sbatch"],
+        ["bash", "slurm/06-validate.sbatch"],
         cwd=sandbox,
         capture_output=True,
         text=True,
@@ -422,7 +423,7 @@ def test_export_survives_an_uncreatable_spill_directory(sandbox: Path) -> None:
     made — a second failure on the path handling the first.
     """
     result = subprocess.run(
-        ["bash", "slurm/04-export.sbatch"],
+        ["bash", "slurm/05-export.sbatch"],
         cwd=sandbox,
         capture_output=True,
         text=True,
@@ -493,14 +494,14 @@ def test_shards_tracks_the_export_allocation() -> None:
     `export_json` runs `SET threads = $SHARDS` for the COPY, so a SHARDS above
     `--cpus-per-task` oversubscribes the one step that gets OOM-killed. Deriving
     it from SLURM_CPUS_PER_TASK is what keeps the two matched; this asserts the
-    derivation, and that the fallback matches what 04-export.sbatch requests so
+    derivation, and that the fallback matches what 05-export.sbatch requests so
     an off-cluster or `--dry-run` reading agrees with a real one.
     """
     import re
 
-    header = (SLURM_DIR / "04-export.sbatch").read_text()
+    header = (SLURM_DIR / "05-export.sbatch").read_text()
     match = re.search(r"#SBATCH --cpus-per-task=(\d+)", header)
-    assert match, "04-export.sbatch no longer declares --cpus-per-task"
+    assert match, "05-export.sbatch no longer declares --cpus-per-task"
     cpus = match.group(1)
 
     def shards(**env: str) -> str:
@@ -520,7 +521,7 @@ def test_shards_tracks_the_export_allocation() -> None:
     # ...and off it, the fallback is what the header asks for, so the two
     # readings cannot disagree.
     assert shards() == cpus, (
-        f"config.sh falls back to {shards()} shards while 04-export.sbatch asks "
+        f"config.sh falls back to {shards()} shards while 05-export.sbatch asks "
         f"for {cpus} CPUs; SET threads = SHARDS would oversubscribe"
     )
     # An explicit value still wins -- that is the documented override.
@@ -760,7 +761,7 @@ def test_an_export_at_the_old_default_path_stops_the_run(sandbox: Path) -> None:
 
 def run_export(sandbox: Path, **env: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["bash", "slurm/04-export.sbatch"],
+        ["bash", "slurm/05-export.sbatch"],
         cwd=sandbox,
         capture_output=True,
         text=True,
@@ -786,3 +787,64 @@ def test_export_overwrites_only_when_told(sandbox: Path) -> None:
     result = run_export(sandbox, EXPORT_OVERWRITE="1")
     assert result.returncode == 0, result.stderr
     assert "--overwrite" in result.stdout
+
+
+def test_stage_workers_track_the_allocation() -> None:
+    """`stage --workers` follows SLURM_CPUS_PER_TASK, with the fallback equal to
+    what 03-stage.sbatch requests, so an off-cluster reading agrees with a real
+    one. The CLI's own default is not trusted here: Slurm's CPU limit is a
+    cgroup quota, so an OS CPU count reads the whole node (AGENTS.md)."""
+    import re
+
+    header = (SLURM_DIR / "03-stage.sbatch").read_text()
+    match = re.search(r"#SBATCH --cpus-per-task=(\d+)", header)
+    assert match, "03-stage.sbatch no longer declares --cpus-per-task"
+    cpus = match.group(1)
+    assert '--workers "$STAGE_WORKERS"' in header
+
+    def workers(**env: str) -> str:
+        result = subprocess.run(
+            ["bash", "-c", 'source slurm/config.sh; printf "%s" "$STAGE_WORKERS"'],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT), **env},
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    assert workers(SLURM_CPUS_PER_TASK="4") == "4"
+    assert workers() == cpus
+    assert workers(STAGE_WORKERS="2", SLURM_CPUS_PER_TASK="4") == "2"
+
+
+def test_load_reads_the_stage_directory_config_names() -> None:
+    """Both steps are pointed at the same shard directory by config.sh, and the
+    load passes the group size through, so one override reaches both."""
+    stage = (SLURM_DIR / "03-stage.sbatch").read_text()
+    load = (SLURM_DIR / "04-load.sbatch").read_text()
+    assert '--stage-dir "$STAGE_DIR"' in stage and '--stage-dir "$STAGE_DIR"' in load
+    assert '--files-per-txn "$LOAD_FILES_PER_TXN"' in load
+
+
+def test_load_passes_its_checkpoint_threshold_without_exporting_it() -> None:
+    """Like the memory limit: per invocation via `env`, so a shell-wide value
+    cannot reach the export, and empty leaves DuckDB's default in place."""
+    load = (SLURM_DIR / "04-load.sbatch").read_text()
+    assert 'PUBMED2DB_DUCKDB_CHECKPOINT_THRESHOLD="$LOAD_CHECKPOINT_THRESHOLD"' in load
+    assert "export LOAD_CHECKPOINT_THRESHOLD" not in (SLURM_DIR / "config.sh").read_text()
+
+    def threshold(**env: str) -> str:
+        result = subprocess.run(
+            ["bash", "-c", 'source slurm/config.sh; printf "%s" "$LOAD_CHECKPOINT_THRESHOLD"'],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT), **env},
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    assert threshold() == "4GB"
+    assert threshold(LOAD_CHECKPOINT_THRESHOLD="") == ""
+    assert threshold(LOAD_CHECKPOINT_THRESHOLD="1GB") == "1GB"

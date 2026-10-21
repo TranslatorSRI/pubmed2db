@@ -8,12 +8,15 @@ first — which is also how an MD5 change triggers a refresh.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, NamedTuple
 
 import duckdb
 import pyarrow as pa
@@ -23,11 +26,19 @@ from lxml import etree
 from pubmed_downloader.utils import Collective
 
 from .datamodel import record_load
-from .db import NEEDS_LOAD_SQL, parse_file_name, record_run
+from .db import NEEDS_LOAD_SQL, init_schema, parse_file_name, record_run
 from .parse import ParsedArticle, ParsedFile, parse_file
 from .util import current_rss_gib, download_file, eta_str, fmt_duration, peak_rss_gib
 
+if TYPE_CHECKING:
+    from .stage import Shard
+
 logger = logging.getLogger(__name__)
+
+#: Files per transaction when loading from shards. Measured against the
+#: alternatives: one transaction for the whole corpus loses hours to one bad
+#: shard, one per table breaks "no child row without its article version".
+DEFAULT_FILES_PER_TXN = 50
 
 #: Per-version tables that carry a ``source_file`` column (cleared on reload).
 _VERSIONED_TABLES = (
@@ -136,22 +147,84 @@ def _article_rows(
     return rows
 
 
+@functools.cache
+def table_schemas() -> dict[str, pa.Schema]:
+    """The Arrow schema of every versioned table, read from ``schema.sql`` itself.
+
+    ``article.loaded_at`` is left out: it is ``now()`` at insert time, not a
+    value the parse produces. Every batch is built against these types rather
+    than letting Arrow infer them, so a column that is NULL throughout one
+    file (``author.orcid`` in a file of collective authors, a ``deleted_pmid``
+    table with no rows) still carries the table's type. That is what lets a
+    batch be written to Parquet and read back beside a thousand others in one
+    ``read_parquet`` (`stage`), and it holds the in-process insert to the same
+    rule, so the two sinks cannot drift.
+    """
+    con = duckdb.connect()
+    try:
+        init_schema(con)
+        schemas = {}
+        for table in _VERSIONED_TABLES:
+            exclude = " EXCLUDE (loaded_at)" if table == "article" else ""
+            schemas[table] = con.execute(f"SELECT *{exclude} FROM {table} LIMIT 0").arrow().schema
+        return schemas
+    finally:
+        con.close()
+
+
+def build_batches(
+    parsed: ParsedFile, source_file: str, order_key: int
+) -> tuple[dict[str, pa.Table], int]:
+    """One typed Arrow table per versioned table for a parsed file, and the article count.
+
+    This is the single definition of the rows a file contributes: the direct
+    insert registers these tables, and `stage` writes them to Parquet. A PMID
+    can appear more than once within a single file (e.g. citation correction
+    artifacts); only the last occurrence is kept, so `article`'s documented
+    (pmid, source_file) identity actually holds and `latest_article`'s
+    per-file ranking never needs a tiebreaker. Every table is present, with
+    zero rows where the file has none, so a reader never has to special-case
+    a missing one.
+    """
+    deduped: dict[int, ParsedArticle] = {}
+    for article in parsed.articles:
+        deduped[article.pubmed] = article
+
+    rows: dict[str, list[tuple]] = {t: [] for t in _VERSIONED_TABLES}
+    for article in deduped.values():
+        for table, table_rows in _article_rows(article, source_file, order_key).items():
+            rows[table].extend(table_rows)
+    for pmid in parsed.deleted_pmids:
+        rows["deleted_pmid"].append((pmid, source_file, order_key))
+
+    tables = {}
+    for table, schema in table_schemas().items():
+        columns = list(zip(*rows[table])) if rows[table] else [[] for _ in schema]
+        tables[table] = pa.Table.from_arrays(
+            [pa.array(column, type=f.type) for column, f in zip(columns, schema)], schema=schema
+        )
+    return tables, len(deduped)
+
+
 #: Name under which a per-table batch is registered for the bulk insert below.
 _BATCH = "_load_batch"
 
 
-def _arrow_batch(rows: list[tuple]) -> pa.Table:
-    """Transpose ``rows`` (positional tuples) into an Arrow table for :func:`_insert_batch`.
+def _insert_from(
+    con: duckdb.DuckDBPyConnection, table: str, source_sql: str, params: list | None = None
+) -> None:
+    """``INSERT INTO table`` from any relation whose columns match `table_schemas`.
 
-    Separate from the insert so the two are timed apart: this is a fixed Python
-    cost per row, the insert is DuckDB's and is what can grow with the database.
+    The one place the insert is written: the in-process batch and the staged
+    Parquet shards differ only in what ``source_sql`` names. ``article`` gets
+    ``now()`` appended for its server-side ``loaded_at`` column.
     """
-    columns = zip(*rows)  # transpose row tuples -> per-column sequences
-    return pa.table({str(i): pa.array(col) for i, col in enumerate(columns)})
+    loaded_at = ", now()" if table == "article" else ""
+    con.execute(f"INSERT INTO {table} BY POSITION SELECT *{loaded_at} FROM {source_sql}", params)
 
 
 def _insert_batch(con: duckdb.DuckDBPyConnection, table: str, batch: pa.Table) -> None:
-    """Columnar bulk-insert of ``batch`` (from :func:`_arrow_batch`) into ``table``.
+    """Columnar bulk-insert of one typed batch into ``table``.
 
     Registering the batch as an Arrow table and inserting it via
     ``INSERT ... SELECT`` is ~25x faster than row-by-row ``executemany`` on the
@@ -160,9 +233,7 @@ def _insert_batch(con: duckdb.DuckDBPyConnection, table: str, batch: pa.Table) -
     """
     con.register(_BATCH, batch)
     try:
-        # `article` appends now() for its server-side `loaded_at` column.
-        loaded_at = ", now()" if table == "article" else ""
-        con.execute(f"INSERT INTO {table} BY POSITION SELECT *{loaded_at} FROM {_BATCH}")
+        _insert_from(con, table, _BATCH)
     finally:
         con.unregister(_BATCH)
 
@@ -171,6 +242,24 @@ def delete_file_rows(con: duckdb.DuckDBPyConnection, source_file: str) -> None:
     """Remove every row previously loaded from ``source_file``."""
     for table in _VERSIONED_TABLES:
         con.execute(f"DELETE FROM {table} WHERE source_file = ?", [source_file])
+
+
+def _processed(con: duckdb.DuckDBPyConnection, source_files: list[str]) -> set[str]:
+    """Which of ``source_files`` the registry says were loaded, so have rows to delete.
+
+    A load is one transaction with its registry row, so a file with no
+    ``processed_at`` has no rows: the eleven DELETEs are skipped for it.
+    Measured on a 26 GB database they cost ~0.05 s on their own, but a
+    transaction that has deleted makes the inserts that follow ~0.2 s slower
+    per file (with the benchmark's ``--skip-delete``, retired once this made
+    it a no-op), which on a fresh load is paid for nothing.
+    """
+    rows = con.execute(
+        "SELECT file_name FROM source_file WHERE processed_at IS NOT NULL AND file_name IN "
+        "(SELECT unnest($names))",
+        {"names": source_files},
+    ).fetchall()
+    return {row[0] for row in rows}
 
 
 @dataclass
@@ -209,8 +298,11 @@ class LoadTiming:
         """One line, the slowest tables first, for the DEBUG log and the benchmark."""
         slowest = sorted(self.inserts.items(), key=lambda kv: kv[1], reverse=True)[:3]
         tables = ", ".join(f"{table} {seconds:.2f}" for table, seconds in slowest)
+        # A staged group's rows were built by `stage`, so it has no build to
+        # report, and a `build 0.00s` would read as a measurement.
+        build = f"build {self.build:.2f}s · " if self.build else ""
         return (
-            f"delete {self.delete:.2f}s · build {self.build:.2f}s · "
+            f"delete {self.delete:.2f}s · {build}"
             f"insert {self.insert:.2f}s ({tables}) · "
             f"registry {self.registry:.2f}s · commit {self.commit:.2f}s"
         )
@@ -231,53 +323,46 @@ def _load_parsed_rows(
     costs -- while `load_parsed` keeps the one-file-one-transaction rule
     `load_files` relies on for its failure semantics.
     """
-    year_yy, file_number, order_key = parse_file_name(source_file)
-
+    order_key = parse_file_name(source_file)[2]
     started = time.perf_counter()
-    delete_file_rows(con, source_file)
-    timing.delete += time.perf_counter() - started
-
-    started = time.perf_counter()
-    # A PMID can appear more than once within a single file (e.g. citation
-    # correction artifacts); keep only the last occurrence so `article`'s
-    # documented (pmid, source_file) identity actually holds and
-    # `latest_article`'s per-file ranking never needs a tiebreaker.
-    deduped: dict[int, ParsedArticle] = {}
-    for article in parsed.articles:
-        deduped[article.pubmed] = article
-
-    rows_by_table: dict[str, list[tuple]] = {t: [] for t in _VERSIONED_TABLES}
-    for article in deduped.values():
-        for table, table_rows in _article_rows(article, source_file, order_key).items():
-            rows_by_table[table].extend(table_rows)
-    for pmid in parsed.deleted_pmids:
-        rows_by_table["deleted_pmid"].append((pmid, source_file, order_key))
-    batches = {table: _arrow_batch(rows) for table, rows in rows_by_table.items() if rows}
+    batches, n_articles = build_batches(parsed, source_file, order_key)
     timing.build += time.perf_counter() - started
 
+    started = time.perf_counter()
+    if _processed(con, [source_file]):
+        delete_file_rows(con, source_file)
+    timing.delete += time.perf_counter() - started
+
     for table, batch in batches.items():
-        started = time.perf_counter()
-        _insert_batch(con, table, batch)
-        timing.inserts[table] = timing.inserts.get(table, 0.0) + time.perf_counter() - started
-        timing.n_rows += batch.num_rows
+        if batch.num_rows:
+            started = time.perf_counter()
+            _insert_batch(con, table, batch)
+            timing.inserts[table] = timing.inserts.get(table, 0.0) + time.perf_counter() - started
+            timing.n_rows += batch.num_rows
 
     started = time.perf_counter()
-    _upsert_source_file(con, source_file, kind, year_yy, file_number, order_key, deduped, parsed)
+    counts = FileCounts(
+        n_articles, len(parsed.deleted_pmids), parsed.n_failed, parsed.n_book_records
+    )
+    _upsert_source_file(con, source_file, kind, counts)
     timing.registry += time.perf_counter() - started
-    return len(deduped)
+    return n_articles
+
+
+class FileCounts(NamedTuple):
+    """What a file's parse yielded, as the ``source_file`` registry records it."""
+
+    n_articles: int  #: post-dedup, what `build_batches` stored
+    n_deletions: int
+    n_failed: int
+    n_book_records: int
 
 
 def _upsert_source_file(
-    con: duckdb.DuckDBPyConnection,
-    source_file: str,
-    kind: str,
-    year_yy: int,
-    file_number: int,
-    order_key: int,
-    deduped: dict[int, ParsedArticle],
-    parsed: ParsedFile,
+    con: duckdb.DuckDBPyConnection, source_file: str, kind: str, counts: FileCounts
 ) -> None:
     """Record the file as processed, with its counts, in the ``source_file`` registry."""
+    year_yy, file_number, order_key = parse_file_name(source_file)
     con.execute(
         """
             INSERT INTO source_file
@@ -301,17 +386,7 @@ def _upsert_source_file(
                 n_failed = excluded.n_failed,
                 n_book_records = excluded.n_book_records
             """,
-        [
-            source_file,
-            kind,
-            year_yy,
-            file_number,
-            order_key,
-            len(deduped),
-            len(parsed.deleted_pmids),
-            parsed.n_failed,
-            parsed.n_book_records,
-        ],
+        [source_file, kind, year_yy, file_number, order_key, *counts],
     )
 
 
@@ -405,11 +480,109 @@ def needs_load(con: duckdb.DuckDBPyConnection, source_file: str, *, force: bool 
     return row is None or bool(row[0])
 
 
+def _load_group(con: duckdb.DuckDBPyConnection, group: list[Shard]) -> LoadTiming:
+    """Insert a group of shards in one transaction; raises after rolling back."""
+    timing = LoadTiming()
+    con.execute("BEGIN TRANSACTION")
+    try:
+        started = time.perf_counter()
+        for name in _processed(con, [shard.file_name for shard in group]):
+            delete_file_rows(con, name)
+        timing.delete = time.perf_counter() - started
+        for table in _VERSIONED_TABLES:
+            paths = [str(shard.parquet(table)) for shard in group]
+            started = time.perf_counter()
+            _insert_from(con, table, "read_parquet($paths)", {"paths": paths})
+            timing.inserts[table] = time.perf_counter() - started
+        started = time.perf_counter()
+        for shard in group:
+            _upsert_source_file(con, shard.file_name, shard.manifest.kind, shard.manifest.counts)
+        timing.registry = time.perf_counter() - started
+        started = time.perf_counter()
+        con.execute("COMMIT")
+        timing.commit = time.perf_counter() - started
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
+    return timing
+
+
+def load_staged(
+    con: duckdb.DuckDBPyConnection,
+    shards: list[Shard],
+    *,
+    files_per_txn: int = DEFAULT_FILES_PER_TXN,
+    keep: bool = False,
+) -> tuple[int, list[str]]:
+    """Insert staged shards (`pubmed2db.stage`), ``files_per_txn`` per transaction.
+
+    Returns ``(n_loaded, failed_file_names)``. A group that fails is rolled
+    back and retried one file at a time; a file that fails on its own is
+    skipped, and its shard renamed ``.bad`` so the next ``load`` parses the
+    XML instead and the operator can look at what was refused. Each shard is
+    deleted once its transaction has committed, unless ``keep``: a crash
+    between the two can only leave a shard whose rows are already in.
+    """
+    shards = sorted(shards, key=lambda s: s.manifest.file_order_key)
+    total = len(shards)
+    run_start = time.monotonic()
+    loaded = 0
+    failed: list[str] = []
+
+    def finish(group: list[Shard]) -> None:
+        if not keep:
+            for shard in group:
+                shutil.rmtree(shard.path, ignore_errors=True)
+
+    for start in range(0, total, files_per_txn):
+        group = shards[start : start + files_per_txn]
+        try:
+            timing = _load_group(con, group)
+            loaded += len(group)
+            finish(group)
+            logger.info("loaded %d staged file(s): %s", len(group), timing.describe())
+        except Exception:  # noqa: BLE001 - isolate the shard at fault, keep going
+            logger.exception("a group of %d staged file(s) failed; retrying one by one", len(group))
+            for shard in group:
+                try:
+                    _load_group(con, [shard])
+                    loaded += 1
+                    finish([shard])
+                except Exception:  # noqa: BLE001
+                    bad = shard.path.with_name(shard.path.name + ".bad")
+                    shutil.rmtree(bad, ignore_errors=True)
+                    shard.path.rename(bad)
+                    logger.exception(
+                        "failed to load %s from its shard; moved it to %s", shard.file_name, bad
+                    )
+                    failed.append(shard.file_name)
+        done = min(start + files_per_txn, total)
+        remaining = total - done
+        elapsed = time.monotonic() - run_start
+        current = current_rss_gib()
+        logger.info(
+            "progress: %d/%d staged files this run, %d remaining · %.1f s/file · elapsed %s · %s "
+            "(RSS %s, peak %.1f GiB)",
+            done,
+            total,
+            remaining,
+            elapsed / done,
+            fmt_duration(elapsed),
+            "done" if remaining <= 0 else f"~{eta_str(elapsed, done, remaining)} to go",
+            "n/a" if current is None else f"{current:.1f} GiB",
+            peak_rss_gib(),
+        )
+    return loaded, failed
+
+
 def load_files(
     con: duckdb.DuckDBPyConnection,
     files: list[tuple[Path, str]],
     *,
     force: bool = False,
+    shards: dict[str, Shard] | None = None,
+    files_per_txn: int = DEFAULT_FILES_PER_TXN,
+    keep_shards: bool = False,
 ) -> tuple[int, list[str]]:
     """Load a list of ``(path, kind)`` files in chronological order, skipping
     ones already up to date.
@@ -419,6 +592,11 @@ def load_files(
     files, and one truncated download shouldn't cost a multi-hour job. Each
     file loads in its own transaction, so a failure leaves no partial rows and
     no ``processed_at`` watermark — a later run retries it.
+
+    Files with a fresh shard in ``shards`` (`stage.find_shards`) are inserted
+    from it, ``files_per_txn`` per transaction, by `load_staged`; the rest are
+    parsed here one at a time. Which files need loading is decided the same
+    way for both, so a shard for a file already up to date is left alone.
     """
     # Filter before sorting: parse_file_name raises on anything that isn't a
     # PubMed XML filename, and one stray file in the download directory must not
@@ -431,13 +609,19 @@ def load_files(
             logger.warning("ignoring %s: not a PubMed XML filename", path.name)
     keyed.sort(key=lambda t: t[0])
     to_load = [(p, k) for _, p, k in keyed if needs_load(con, p.name, force=force)]
+    shards = shards or {}
+    staged = [shards[p.name] for p, _ in to_load if p.name in shards]
+    to_load = [(p, k) for p, k in to_load if p.name not in shards]
     total = len(to_load)
-    if total == 0:
+    if total == 0 and not staged:
         return 0, []
 
-    run_start = time.monotonic()
     loaded = 0
     failed: list[str] = []
+    if staged:
+        loaded, failed = load_staged(con, staged, files_per_txn=files_per_txn, keep=keep_shards)
+
+    run_start = time.monotonic()
     for i, (path, kind) in enumerate(to_load):
         try:
             load_file(con, path, kind=kind)

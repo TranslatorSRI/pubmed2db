@@ -48,7 +48,7 @@ unset _export_dir_given _manifest_dir_given
 # JSON shard count. Since the COPY rewrite this is also the export's *thread*
 # count -- PER_THREAD_OUTPUT gives one file per writer thread, so export_json
 # runs `SET threads = $SHARDS` for the statement. Derived from the allocation
-# rather than fixed, because a fixed 16 against 04-export.sbatch's
+# rather than fixed, because a fixed 16 against 05-export.sbatch's
 # --cpus-per-task=8 oversubscribes 2:1 on the one step that gets OOM-killed,
 # and would silently raise a group-level --threads set to run *below* an
 # allocation on a busy node. Change the sbatch header and this follows.
@@ -61,6 +61,22 @@ unset _export_dir_given _manifest_dir_given
 : "${VALIDATE_SAMPLE_TOTAL=240}"
 
 : "${SHARDS:=${SLURM_CPUS_PER_TASK:-8}}"
+
+# Where `stage` writes its per-file Parquet shards and `load` reads them from
+# (the CLI's --stage-dir). Transient: `load` deletes each shard once its
+# transaction has committed, so this never needs archiving.
+: "${STAGE_DIR:=$DATA_DIR/stage}"
+
+# Files `stage` parses at once. Derived from the allocation like SHARDS, with
+# the fallback matching 03-stage.sbatch's --cpus-per-task; the CLI's own
+# default would read the whole node, since Slurm's CPU limit is a cgroup
+# quota rather than an affinity mask (AGENTS.md).
+: "${STAGE_WORKERS:=${SLURM_CPUS_PER_TASK:-16}}"
+
+# Staged files `load` inserts per transaction. A group is all-or-nothing and
+# a failed one is retried file by file, so this trades fewer COMMITs (each of
+# which checkpoints) against the rows one bad shard rolls back.
+: "${LOAD_FILES_PER_TXN:=50}"
 
 # DuckDB's buffer-pool cap per step. These are NOT exported: the CLI reads
 # PUBMED2DB_DUCKDB_MEMORY_LIMIT, and a shell-wide value would silently cap the
@@ -83,10 +99,17 @@ unset _export_dir_given _manifest_dir_given
 : "${LOAD_MEMORY_LIMIT=48GB}"
 : "${EXPORT_MEMORY_LIMIT=160GB}"
 
+# The WAL size at which a COMMIT also checkpoints, for the load only. DuckDB's
+# default is 16 MiB, which every file exceeds, so the serial loader
+# checkpointed on every COMMIT; measured locally while a database grew to
+# 26 GB, 4GB took DuckDB's per-file cost from ~0.9 s to ~0.3 s. Same `=`
+# semantics as the memory limits: empty leaves DuckDB's default in place.
+: "${LOAD_CHECKPOINT_THRESHOLD=4GB}"
+
 # Fast local scratch for DuckDB to spill into, e.g. /local/scratch/duckdb_tmp
 # on a node that has one. Empty leaves DuckDB's default (next to the database
 # file), which is what every ht1 run has actually used: the old default path
-# does not exist there, so 04-export.sbatch warned and fell back on every run,
+# does not exist there, so 05-export.sbatch warned and fell back on every run,
 # and neither export spilled anyway -- RSS stayed under the buffer-pool limit.
 : "${DUCKDB_TEMP_DIR=}"
 
@@ -114,8 +137,10 @@ log_run_settings() {
     local name
     echo "pubmed2db $(run_commit)"
     for name in SLURM_JOB_ID SLURM_JOB_NAME SLURMD_NODENAME SLURM_MEM_PER_NODE \
-                SLURM_CPUS_PER_TASK DATA_DIR EXPORT_DIR MANIFEST_DIR SHARDS \
-                VALIDATE_SAMPLE_TOTAL LOAD_MEMORY_LIMIT EXPORT_MEMORY_LIMIT \
+                SLURM_CPUS_PER_TASK DATA_DIR EXPORT_DIR MANIFEST_DIR STAGE_DIR \
+                STAGE_WORKERS LOAD_FILES_PER_TXN SHARDS \
+                VALIDATE_SAMPLE_TOTAL LOAD_MEMORY_LIMIT LOAD_CHECKPOINT_THRESHOLD \
+                EXPORT_MEMORY_LIMIT \
                 DUCKDB_TEMP_DIR UV_CACHE_DIR; do
         echo "  $name=${!name-}"
     done

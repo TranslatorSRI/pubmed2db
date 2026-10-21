@@ -572,7 +572,7 @@ def _remove_finished_mark(out_dir: Path, overwrite: bool, *, archivable: bool) -
     export is about to delete that one's files, the only local copy of its
     build until ``scripts/archive_build.py`` has moved it (#24). A partial
     export, with no mark, is swept without asking. The check is here rather
-    than in ``04-export.sbatch`` so every caller gets it. ``archivable`` is
+    than in ``05-export.sbatch`` so every caller gets it. ``archivable`` is
     whether that script can take the export: it archives the validated JSON
     build, and ``validate`` reads no Parquet, so a Parquet export is only ever
     moved aside or overwritten.

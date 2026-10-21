@@ -118,22 +118,26 @@ Still open:
 
 ## Scale & performance (full PubMed is ~38M articles, ~1500+ files)
 
-- **Loader throughput — done (serial).** `load.load_parsed` now inserts each
+- **Loader throughput — done (serial).** `load.load_parsed` inserts each
   file's rows columnar via Arrow `INSERT ... SELECT` (~200k rows/s) instead of
   row-by-row `executemany` (~2.5k rows/s), cutting per-file load from ~20 min to
-  ~5–6 s against a small database. At corpus scale it is 30 s/file on an empty
+  ~5–6 s against a small database. At corpus scale it was 30 s/file on an empty
   database rising to ~65 s/file by the end of the baseline — 21h 29m for 1,636
-  files on 2026-09-25 — because insert cost grows with the database, not
-  because of memory (two runs with different limits matched within 2%). Both
-  RSS figures are logged per file; see `slurm/README.md` and
-  `scripts/benchmark_load.py`.
-- **Loader parallelism** (#68). A serial full load is a day. First find what
-  makes each file's insert slower as the database grows (the per-file
-  `delete_file_rows` scan is the unmeasured suspect), then overlap parse with
-  insert (#26), then parallelize across files: since DuckDB is single-writer,
-  have parallel Slurm tasks each parse one XML → write per-file **Parquet
-  shards** (no shared writer), then a single step does
-  `INSERT INTO t SELECT * FROM read_parquet('shards/*')`.
+  files on 2026-09-25. That growth is *not* DuckDB's: measured locally against
+  a database grown to 26 GB, the delete, insert and commit together stay under
+  a second per file (`slurm/README.md` → "Where the time goes"), and the
+  per-file `DELETE` the issue suspected is pruned by zone maps. The cluster's
+  per-phase figures, now on every `loaded` line, are the next measurement.
+- **Loader parallelism — done (#68, v1.3).** `pubmed2db stage --workers N`
+  parses files in a process pool into per-file Parquet shards (typed from the
+  schema, with a manifest), and `load` inserts them 50 files per transaction
+  from `read_parquet`; `03-stage.sbatch` and `04-load.sbatch` are the two
+  steps. Streaming the XML (#25) came first, since each worker's footprint
+  multiplies. Overlapping parse with insert (#26) is moot: the parse no longer
+  runs in the inserting process. Still to measure on the cluster: the staged
+  load's wall time and peak RSS, `preserve_insertion_order = false` for the
+  bulk insert (it trades per-file row contiguity, which is what keeps the
+  `DELETE` cheap, for a fully parallel insert), and the group size.
 - **`latest_article` view** runs a window over the entire `article` table on every
   read. At full scale, consider an index on `article(pmid, file_order_key)` or
   materializing the latest set into a table before export.

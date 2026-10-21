@@ -14,7 +14,7 @@ file is the map plus the handful of decisions you cannot see from the code.
 
 ## Layout
 
-`download → load → export`, wired through a `click` CLI. Each module's docstring
+`download → stage → load → export`, wired through a `click` CLI. Each module's docstring
 explains its part; this table is only a map.
 
 | File | Responsibility |
@@ -24,12 +24,13 @@ explains its part; this table is only a map.
 | `src/pubmed2db/datamodel.py` | `DATA_MODEL_VERSION`, the `pubmed2db_metadata` table, the version check on open, and the shape/doc generators. |
 | `src/pubmed2db/download.py` | Fetches baseline/update files; adds `.md5` sidecar tracking. |
 | `src/pubmed2db/parse.py` | Self-driven XML iteration over each file. |
-| `src/pubmed2db/load.py` | Loads parsed files (full history, provenance-tagged), delete logic, journal dimension. |
+| `src/pubmed2db/load.py` | Builds each file's rows (`build_batches`, the one row definition), inserts them in-process or from shards (full history, provenance-tagged), delete logic, journal dimension. |
+| `src/pubmed2db/stage.py` | Parallel parse to per-file Parquet shards with a manifest; what makes a shard fresh. |
 | `src/pubmed2db/export.py` | JSON (one DuckDB `COPY`, gzipped by default) + Parquet export. |
 | `src/pubmed2db/validate.py` | Post-export checks over a directory of NDJSON shards; emits a gated JSON report. |
 | `src/pubmed2db/status.py` | Pipeline-readiness checks derived from DB state. |
 | `src/pubmed2db/util.py` | Shared helpers for the long steps: progress/ETA, durations, peak RSS. |
-| `src/pubmed2db/cli.py` | `download`, `journals`, `load`, `export`, `update`, `status`, `validate`. |
+| `src/pubmed2db/cli.py` | `download`, `journals`, `stage`, `load`, `export`, `update`, `status`, `validate`. |
 | `slurm/` | One `sbatch` script per pipeline step, `config.sh`, and `submit.sh`. See [`slurm/README.md`](./slurm/README.md). |
 | `docs/` | Longer write-ups, named in CamelCase (`JournalCatalog.md`). `data-model/` is the exception: the data model's contract (`README.md`), its `Changelog.md` and its generated `Reference.md`. |
 
@@ -143,6 +144,42 @@ explains its part; this table is only a map.
     response read as "retired". On a clean rebuild it is capped at
     `_DROP_CONFIRM_LIMIT`, and a run over the cap fails, so the cap has to sit
     well above a year's deletions or the chain never recovers.
+- **The parse is a separate, parallel step; the insert is not what was slow.**
+  DuckDB has a single writer, and the serial load of the 2026 corpus took a
+  day (21h 29m, 30 s/file rising to ~65 s). Issue #68 named the per-file
+  `DELETE ... WHERE source_file = ?` scan as the suspect; measured on a
+  read-only copy of that database it is pruned by zone maps (a file's rows
+  are contiguous): under 0.15 s on every table, 379M rows included. Then
+  `scripts/benchmark_load.py --synthetic` grew a database to 26 GB on a
+  laptop and DuckDB's whole per-file cost (delete, insert, commit) stayed
+  under a second, so the cluster's figures are its environment, which the
+  per-phase seconds now on every `loaded` line will name. Hence `stage`:
+  `pubmed2db stage --workers N` parses in a spawn-context pool with no
+  database open (spawn, not fork: pyarrow's thread pools do not survive a
+  fork) and writes per-file Parquet shards; `load` inserts them 50 files per
+  transaction from `read_parquet`. Things that are easy to get wrong:
+  - **`load.build_batches` is the one row definition**, and the two sinks
+    differ only in `_insert_from`'s `FROM` clause. The batches are typed from
+    `schema.sql` (`table_schemas`, read off an in-memory database), never
+    inferred: a column NULL throughout one file would otherwise come out as
+    Arrow `null`, and a thousand shards could not be read in one
+    `read_parquet`. `test_stage_then_load_matches_a_direct_load` holds the
+    two sinks to the same rows.
+  - **A shard is fresh only if the XML on disk (size and mtime) and the
+    `code_version` match its manifest.** Without the code check, `load
+    --force` after a parsing fix would quietly reuse shards cut by the old
+    parse; with it, `stage --force` is the way to apply the fix. A `-dirty`
+    checkout between `stage` and `load` stales every shard, loudly.
+  - **Groups of files per transaction, not one per table and not one for
+    the corpus.** Per table breaks "no child row without its article
+    version"; one for everything loses hours to one bad shard. A failed
+    group is retried file by file, and a shard that fails alone is renamed
+    `.bad` so the next `load` parses its XML. Shards are deleted *after*
+    their COMMIT, so a crash between the two can only leave a shard whose
+    rows are already in.
+  - **`update` stages too**, so a daily run and a rebuild go through the
+    same path; `load --no-stage` is the pre-v1.3 serial behaviour, kept for
+    tests and one-off runs.
 - **Reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
   as-is, no upstream changes.** We take its file listings, its cache layout and
   its `Article` data model, but not its transfers (see below) or its
@@ -439,7 +476,7 @@ explains its part; this table is only a map.
   the cluster — both are pinned by tests in `tests/test_slurm_scripts.py`.
 - **Compare manifest paths by base name, never as strings.** `MANIFEST_DIR` is
   environment-overridable, so `data/manifests/` and `data/manifests` both reach
-  `05-validate.sbatch`; the second spelling makes `$manifest` and `find`'s
+  `06-validate.sbatch`; the second spelling makes `$manifest` and `find`'s
   output the same file but never string-equal, which silently let a same-day
   re-run pick today's manifest as its own baseline and report zero drops. The
   matching rule on the Python side is that a **`fail`** run writes no manifest
