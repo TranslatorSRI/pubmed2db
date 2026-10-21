@@ -32,7 +32,6 @@ sections skipped otherwise.
 from __future__ import annotations
 
 import difflib
-from collections import Counter
 import gzip
 import hashlib
 import io
@@ -41,6 +40,7 @@ import logging
 import random
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -51,15 +51,15 @@ import requests
 from lxml import etree
 
 from .export import (
+    _MONTH_ABBR,
     ID_PREFIXES,
     JSON_FIELDS,
-    METADATA_FILE,
     MESH_PREFIX,
-    _MONTH_ABBR,
+    METADATA_FILE,
+    _year_from_medline_date,
     file_sha256,
     normalize_day,
     normalize_month,
-    _year_from_medline_date,
     pub_date,
     pub_month,
 )
@@ -82,8 +82,8 @@ EXPECTED_FIELDS = frozenset(JSON_FIELDS)
 #: Fields compared strictly against Entrez; a high mismatch rate here is an error.
 #: (``article_title`` is compared through :func:`_normalize_title`, which folds
 #: efetch's rendering of the title, not its wording.)
-CORE_FIELDS = ("article_title", "volume", "issue",
-               "pub_year", "pub_month", "pub_day")
+CORE_FIELDS = ("article_title", "volume", "issue", "pub_year", "pub_month", "pub_day")
+
 
 class _SoftGroup(NamedTuple):
     """Soft fields that share a reason for being soft; see :data:`_SOFT_GROUPS`."""
@@ -132,20 +132,26 @@ class _SoftGroup(NamedTuple):
 #: group.
 _SOFT_GROUPS: tuple[_SoftGroup, ...] = (
     _SoftGroup(
-        "journal dimension, not the article XML", ("journal_name", "journal_abbrev"),
-        "journal-soft", "journal name/abbrev match Entrez (advisory)",
+        "journal dimension, not the article XML",
+        ("journal_name", "journal_abbrev"),
+        "journal-soft",
+        "journal name/abbrev match Entrez (advisory)",
         "journal_mismatches",
         "Sampled journal name/abbrev differs from Entrez (different source).",
     ),
     _SoftGroup(
-        "derived from pub_year/pub_month/pub_day, already compared", ("pub_date",),
-        "pub-date-soft", "pub_date matches Entrez (advisory)",
+        "derived from pub_year/pub_month/pub_day, already compared",
+        ("pub_date",),
+        "pub-date-soft",
+        "pub_date matches Entrez (advisory)",
         "pub_date_mismatches",
         "Sampled pub_date differs from Entrez's rendering of the same record.",
     ),
     _SoftGroup(
-        "indexing revises types after our last update file", ("publication_types",),
-        "publication-types-soft", "publication types match Entrez (advisory)",
+        "indexing revises types after our last update file",
+        ("publication_types",),
+        "publication-types-soft",
+        "publication types match Entrez (advisory)",
         "publication_type_mismatches",
         "Sampled publication types differ from Entrez "
         "(may have been revised by indexing since our last update).",
@@ -259,16 +265,23 @@ class Check:
 
     def as_finding(self) -> dict:
         return {
-            "code": self.code, "message": self.message,
-            "count": self.count, "see": self.see,
+            "code": self.code,
+            "message": self.message,
+            "count": self.count,
+            "see": self.see,
         }
 
     def as_dict(self) -> dict:
         return {
-            "name": self.name, "section": self.section,
-            "expectation": self.expectation, "status": self.status,
-            "observed": self.observed, "code": self.code,
-            "count": self.count, "see": self.see, "detail": self.detail,
+            "name": self.name,
+            "section": self.section,
+            "expectation": self.expectation,
+            "status": self.status,
+            "observed": self.observed,
+            "code": self.code,
+            "count": self.count,
+            "see": self.see,
+            "detail": self.detail,
         }
 
 
@@ -301,8 +314,15 @@ class Report:
     ) -> None:
         self.checks_run.append(
             Check(
-                name=name, section=section, expectation=expectation, status=status,
-                observed=observed, code=code, message=message, count=count, see=see,
+                name=name,
+                section=section,
+                expectation=expectation,
+                status=status,
+                observed=observed,
+                code=code,
+                message=message,
+                count=count,
+                see=see,
                 detail=detail or {},
             )
         )
@@ -320,11 +340,7 @@ class Report:
 
     @property
     def skipped_checks(self) -> list[str]:
-        return [
-            f"{c.section}.{c.name} ({c.observed})"
-            for c in self.checks_run
-            if c.status == SKIP
-        ]
+        return [f"{c.section}.{c.name} ({c.observed})" for c in self.checks_run if c.status == SKIP]
 
     @property
     def status(self) -> str:
@@ -369,13 +385,14 @@ class _Examples:
 
 def find_shards(export_dir: Path) -> list[Path]:
     """Return the exported NDJSON shards in a directory, sorted by name."""
-    return sorted(
-        p for p in export_dir.iterdir() if p.name.endswith((".ndjson", ".ndjson.gz"))
-    )
+    return sorted(p for p in export_dir.iterdir() if p.name.endswith((".ndjson", ".ndjson.gz")))
 
 
 def check_export_metadata(
-    export_dir: Path, shards: list[Path], records_total: int, report: Report,
+    export_dir: Path,
+    shards: list[Path],
+    records_total: int,
+    report: Report,
     sha256: dict[str, str] | None = None,
 ) -> dict | None:
     """Hold the directory to the ``metadata.json`` its export wrote; return that metadata.
@@ -394,7 +411,10 @@ def check_export_metadata(
     path = export_dir / METADATA_FILE
     if not path.is_file():
         report.record(
-            "export-metadata", "structure", f"{METADATA_FILE} matches the shards", SKIP,
+            "export-metadata",
+            "structure",
+            f"{METADATA_FILE} matches the shards",
+            SKIP,
             f"no {METADATA_FILE} (an export from before data model 1.0)",
         )
         return None
@@ -407,9 +427,15 @@ def check_export_metadata(
             raise TypeError(f"records is {expected_records!r}, not an integer")
     except (OSError, ValueError, KeyError, TypeError) as exc:
         report.record(
-            "export-metadata", "structure", f"{METADATA_FILE} matches the shards", FAIL,
-            f"unreadable: {exc}", code="export_metadata_unreadable",
-            message=f"{METADATA_FILE} could not be read.", count=1, see="inputs",
+            "export-metadata",
+            "structure",
+            f"{METADATA_FILE} matches the shards",
+            FAIL,
+            f"unreadable: {exc}",
+            code="export_metadata_unreadable",
+            message=f"{METADATA_FILE} could not be read.",
+            count=1,
+            see="inputs",
         )
         return None
 
@@ -427,12 +453,16 @@ def check_export_metadata(
     if records_total != expected_records:
         problems.append(f"{records_total:,} record(s) read, {expected_records:,} exported")
     report.record(
-        "export-metadata", "structure", f"{METADATA_FILE} matches the shards",
+        "export-metadata",
+        "structure",
+        f"{METADATA_FILE} matches the shards",
         FAIL if problems else PASS,
-        "; ".join(problems) or f"{len(listed)} file(s) and {expected_records:,} record(s) as listed",
+        "; ".join(problems)
+        or f"{len(listed)} file(s) and {expected_records:,} record(s) as listed",
         code="export_metadata_mismatch",
         message=f"The shards differ from what {METADATA_FILE} says the export wrote.",
-        count=len(problems), see="checks_run",
+        count=len(problems),
+        see="checks_run",
         detail={"problems": _capped(problems)},
     )
     return metadata
@@ -478,7 +508,8 @@ def _valid_publication_types(types: object) -> bool:
     return isinstance(types, list) and all(
         isinstance(t, dict)
         and set(t) == {"id", "name"}
-        and isinstance(t["id"], str) and _PUBLICATION_TYPE_ID_RE.match(t["id"])
+        and isinstance(t["id"], str)
+        and _PUBLICATION_TYPE_ID_RE.match(t["id"])
         and isinstance(t["name"], str)
         for t in types
     )
@@ -491,8 +522,7 @@ def _type_ids(record: dict) -> list:
 
 def _has_unnamed_type(record: dict) -> bool:
     return any(
-        isinstance(t, dict) and not t.get("name")
-        for t in record.get("publication_types") or []
+        isinstance(t, dict) and not t.get("name") for t in record.get("publication_types") or []
     )
 
 
@@ -547,8 +577,10 @@ def _normalize_date(value: str) -> str:
     """
     parts = _normalize(value).split(" ")
     return " ".join(
-        [parts[0]] if len(parts) == 1
-        else [parts[0], normalize_month(parts[1])] if len(parts) == 2
+        [parts[0]]
+        if len(parts) == 1
+        else [parts[0], normalize_month(parts[1])]
+        if len(parts) == 2
         else [parts[0], normalize_month(parts[1]), normalize_day(parts[2])] + parts[3:]
     )
 
@@ -723,7 +755,8 @@ def check_structure(
                 hashing = _HashingReader(raw)
                 buffered = io.BufferedReader(hashing)
                 with (
-                    gzip.open(buffered, "rt", encoding="utf-8") if path.name.endswith(".gz")
+                    gzip.open(buffered, "rt", encoding="utf-8")
+                    if path.name.endswith(".gz")
                     else io.TextIOWrapper(buffered, encoding="utf-8")
                 ) as handle:
                     for lineno, line in enumerate(handle, start=1):
@@ -750,7 +783,9 @@ def check_structure(
                             extra_fields[extra] = extra_fields.get(extra, 0) + 1
                         for key, value in doc.items():
                             if value is None:
-                                null_values.append({"shard": path.name, "line": lineno, "field": key})
+                                null_values.append(
+                                    {"shard": path.name, "line": lineno, "field": key}
+                                )
 
                         match = _ID_RE.match(str(doc.get("id", "")))
                         if match is None:
@@ -773,10 +808,13 @@ def check_structure(
                         types = doc.get("publication_types")
                         if types is not None:
                             if not _valid_publication_types(types):
-                                invalid_types.append({
-                                    "shard": path.name, "line": lineno,
-                                    "publication_types": _clip(json.dumps(types), 200),
-                                })
+                                invalid_types.append(
+                                    {
+                                        "shard": path.name,
+                                        "line": lineno,
+                                        "publication_types": _clip(json.dumps(types), 200),
+                                    }
+                                )
                             elif any(t["name"] == "" for t in types):
                                 unnamed_types.append(
                                     {"shard": path.name, "line": lineno, "id": doc.get("id")}
@@ -784,7 +822,11 @@ def check_structure(
 
                         if doc.get("pub_month") not in _VALID_MONTHS:
                             invalid_months.append(
-                                {"shard": path.name, "line": lineno, "pub_month": doc.get("pub_month")}
+                                {
+                                    "shard": path.name,
+                                    "line": lineno,
+                                    "pub_month": doc.get("pub_month"),
+                                }
                             )
 
                         # Reservoir sampling (Algorithm R), keyed by valid PMID.
@@ -814,8 +856,11 @@ def check_structure(
                             logger.info(
                                 "progress: %s record(s), shard %d/%d, %.1f%% of %.1f GiB "
                                 "read · elapsed %s · RSS %s · ~%s remaining",
-                                f"{result.records_total:,}", shard_index + 1, len(shards),
-                                100 * read / total_bytes, total_bytes / 1024**3,
+                                f"{result.records_total:,}",
+                                shard_index + 1,
+                                len(shards),
+                                100 * read / total_bytes,
+                                total_bytes / 1024**3,
                                 fmt_duration(elapsed),
                                 "n/a" if current is None else f"{current:.1f} GiB",
                                 eta_str(elapsed, read, total_bytes - read),
@@ -850,7 +895,8 @@ def check_structure(
             prefix: {
                 "records": with_prefix[prefix],
                 "pct": round(100 * with_prefix[prefix] / result.records_total, 2)
-                if result.records_total else 0.0,
+                if result.records_total
+                else 0.0,
             }
             for prefix in ID_PREFIXES.values()
         },
@@ -858,58 +904,134 @@ def check_structure(
     report.checks["structure"] = result_dict
 
     report.record(
-        "records-present", "structure", "the export contains at least one record",
+        "records-present",
+        "structure",
+        "the export contains at least one record",
         FAIL if result.records_total == 0 else PASS,
         f"{result.records_total:,} record(s)",
-        code="no_records", message="No records found in the export directory.",
-        count=0, see="checks.structure",
+        code="no_records",
+        message="No records found in the export directory.",
+        count=0,
+        see="checks.structure",
     )
 
     #: (name, expectation, noun, findings, key in result_dict, code, message, severity)
     rows = (
-        ("shard-readable", "every shard can be read to its end",
-         "unreadable shard(s)", unreadable, "unreadable_shards", "unreadable_shard",
-         "Shards that could not be read (truncated or corrupt).", FAIL),
-        ("json-parse", "every line parses as JSON", "malformed line(s)",
-         malformed, "malformed", "malformed_json",
-         "Lines that could not be parsed as JSON.", FAIL),
-        ("record-fields", "every record has all the required fields",
-         "record(s) missing a field", missing_fields, "missing_fields", "missing_fields",
-         "Records missing one or more required fields.", FAIL),
-        ("no-nulls", 'absent values are "" and never null', "null field value(s)",
-         null_values, "null_values", "null_values",
-         "Fields with a null value (export should use empty strings).", FAIL),
-        ("id-format", "every id looks like PMID:<digits>", "invalid id(s)",
-         invalid_ids, "invalid_ids", "invalid_ids",
-         "Records whose id is not of the form PMID:<digits>.", FAIL),
-        ("pmid-unique", "no PMID is exported twice", "duplicated PMID(s)",
-         duplicates, "duplicate_pmids", "duplicate_pmids",
-         "PMIDs appearing in more than one record.", FAIL),
-        ("publication-types", "publication_types is a list of {id: MESH:D…, name}",
-         "invalid publication_types", invalid_types, "invalid_publication_types",
-         "invalid_publication_types",
-         "Records whose publication_types is not a list of {id, name} with a MESH: id.",
-         FAIL),
-        ("no-extra-fields", "no record carries an unexpected field",
-         "record(s) with extra fields", extra_fields, "extra_fields", "extra_fields",
-         "Records carrying unexpected extra fields.", WARN),
-        ("month-format", 'pub_month is a month, season, range of those, or ""',
-         "invalid pub_month value(s)", invalid_months, "invalid_months", "invalid_months",
-         "Records whose pub_month is not a month/season, a range of two, or empty.", WARN),
-        ("publication-type-names", "every publication type has a name",
-         "record(s) with an unnamed type", unnamed_types, "unnamed_publication_types",
-         "publication_type_names_missing",
-         "Publication types exported without a name: the export came from a database "
-         "loaded before names were parsed, which predates data model 1.0 and no longer "
-         "opens. Rebuild the database, then export again.", WARN),
+        (
+            "shard-readable",
+            "every shard can be read to its end",
+            "unreadable shard(s)",
+            unreadable,
+            "unreadable_shards",
+            "unreadable_shard",
+            "Shards that could not be read (truncated or corrupt).",
+            FAIL,
+        ),
+        (
+            "json-parse",
+            "every line parses as JSON",
+            "malformed line(s)",
+            malformed,
+            "malformed",
+            "malformed_json",
+            "Lines that could not be parsed as JSON.",
+            FAIL,
+        ),
+        (
+            "record-fields",
+            "every record has all the required fields",
+            "record(s) missing a field",
+            missing_fields,
+            "missing_fields",
+            "missing_fields",
+            "Records missing one or more required fields.",
+            FAIL,
+        ),
+        (
+            "no-nulls",
+            'absent values are "" and never null',
+            "null field value(s)",
+            null_values,
+            "null_values",
+            "null_values",
+            "Fields with a null value (export should use empty strings).",
+            FAIL,
+        ),
+        (
+            "id-format",
+            "every id looks like PMID:<digits>",
+            "invalid id(s)",
+            invalid_ids,
+            "invalid_ids",
+            "invalid_ids",
+            "Records whose id is not of the form PMID:<digits>.",
+            FAIL,
+        ),
+        (
+            "pmid-unique",
+            "no PMID is exported twice",
+            "duplicated PMID(s)",
+            duplicates,
+            "duplicate_pmids",
+            "duplicate_pmids",
+            "PMIDs appearing in more than one record.",
+            FAIL,
+        ),
+        (
+            "publication-types",
+            "publication_types is a list of {id: MESH:D…, name}",
+            "invalid publication_types",
+            invalid_types,
+            "invalid_publication_types",
+            "invalid_publication_types",
+            "Records whose publication_types is not a list of {id, name} with a MESH: id.",
+            FAIL,
+        ),
+        (
+            "no-extra-fields",
+            "no record carries an unexpected field",
+            "record(s) with extra fields",
+            extra_fields,
+            "extra_fields",
+            "extra_fields",
+            "Records carrying unexpected extra fields.",
+            WARN,
+        ),
+        (
+            "month-format",
+            'pub_month is a month, season, range of those, or ""',
+            "invalid pub_month value(s)",
+            invalid_months,
+            "invalid_months",
+            "invalid_months",
+            "Records whose pub_month is not a month/season, a range of two, or empty.",
+            WARN,
+        ),
+        (
+            "publication-type-names",
+            "every publication type has a name",
+            "record(s) with an unnamed type",
+            unnamed_types,
+            "unnamed_publication_types",
+            "publication_type_names_missing",
+            "Publication types exported without a name: the export came from a database "
+            "loaded before names were parsed, which predates data model 1.0 and no longer "
+            "opens. Rebuild the database, then export again.",
+            WARN,
+        ),
     )
     for name, expectation, noun, findings, key, code, message, severity in rows:
         # dict findings (field -> n) count occurrences; _Examples counts its own.
         count = sum(findings.values()) if isinstance(findings, dict) else len(findings)
         report.record(
-            name, "structure", expectation,
-            severity if findings else PASS, f"{count:,} {noun}",
-            code=code, message=message, count=count,
+            name,
+            "structure",
+            expectation,
+            severity if findings else PASS,
+            f"{count:,} {noun}",
+            code=code,
+            message=message,
+            count=count,
             see=f"checks.structure.{key}",
         )
     return result
@@ -990,8 +1112,10 @@ def _eutils(
 def entrez_total(*, api_key: str | None, email: str | None) -> int:
     """Total number of records in PubMed, via einfo."""
     raw = _eutils(
-        "einfo.fcgi", {"db": "pubmed", "retmode": "json", "version": "2.0"},
-        api_key=api_key, email=email,
+        "einfo.fcgi",
+        {"db": "pubmed", "retmode": "json", "version": "2.0"},
+        api_key=api_key,
+        email=email,
     )
     dbinfo = json.loads(raw)["einforesult"]["dbinfo"]
     if isinstance(dbinfo, list):  # version 2.0 wraps dbinfo in a list
@@ -1044,7 +1168,8 @@ def efetch_documents(
         raw = _eutils(
             "efetch.fcgi",
             {"db": "pubmed", "id": ",".join(str(p) for p in batch), "retmode": "xml"},
-            api_key=api_key, email=email,
+            api_key=api_key,
+            email=email,
         )
         root = etree.fromstring(raw, parser=_XML_PARSER)
         if root is None:
@@ -1088,8 +1213,7 @@ def efetch_documents(
                 # through the exporter's own function or every approximate-date
                 # record reads as a mismatch.
                 "pub_month": pub_month(
-                    (pub.findtext("Month") or pub.findtext("Season"))
-                    if pub is not None else None,
+                    (pub.findtext("Month") or pub.findtext("Season")) if pub is not None else None,
                     _text(pub, "MedlineDate") if pub is not None else None,
                 ),
                 "pub_day": _text(pub, "Day") if pub is not None else "",
@@ -1102,7 +1226,9 @@ def efetch_documents(
                     (pub.findtext("Month") or pub.findtext("Season")),
                     _text(pub, "Day"),
                     _text(pub, "MedlineDate"),
-                ) if pub is not None else "",
+                )
+                if pub is not None
+                else "",
                 # The loader's own parser, so both sides read the same exact
                 # path and keep PubMed's order.
                 "publication_types": [
@@ -1132,7 +1258,8 @@ def pmids_served(pmids: list[int], *, api_key: str | None, email: str | None) ->
         raw = _eutils(
             "esummary.fcgi",
             {"db": "pubmed", "id": ",".join(str(p) for p in batch), "retmode": "json"},
-            api_key=api_key, email=email,
+            api_key=api_key,
+            email=email,
         )
         try:
             result = json.loads(raw)["result"]
@@ -1142,8 +1269,7 @@ def pmids_served(pmids: list[int], *, api_key: str | None, email: str | None) ->
         unanswered = set(batch) - entries.keys()
         if unanswered:
             raise RuntimeError(
-                f"esummary did not answer for {len(unanswered)} PMID(s), "
-                f"e.g. {min(unanswered)}"
+                f"esummary did not answer for {len(unanswered)} PMID(s), e.g. {min(unanswered)}"
             )
         served.update(p for p in batch if "error" not in entries[p])
     return served
@@ -1211,25 +1337,33 @@ def check_coverage(
             coverage["pct_of_entrez"] = pct
             out_of_band = pct is not None and not (entrez_low <= pct <= entrez_high)
             report.record(
-                "vs-entrez", "coverage", band,
+                "vs-entrez",
+                "coverage",
+                band,
                 WARN if out_of_band else PASS,
-                f"{exported_count:,} of {total:,}"
-                + (f" ({pct:.3%})" if pct is not None else ""),
+                f"{exported_count:,} of {total:,}" + (f" ({pct:.3%})" if pct is not None else ""),
                 code="coverage_out_of_band",
                 message=(
                     f"Exported {pct:.3%} of PubMed, outside the expected "
                     f"[{entrez_low:.2%}, {entrez_high:.2%}] band."
-                    if pct is not None else ""
+                    if pct is not None
+                    else ""
                 ),
-                count=1, see="checks.coverage",
+                count=1,
+                see="checks.coverage",
             )
         except Exception as exc:  # network/parse failure degrades to a warning
             logger.warning("could not fetch Entrez total: %s", exc)
             report.record(
-                "vs-entrez", "coverage", band, WARN, f"Entrez unreachable: {exc}",
+                "vs-entrez",
+                "coverage",
+                band,
+                WARN,
+                f"Entrez unreachable: {exc}",
                 code="entrez_unreachable",
                 message=f"Could not fetch the Entrez total: {exc}",
-                count=1, see="checks.coverage",
+                count=1,
+                see="checks.coverage",
             )
     else:
         report.record("vs-entrez", "coverage", band, SKIP, "offline")
@@ -1241,35 +1375,44 @@ def check_coverage(
         coverage["pct_of_db"] = exported_count / db_latest if db_latest else None
         observed = f"{exported_count:,} of {db_latest:,}"
         if not db_latest:
-            report.record("vs-database", "coverage", expect_db, NA,
-                          "the database holds no current articles")
+            report.record(
+                "vs-database", "coverage", expect_db, NA, "the database holds no current articles"
+            )
         else:
             shortfall = (db_latest - exported_count) / db_latest
             if shortfall > _DB_SHORTFALL_RATE:
                 report.record(
-                    "vs-database", "coverage", expect_db, FAIL,
+                    "vs-database",
+                    "coverage",
+                    expect_db,
+                    FAIL,
                     f"{observed} ({shortfall:.2%} short)",
                     code="export_shortfall",
                     message=(
                         f"Export has {exported_count} records vs. {db_latest} in the "
                         f"database ({shortfall:.2%} short) — rows were dropped."
                     ),
-                    count=db_latest - exported_count, see="checks.coverage",
+                    count=db_latest - exported_count,
+                    see="checks.coverage",
                 )
             elif exported_count != db_latest:
                 report.record(
-                    "vs-database", "coverage", expect_db, WARN,
+                    "vs-database",
+                    "coverage",
+                    expect_db,
+                    WARN,
                     f"{observed} (differs by {abs(db_latest - exported_count):,})",
                     code="export_db_mismatch",
                     message=(
-                        f"Export has {exported_count} records vs. {db_latest} in the "
-                        "database."
+                        f"Export has {exported_count} records vs. {db_latest} in the database."
                     ),
-                    count=abs(db_latest - exported_count), see="checks.coverage",
+                    count=abs(db_latest - exported_count),
+                    see="checks.coverage",
                 )
             else:
-                report.record("vs-database", "coverage", expect_db, PASS,
-                              f"exact match ({exported_count:,})")
+                report.record(
+                    "vs-database", "coverage", expect_db, PASS, f"exact match ({exported_count:,})"
+                )
     else:
         report.record("vs-database", "coverage", expect_db, SKIP, "no database available")
 
@@ -1283,23 +1426,30 @@ def check_coverage(
         prev_pct = prev_cov.get("pct_of_entrez")
         cur_pct = coverage["pct_of_entrez"]
         if not (prev_pct and cur_pct):
-            report.record("vs-previous", "coverage", expect_prev, NA,
-                          "no comparable coverage figure in the previous report")
+            report.record(
+                "vs-previous",
+                "coverage",
+                expect_prev,
+                NA,
+                "no comparable coverage figure in the previous report",
+            )
         else:
             drifted = abs(cur_pct - prev_pct) / prev_pct > _DRIFT_REL
             report.record(
-                "vs-previous", "coverage", expect_prev, WARN if drifted else PASS,
+                "vs-previous",
+                "coverage",
+                expect_prev,
+                WARN if drifted else PASS,
                 f"{prev_pct:.3%} then, {cur_pct:.3%} now",
                 code="coverage_drift",
                 message=(
-                    f"Coverage moved from {prev_pct:.3%} to {cur_pct:.3%} vs. the "
-                    "previous report."
+                    f"Coverage moved from {prev_pct:.3%} to {cur_pct:.3%} vs. the previous report."
                 ),
-                count=1, see="checks.coverage.previous",
+                count=1,
+                see="checks.coverage.previous",
             )
     else:
-        report.record("vs-previous", "coverage", expect_prev, SKIP,
-                      "no --previous-report")
+        report.record("vs-previous", "coverage", expect_prev, SKIP, "no --previous-report")
 
     report.checks["coverage"] = coverage
 
@@ -1391,11 +1541,15 @@ def check_fields(
         logger.warning("could not fetch the sampled records: %s", exc)
         for name, expectation in expectations.items():
             report.record(
-                name, "field accuracy", expectation, WARN,
+                name,
+                "field accuracy",
+                expectation,
+                WARN,
                 f"Entrez unreachable: {exc}",
                 code="field_check_unreachable",
                 message=f"Could not fetch the sampled records: {exc}",
-                count=len(pmids), see="checks.field_validation",
+                count=len(pmids),
+                see="checks.field_validation",
             )
         report.checks["field_validation"] = {"sampled": len(pmids), "checked": 0}
         return
@@ -1446,11 +1600,14 @@ def check_fields(
         # difference in the data. The prefixes cannot drift — both sides build
         # them from ID_PREFIXES — so folding them too costs nothing.
         if _curie_set(exported.get("identifiers")) != _curie_set(entrez.get("identifiers")):
-            identifier_mismatches.append({
-                "pmid": pmid, "field": "identifiers",
-                "exported": exported.get("identifiers"),
-                "entrez": entrez.get("identifiers"),
-            })
+            identifier_mismatches.append(
+                {
+                    "pmid": pmid,
+                    "field": "identifiers",
+                    "exported": exported.get("identifiers"),
+                    "entrez": entrez.get("identifiers"),
+                }
+            )
 
         exp_abs = _normalize(str(exported.get("abstract", "")))
         ent_abs = entrez.get("abstract", "")
@@ -1470,16 +1627,25 @@ def check_fields(
                     # do, so `_mismatch_kind` reads it as exported_blank /
                     # entrez_blank rather than "possible truncation". (PMID
                     # 4825553: no <Abstract> in the baseline XML, efetch has one.)
-                    mismatches.append({
-                        "pmid": pmid, "field": "abstract",
-                        "exported": exported.get("abstract"), "entrez": ent_abs,
-                    })
+                    mismatches.append(
+                        {
+                            "pmid": pmid,
+                            "field": "abstract",
+                            "exported": exported.get("abstract"),
+                            "entrez": ent_abs,
+                        }
+                    )
 
         for group in _SOFT_GROUPS:
             for f in group.fields:
                 if _soft_differs(f, exported, entrez):
                     soft_mismatches[group.code].append(
-                        {"pmid": pmid, "field": f, "exported": exported.get(f), "entrez": entrez.get(f)}
+                        {
+                            "pmid": pmid,
+                            "field": f,
+                            "exported": exported.get(f),
+                            "entrez": entrez.get(f),
+                        }
                     )
 
     rate = core_mismatch / core_comparisons if core_comparisons else 0.0
@@ -1505,42 +1671,61 @@ def check_fields(
     }
 
     report.record(
-        "sample-fetched", "field accuracy", expectations["sample-fetched"],
+        "sample-fetched",
+        "field accuracy",
+        expectations["sample-fetched"],
         FAIL if missing_from_api else PASS,
         f"{checked:,} of {len(pmids):,} sampled record(s) returned",
         code="sampled_pmid_absent",
         message="Sampled PMIDs present in the export but not returned by PubMed.",
-        count=len(missing_from_api), see="checks.field_validation.missing_from_api",
+        count=len(missing_from_api),
+        see="checks.field_validation.missing_from_api",
     )
 
     observed = f"{core_mismatch:,} of {core_comparisons:,} comparison(s) differ ({rate:.2%})"
     if rate > _FIELD_MISMATCH_RATE:
         report.record(
-            "core-fields", "field accuracy", expectations["core-fields"], FAIL, observed,
+            "core-fields",
+            "field accuracy",
+            expectations["core-fields"],
+            FAIL,
+            observed,
             code="field_mismatch_rate",
             message=f"{rate:.1%} of sampled core-field comparisons disagreed with Entrez.",
-            count=core_mismatch, see="checks.field_validation.mismatches",
+            count=core_mismatch,
+            see="checks.field_validation.mismatches",
             detail=grouped,
         )
     else:
         report.record(
-            "core-fields", "field accuracy", expectations["core-fields"],
-            WARN if core_mismatch else PASS, observed,
+            "core-fields",
+            "field accuracy",
+            expectations["core-fields"],
+            WARN if core_mismatch else PASS,
+            observed,
             code="field_mismatches" if core_mismatch else None,
             message="Some sampled records disagreed with Entrez.",
-            count=core_mismatch, see="checks.field_validation.mismatches",
+            count=core_mismatch,
+            see="checks.field_validation.mismatches",
             detail=grouped,
         )
 
     # No code: a low-similarity abstract is already counted in `core-fields`
     # above, so reporting it again would double-count the same finding.
     if min_similarity is None:
-        report.record("abstract", "field accuracy", expectations["abstract"], NA,
-                      "no sampled record had an abstract on either side")
+        report.record(
+            "abstract",
+            "field accuracy",
+            expectations["abstract"],
+            NA,
+            "no sampled record had an abstract on either side",
+        )
     else:
         mean = sum(similarities) / len(similarities)
         report.record(
-            "abstract", "field accuracy", expectations["abstract"],
+            "abstract",
+            "field accuracy",
+            expectations["abstract"],
             PASS if min_similarity >= abstract_threshold else WARN,
             f"min {min_similarity:.3f}, mean {mean:.3f} over {len(similarities):,} record(s)",
         )
@@ -1548,15 +1733,21 @@ def check_fields(
     for group in _SOFT_GROUPS:
         differing = {m["pmid"] for m in soft_mismatches[group.code]}
         report.record(
-            group.check, "field accuracy", expectations[group.check],
+            group.check,
+            "field accuracy",
+            expectations[group.check],
             WARN if differing else PASS,
             f"{len(differing):,} of {checked:,} record(s) differ",
-            code=group.code, message=group.message,
-            count=len(differing), see=f"checks.field_validation.{group.code}",
+            code=group.code,
+            message=group.message,
+            count=len(differing),
+            see=f"checks.field_validation.{group.code}",
         )
 
     report.record(
-        "identifiers-soft", "field accuracy", expectations["identifiers-soft"],
+        "identifiers-soft",
+        "field accuracy",
+        expectations["identifiers-soft"],
         WARN if identifier_mismatches else PASS,
         f"{len(identifier_mismatches):,} of {checked:,} record(s) differ",
         code="identifier_mismatches",
@@ -1593,10 +1784,8 @@ def check_deletions(
     expect_absent = "DB-deleted PMIDs are absent from the export"
     expect_gone = "PubMed no longer serves those PMIDs either"
     if con is None:
-        report.record("deleted-absent", "deletions", expect_absent, SKIP,
-                      "no database available")
-        report.record("deleted-gone", "deletions", expect_gone, SKIP,
-                      "no database available")
+        report.record("deleted-absent", "deletions", expect_absent, SKIP, "no database available")
+        report.record("deleted-gone", "deletions", expect_gone, SKIP, "no database available")
         report.checks["deletions"] = {"source": None}
         return
 
@@ -1614,10 +1803,14 @@ def check_deletions(
     if not pool:
         # Nothing to evidence rather than evidence withheld: the database simply
         # records no deletion that a later version did not reinstate.
-        for name, expectation in (("deleted-absent", expect_absent),
-                                  ("deleted-gone", expect_gone)):
-            report.record(name, "deletions", expectation, NA,
-                          "the database records no un-reinstated deletions")
+        for name, expectation in (("deleted-absent", expect_absent), ("deleted-gone", expect_gone)):
+            report.record(
+                name,
+                "deletions",
+                expectation,
+                NA,
+                "the database records no un-reinstated deletions",
+            )
         report.checks["deletions"] = {"source": "database", "candidates_checked": 0}
         return
     source = "database"
@@ -1634,7 +1827,9 @@ def check_deletions(
             for pmid in candidates:
                 (still_live if pmid in fetched else confirmed_deleted).append(pmid)
             report.record(
-                "deleted-gone", "deletions", expect_gone,
+                "deleted-gone",
+                "deletions",
+                expect_gone,
                 WARN if still_live else PASS,
                 f"{len(confirmed_deleted):,} of {len(candidates):,} confirmed gone",
                 code="deleted_pmid_still_live",
@@ -1642,17 +1837,22 @@ def check_deletions(
                     "PMIDs marked dropped are still served by PubMed (possible "
                     "merge) — review manually."
                 ),
-                count=len(still_live), see="checks.deletions.still_live",
+                count=len(still_live),
+                see="checks.deletions.still_live",
             )
         except Exception as exc:
             logger.warning("could not confirm deletions via API: %s", exc)
             unknown = list(candidates)
             report.record(
-                "deleted-gone", "deletions", expect_gone, WARN,
+                "deleted-gone",
+                "deletions",
+                expect_gone,
+                WARN,
                 f"PubMed unreachable: {exc}",
                 code="deletion_check_unreachable",
                 message=f"Could not confirm dropped PMIDs via the API: {exc}",
-                count=len(candidates), see="checks.deletions",
+                count=len(candidates),
+                see="checks.deletions",
             )
     else:
         unknown = list(candidates)
@@ -1668,12 +1868,15 @@ def check_deletions(
     }
 
     report.record(
-        "deleted-absent", "deletions", expect_absent,
+        "deleted-absent",
+        "deletions",
+        expect_absent,
         FAIL if present_in_export else PASS,
         f"{len(present_in_export):,} of {len(candidates):,} sampled still in the export",
         code="deleted_pmid_exported",
         message="PMIDs the database marks deleted still appear in the export.",
-        count=len(present_in_export), see="checks.deletions.present_in_export",
+        count=len(present_in_export),
+        see="checks.deletions.present_in_export",
     )
 
 
@@ -1729,8 +1932,9 @@ def check_drops_since(
     """
     expectation = "no PMID vanished without a recorded deletion"
     if previous_manifest is None:
-        report.record("pmid-set-diff", "drops since previous", expectation, SKIP,
-                      "no --previous-manifest")
+        report.record(
+            "pmid-set-diff", "drops since previous", expectation, SKIP, "no --previous-manifest"
+        )
         return
 
     previous_pmids = read_manifest(previous_manifest)
@@ -1822,8 +2026,7 @@ def check_drops_since(
     )
     if gaps:
         why_missed = (
-            f"; the database never loaded {len(gaps):,} file(s) inside its range, "
-            f"e.g. {gaps[0]}"
+            f"; the database never loaded {len(gaps):,} file(s) inside its range, e.g. {gaps[0]}"
         )
     else:
         why_missed = "; the database predates the previous manifest"
@@ -1858,18 +2061,26 @@ def check_drops_since(
             ),
         }[confirmation]
         report.record(
-            "pmid-set-diff", "drops since previous", expectation, FAIL, observed + why,
+            "pmid-set-diff",
+            "drops since previous",
+            expectation,
+            FAIL,
+            observed + why,
             code="unexplained_drops",
             message=(
                 "PMIDs present in the previous export are missing from this one "
                 "without a recorded deletion" + next_step
             ),
-            count=len(unexplained), see="checks.drops_since_previous.unexplained",
+            count=len(unexplained),
+            see="checks.drops_since_previous.unexplained",
         )
         recorded = True
     if missed_deletions:
         report.record(
-            "pmid-set-diff", "drops since previous", expectation, FAIL,
+            "pmid-set-diff",
+            "drops since previous",
+            expectation,
+            FAIL,
             observed + why_missed,
             code="missed_deletions",
             message=(
@@ -1878,25 +2089,34 @@ def check_drops_since(
                 "load (checks.drops_since_previous.load_gaps names any it can see). "
                 "Check `status`."
             ),
-            count=len(missed_deletions), see="checks.drops_since_previous.retired_upstream",
+            count=len(missed_deletions),
+            see="checks.drops_since_previous.retired_upstream",
         )
         recorded = True
     if recorded:
         return
     if unexplained:
         report.record(
-            "pmid-set-diff", "drops since previous", expectation, WARN,
+            "pmid-set-diff",
+            "drops since previous",
+            expectation,
+            WARN,
             f"{observed}; no database to attribute them",
             code="drops_unattributed",
             message=(
                 "PMIDs present in the previous export are missing from this one; "
                 "no database was available to confirm they were deleted."
             ),
-            count=len(unexplained), see="checks.drops_since_previous.unexplained",
+            count=len(unexplained),
+            see="checks.drops_since_previous.unexplained",
         )
     elif retired_upstream:
         report.record(
-            "pmid-set-diff", "drops since previous", expectation, WARN, observed,
+            "pmid-set-diff",
+            "drops since previous",
+            expectation,
+            WARN,
+            observed,
             code="drops_retired_upstream",
             message=(
                 "PubMed no longer serves these PMIDs, and this database, created "
@@ -1904,7 +2124,8 @@ def check_drops_since(
                 "them: expected on the first run after a fresh-database rebuild "
                 "(the deletions were published before the new baseline)."
             ),
-            count=len(retired_upstream), see="checks.drops_since_previous.retired_upstream",
+            count=len(retired_upstream),
+            see="checks.drops_since_previous.retired_upstream",
         )
     else:
         report.record("pmid-set-diff", "drops since previous", expectation, PASS, observed)
@@ -1938,11 +2159,14 @@ def run_validation(
     # only that one was found; the report carries the same fact as `api_key_used`.
     logger.info(
         "starting validation: %d shard(s) in %s, %.1f GiB · database %s · %s",
-        len(shards), export_dir,
+        len(shards),
+        export_dir,
         sum(_shard_sizes(shards).values()) / 1024**3,
         "available" if con is not None else "not available",
-        "offline (no Entrez checks)" if not online
-        else "online with an NCBI API key (10 req/s)" if api_key
+        "offline (no Entrez checks)"
+        if not online
+        else "online with an NCBI API key (10 req/s)"
+        if api_key
         else "online without an NCBI API key (3 req/s; set NCBI_API_KEY for 10/s)",
     )
 
@@ -1951,10 +2175,15 @@ def run_validation(
         previous = json.loads(Path(previous_report).read_text())
 
     report.record(
-        "shards-found", "structure", "the export directory contains NDJSON shards",
-        FAIL if not shards else PASS, f"{len(shards)} shard(s)",
-        code="no_shards", message=f"No .ndjson shards found in {export_dir}.",
-        count=0, see="inputs",
+        "shards-found",
+        "structure",
+        "the export directory contains NDJSON shards",
+        FAIL if not shards else PASS,
+        f"{len(shards)} shard(s)",
+        code="no_shards",
+        message=f"No .ndjson shards found in {export_dir}.",
+        count=0,
+        see="inputs",
     )
 
     # The phase lines cost nothing and are what tells you *where* a run is stuck:
@@ -1964,7 +2193,8 @@ def run_validation(
     structure = check_structure(shards, report, sample_size=sample_size, seed=seed)
     logger.info(
         "read %s record(s) in %s (peak RSS %.1f GiB)",
-        f"{structure.records_total:,}", fmt_duration(time.monotonic() - start),
+        f"{structure.records_total:,}",
+        fmt_duration(time.monotonic() - start),
         peak_rss_gib(),
     )
 
@@ -1974,29 +2204,48 @@ def run_validation(
 
     logger.info("checking coverage...")
     check_coverage(
-        report, exported_count=structure.records_total, con=con, online=online,
-        api_key=api_key, email=email, previous=previous,
-        entrez_low=entrez_low, entrez_high=entrez_high,
+        report,
+        exported_count=structure.records_total,
+        con=con,
+        online=online,
+        api_key=api_key,
+        email=email,
+        previous=previous,
+        entrez_low=entrez_low,
+        entrez_high=entrez_high,
     )
     # `check_fields` returns immediately when offline, so announcing the
     # comparison unconditionally contradicts the start line two lines up.
     if online:
-        logger.info(
-            "comparing %d sampled record(s) against Entrez...", len(structure.sample)
-        )
+        logger.info("comparing %d sampled record(s) against Entrez...", len(structure.sample))
     check_fields(
-        report, structure.sample, online=online, api_key=api_key, email=email,
+        report,
+        structure.sample,
+        online=online,
+        api_key=api_key,
+        email=email,
         abstract_threshold=abstract_threshold,
     )
     logger.info("confirming deletions...")
     check_deletions(
-        report, all_pmids=structure.all_pmids, con=con,
-        online=online, api_key=api_key, email=email, drop_sample=drop_sample, seed=seed,
+        report,
+        all_pmids=structure.all_pmids,
+        con=con,
+        online=online,
+        api_key=api_key,
+        email=email,
+        drop_sample=drop_sample,
+        seed=seed,
     )
     check_drops_since(
-        report, all_pmids=structure.all_pmids,
-        previous_manifest=previous_manifest, con=con,
-        online=online, api_key=api_key, email=email, seed=seed,
+        report,
+        all_pmids=structure.all_pmids,
+        previous_manifest=previous_manifest,
+        con=con,
+        online=online,
+        api_key=api_key,
+        email=email,
+        seed=seed,
     )
 
     # A manifest is a *baseline*: the next run diffs its export against it and
@@ -2026,7 +2275,8 @@ def run_validation(
 
     logger.info(
         "validation finished in %s (peak RSS %.1f GiB)",
-        fmt_duration(time.monotonic() - start), peak_rss_gib(),
+        fmt_duration(time.monotonic() - start),
+        peak_rss_gib(),
     )
 
     return {
@@ -2052,7 +2302,9 @@ def run_validation(
             "database": None if con is None else "available",
             "previous_report": None if previous_report is None else str(previous_report),
             "previous_manifest": None if previous_manifest is None else str(previous_manifest),
-            "manifest_written": None if manifest_written is None else str(manifest_written.resolve()),
+            "manifest_written": None
+            if manifest_written is None
+            else str(manifest_written.resolve()),
             "online": online,
             "sample_size": sample_size,
             "drop_sample": drop_sample,
@@ -2130,7 +2382,9 @@ def _mismatch_detail(check: dict) -> list[str]:
     shown, total = sum(by_field.values()), check["count"]
     suffix = f" ({shown} of {total} shown)" if total > shown else ""
     lines = [
-        "         by field" + suffix + ": "
+        "         by field"
+        + suffix
+        + ": "
         + ", ".join(f"{n}x {name}" for name, n in by_field.items())
     ]
     # Print every kind that occurred, and always print values_differ even at
@@ -2201,8 +2455,7 @@ def format_summary(report: dict) -> str:
         f"Validation {banner}: {struct.get('records_total', 0):,} record(s) in "
         f"{len(inputs['shards'])} shard(s) of {inputs['export_dir']}",
         f"  database {inputs.get('database') or 'not available'} · Entrez {entrez}",
-        f"  ran in {report.get('duration', '?')}, peak RSS "
-        f"{report.get('peak_rss_gib', 0)} GiB",
+        f"  ran in {report.get('duration', '?')}, peak RSS {report.get('peak_rss_gib', 0)} GiB",
     ]
 
     for section in _SECTIONS:
@@ -2212,8 +2465,7 @@ def format_summary(report: dict) -> str:
         heading = section.upper()
         if section == "structure" and struct.get("identifier_coverage"):
             carried = ", ".join(
-                f"{v['pct']:.1f}% {prefix}"
-                for prefix, v in struct["identifier_coverage"].items()
+                f"{v['pct']:.1f}% {prefix}" for prefix, v in struct["identifier_coverage"].items()
             )
             heading += f"  ({carried})"
         if section == "field accuracy" and fv.get("sampled"):
@@ -2227,7 +2479,9 @@ def format_summary(report: dict) -> str:
     # check cannot silently vanish from stdout.
     rendered = {c["name"] for c in checks if c["section"] in _SECTIONS}
     orphans = [
-        item for kind in ("errors", "warnings") for item in report[kind]
+        item
+        for kind in ("errors", "warnings")
+        for item in report[kind]
         if not any(c["code"] == item["code"] and c["name"] in rendered for c in checks)
     ]
     if orphans:

@@ -187,16 +187,19 @@ def _mesh_headings(element: etree._Element) -> list[MeshHeading]:
         descriptor = heading.find("DescriptorName")
         if descriptor is None or not (ui := descriptor.get("UI")):
             continue
-        headings.append(MeshHeading(
-            ui=ui,
-            name=descriptor.text,
-            major=descriptor.get("MajorTopicYN", "N") == "Y",
-            qualifiers=[
-                MeshQualifier(ui=q.get("UI"), name=q.text,
-                              major=q.get("MajorTopicYN", "N") == "Y")
-                for q in heading.iterfind("QualifierName")
-            ],
-        ))
+        headings.append(
+            MeshHeading(
+                ui=ui,
+                name=descriptor.text,
+                major=descriptor.get("MajorTopicYN", "N") == "Y",
+                qualifiers=[
+                    MeshQualifier(
+                        ui=q.get("UI"), name=q.text, major=q.get("MajorTopicYN", "N") == "Y"
+                    )
+                    for q in heading.iterfind("QualifierName")
+                ],
+            )
+        )
     return headings
 
 
@@ -298,8 +301,6 @@ def parse_file(path: str | Path) -> ParsedFile:
             result.deleted_pmids.append(int(pmid_tag.text.strip()))
 
     if result.n_failed:
-        logger.warning(
-            "%s: %d article(s) failed to parse and were skipped", path, result.n_failed
-        )
+        logger.warning("%s: %d article(s) failed to parse and were skipped", path, result.n_failed)
 
     return result

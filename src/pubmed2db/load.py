@@ -44,7 +44,9 @@ _VERSIONED_TABLES = (
 )
 
 
-def _article_rows(parsed: ParsedArticle, source_file: str, order_key: int) -> dict[str, list[tuple]]:
+def _article_rows(
+    parsed: ParsedArticle, source_file: str, order_key: int
+) -> dict[str, list[tuple]]:
     """Build the per-table insert tuples for a single parsed article."""
     a = parsed.article
     pmid = a.pubmed
@@ -107,8 +109,15 @@ def _article_rows(parsed: ParsedArticle, source_file: str, order_key: int) -> di
         )
         for qualifier in heading.qualifiers:
             rows["mesh_qualifier"].append(
-                (pmid, source_file, heading_position, heading.ui,
-                 qualifier.ui, qualifier.name, qualifier.major)
+                (
+                    pmid,
+                    source_file,
+                    heading_position,
+                    heading.ui,
+                    qualifier.ui,
+                    qualifier.name,
+                    qualifier.major,
+                )
             )
 
     for position, (type_ui, type_name) in enumerate(parsed.publication_types):
@@ -128,6 +137,7 @@ def _article_rows(parsed: ParsedArticle, source_file: str, order_key: int) -> di
 
 #: Name under which a per-table batch is registered for the bulk insert below.
 _BATCH = "_load_batch"
+
 
 def _insert_batch(con: duckdb.DuckDBPyConnection, table: str, rows: list[tuple]) -> None:
     """Columnar bulk-insert of ``rows`` (positional tuples) into ``table``.
@@ -326,16 +336,21 @@ def load_files(
         # what --time to request next: the rate is what scales to the remaining
         # files, and elapsed is what you compare against the limit you asked for.
         logger.info(
-            "progress: %d/%d files this run, %d remaining · %.1f s/file · "
-            "elapsed %s · %s",
-            done, total, remaining, elapsed / done, fmt_duration(elapsed),
+            "progress: %d/%d files this run, %d remaining · %.1f s/file · elapsed %s · %s",
+            done,
+            total,
+            remaining,
+            elapsed / done,
+            fmt_duration(elapsed),
             "done" if remaining <= 0 else f"~{eta_str(elapsed, done, remaining)} to go",
         )
 
     if failed:
         logger.error(
             "%d of %d file(s) failed to load and were skipped: %s",
-            len(failed), total, ", ".join(failed),
+            len(failed),
+            total,
+            ", ".join(failed),
         )
     if loaded:
         record_load(con)
@@ -542,7 +557,9 @@ def _ensure_serfile_file(module: pystow.Module, url: str) -> Path:
     except Exception as exc:
         if republished and not wrong_size:
             # The sidecar is left alone, so the next run tries again.
-            logger.warning("%s could not be re-fetched (%s); keeping the cached copy", path.name, exc)
+            logger.warning(
+                "%s could not be re-fetched (%s); keeping the cached copy", path.name, exc
+            )
             return path
         raise
     # The GET's own validator describes exactly the bytes written, and it is

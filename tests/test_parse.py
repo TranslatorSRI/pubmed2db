@@ -157,8 +157,7 @@ def test_cited_pmids_is_parked_but_works(gz_fixture):
     with gzip.open(gz_fixture("pubmed25n0001"), "rb") as handle:
         root = etree.parse(handle).getroot()
     element = next(
-        e for e in root.findall("PubmedArticle")
-        if e.findtext("MedlineCitation/PMID") == "1001"
+        e for e in root.findall("PubmedArticle") if e.findtext("MedlineCitation/PMID") == "1001"
     )
     # Deduplicated; the DOI-only reference contributes nothing.
     assert _cited_pmids(element) == [9001]

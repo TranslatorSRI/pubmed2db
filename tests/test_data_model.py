@@ -17,7 +17,6 @@ from pubmed2db import datamodel
 from pubmed2db.datamodel import DATA_MODEL_VERSION, IncompatibleDatabase
 from pubmed2db.db import connect
 
-
 # --- version -----------------------------------------------------------------
 
 
@@ -79,8 +78,12 @@ def test_a_pre_1_0_database_is_refused_and_left_untouched(tmp_path):
 
 @pytest.mark.parametrize(
     ("stored", "message"),
-    [("0.9.0", "rebuild the database"), ("2.0.0", "rebuild the database"),
-     ("1.99.0", "newer than"), ("one", "unrecognized")],
+    [
+        ("0.9.0", "rebuild the database"),
+        ("2.0.0", "rebuild the database"),
+        ("1.99.0", "newer than"),
+        ("one", "unrecognized"),
+    ],
 )
 def test_an_incompatible_version_is_refused(tmp_path, stored, message):
     path = tmp_path / "db.duckdb"
@@ -236,7 +239,7 @@ def test_timestamps_are_instants_not_wall_clock_times(con, gz_fixture):
     """Before 1.0 these were naive TIMESTAMPs holding the loading machine's
     local time, mixed with Python's UTC: unreadable without knowing the node's
     time zone. Now each is an aware instant, comparable from anywhere."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import UTC, datetime, timedelta
 
     from pubmed2db.load import load_file
 
@@ -245,7 +248,7 @@ def test_timestamps_are_instants_not_wall_clock_times(con, gz_fixture):
         "SELECT s.downloaded_at, s.processed_at, max(a.loaded_at) FROM source_file s "
         "JOIN article a ON a.source_file = s.file_name GROUP BY ALL"
     ).fetchone()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for value in (downloaded, processed, loaded):
         assert value.tzinfo is not None
         assert abs(now - value) < timedelta(minutes=5)
@@ -257,15 +260,18 @@ def test_each_child_table_has_a_latest_view_matching_the_export(edge_con):
     from pubmed2db.export import _VERSIONED_CHILDREN
 
     for table in _VERSIONED_CHILDREN:
-        assert _rows(
-            edge_con,
-            f"(SELECT * FROM latest_{table} EXCEPT ALL SELECT c.* FROM {table} c "
-            "WHERE EXISTS (SELECT 1 FROM latest_article la "
-            "WHERE la.pmid = c.pmid AND la.source_file = c.source_file)) "
-            f"UNION ALL (SELECT c.* FROM {table} c WHERE EXISTS (SELECT 1 FROM latest_article la "
-            "WHERE la.pmid = c.pmid AND la.source_file = c.source_file) "
-            f"EXCEPT ALL SELECT * FROM latest_{table})",
-        ) == [], table
+        assert (
+            _rows(
+                edge_con,
+                f"(SELECT * FROM latest_{table} EXCEPT ALL SELECT c.* FROM {table} c "
+                "WHERE EXISTS (SELECT 1 FROM latest_article la "
+                "WHERE la.pmid = c.pmid AND la.source_file = c.source_file)) "
+                f"UNION ALL (SELECT c.* FROM {table} c WHERE EXISTS (SELECT 1 FROM latest_article la "
+                "WHERE la.pmid = c.pmid AND la.source_file = c.source_file) "
+                f"EXCEPT ALL SELECT * FROM latest_{table})",
+            )
+            == []
+        ), table
     # PMID 1001's superseded baseline authors are excluded; its update's kept.
     assert _rows(edge_con, "SELECT name FROM latest_author WHERE pmid = 1001") == [("Jane Smith",)]
     assert _rows(edge_con, "SELECT count(*) FROM latest_author WHERE pmid = 2002") == [(0,)]
@@ -285,13 +291,13 @@ _BUMP_HELP = (
 
 
 def _golden_files() -> list[tuple[tuple[int, int], Path]]:
-    return sorted(
-        (datamodel.parse_version(path.stem), path) for path in GOLDEN_DIR.glob("*.json")
-    )
+    return sorted((datamodel.parse_version(path.stem), path) for path in GOLDEN_DIR.glob("*.json"))
 
 
 def test_a_fresh_database_has_exactly_this_versions_shape(con):
-    golden = json.loads((GOLDEN_DIR / f"{datamodel.shape_version(DATA_MODEL_VERSION)}.json").read_text())
+    golden = json.loads(
+        (GOLDEN_DIR / f"{datamodel.shape_version(DATA_MODEL_VERSION)}.json").read_text()
+    )
     assert datamodel.shape(con) == golden, _BUMP_HELP
 
 
@@ -329,7 +335,9 @@ def test_only_adds_catches_what_a_minor_version_must_not_do():
             new["relations"][relation][key] = value
         return new
 
-    grown = changed(t__columns=["a INTEGER", "b VARCHAR", "c DATE"], v__columns=["z INTEGER", "a INTEGER"])
+    grown = changed(
+        t__columns=["a INTEGER", "b VARCHAR", "c DATE"], v__columns=["z INTEGER", "a INTEGER"]
+    )
     grown["relations"]["new_table"] = {"kind": "table", "tier": "stable", "columns": []}
     grown["ndjson_fields"].append("extra")
     assert datamodel.only_adds(base, grown) == []
@@ -366,15 +374,18 @@ def test_every_latest_view_names_the_table_it_filters(con):
 
 # --- invariants the documentation promises ------------------------------------------
 
-_CHILDREN_SQL = "SELECT table_name FROM duckdb_columns() WHERE column_name = 'source_file' " \
-    "AND table_name NOT IN ('article', 'deleted_pmid') AND table_name NOT LIKE 'latest_%' " \
+_CHILDREN_SQL = (
+    "SELECT table_name FROM duckdb_columns() WHERE column_name = 'source_file' "
+    "AND table_name NOT IN ('article', 'deleted_pmid') AND table_name NOT LIKE 'latest_%' "
     "GROUP BY 1"
+)
 
 
 def test_pmid_and_source_file_identify_an_article_version(edge_con):
-    assert _rows(
-        edge_con, "SELECT pmid, source_file FROM article GROUP BY ALL HAVING count(*) > 1"
-    ) == []
+    assert (
+        _rows(edge_con, "SELECT pmid, source_file FROM article GROUP BY ALL HAVING count(*) > 1")
+        == []
+    )
 
 
 def test_every_child_row_belongs_to_a_stored_article_version(edge_con):
@@ -418,8 +429,18 @@ def test_positions_are_0_based_and_unique_within_their_parent(edge_con):
         (
             "history",
             "pub_status",
-            {"received", "accepted", "revised", "aheadofprint", "ecollection", "pubmed",
-             "medline", "entrez", "pmc-release", "retracted"},
+            {
+                "received",
+                "accepted",
+                "revised",
+                "aheadofprint",
+                "ecollection",
+                "pubmed",
+                "medline",
+                "entrez",
+                "pmc-release",
+                "retracted",
+            },
         ),
     ],
 )
@@ -444,7 +465,7 @@ def _doc_section(heading: str) -> str:
     text = DOC.read_text()
     start = text.index(f"\n## {heading}\n")
     end = text.find("\n## ", start + 1)
-    return text[start:end if end != -1 else None]
+    return text[start : end if end != -1 else None]
 
 
 def test_the_docs_column_reference_is_generated_from_the_database(con):
@@ -462,9 +483,7 @@ def test_the_doc_names_only_columns_that_exist(con):
     a separate file, is exempt: naming what no longer exists is its job."""
     import re
 
-    columns = {
-        (r["name"], c["name"]) for r in datamodel.describe(con) for c in r["columns"]
-    }
+    columns = {(r["name"], c["name"]) for r in datamodel.describe(con) for c in r["columns"]}
     relations = {r["name"] for r in datamodel.describe(con)}
     named = set(re.findall(r"`([a-z_]+)\.([a-z_]+)`", DOC.read_text()))
     unknown = {pair for pair in named if pair[0] in relations and pair not in columns}
@@ -477,12 +496,9 @@ def test_the_doc_describes_every_ndjson_field_in_order():
     from pubmed2db.export import JSON_FIELDS
 
     rows = [
-        line for line in _doc_section("The NDJSON record").splitlines()
-        if line.startswith("| `")
+        line for line in _doc_section("The NDJSON record").splitlines() if line.startswith("| `")
     ]
-    documented = [
-        name for row in rows for name in re.findall(r"`([a-z_]+)`", row.split("|")[1])
-    ]
+    documented = [name for row in rows for name in re.findall(r"`([a-z_]+)`", row.split("|")[1])]
     assert documented == list(JSON_FIELDS)
 
 
@@ -495,7 +511,9 @@ def test_every_recipe_in_the_doc_runs(edge_con, tmp_path, monkeypatch):
     from pubmed2db.export import export_parquet
 
     export_parquet(edge_con, tmp_path / "parquet")
-    db_path = Path(edge_con.execute("SELECT path FROM duckdb_databases() WHERE NOT internal").fetchone()[0])
+    db_path = Path(
+        edge_con.execute("SELECT path FROM duckdb_databases() WHERE NOT internal").fetchone()[0]
+    )
     edge_con.close()
     (tmp_path / "pubmed.duckdb").write_bytes(db_path.read_bytes())
     monkeypatch.chdir(tmp_path)
@@ -517,7 +535,7 @@ def test_the_patch_level_is_unused():
     `## 1.0.1` changelog entry, would pass every other test here."""
     assert datamodel.parse_version(DATA_MODEL_VERSION)[2] == 0, (
         "the data model's patch level is unused (docs/data-model/README.md, "
-        "\"Versioning and stability\"): list a value fix in the release notes, "
+        '"Versioning and stability"): list a value fix in the release notes, '
         "and bump the minor or major version only for a change to the contract"
     )
     import re
@@ -567,7 +585,9 @@ def test_links_between_the_data_model_docs_resolve():
 
     broken = []
     for source in (DOC, CHANGELOG, REFERENCE):
-        for name, anchor in re.findall(re.escape(base) + r"([\w.]+)(?:#([\w-]+))?", source.read_text()):
+        for name, anchor in re.findall(
+            re.escape(base) + r"([\w.]+)(?:#([\w-]+))?", source.read_text()
+        ):
             target = DOCS / name
             if not target.is_file() or (anchor and anchor not in anchors(target)):
                 broken.append(f"{source.name}: {name}#{anchor}")

@@ -1,0 +1,56 @@
+name: lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# On a PR, a force-push or a quick follow-up commit should cancel the run it
+# supersedes rather than queue behind it. Never on main: quick merges would
+# cancel each other's runs, leaving merge commits that were never checked. So
+# a push to main gets a group of its own, keyed on the commit; turning
+# cancel-in-progress off would not do, since a group holds one pending run and
+# drops the rest.
+concurrency:
+  group: lint-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    # Separate from tests.yml, so a formatting slip never reads as a failing
+    # test. No Python matrix: the linters' verdict does not depend on it.
+    runs-on: ubuntu-latest
+    # Run the linters from the environment the install step built. Without
+    # this, `uv run` first syncs the whole project into it.
+    env:
+      UV_NO_SYNC: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # ruff and rumdl alone, from the lint group at the versions uv.lock pins,
+      # so this run and `uv run ruff format` on a dev box agree. `--locked` is
+      # what makes that pin hold: without it, a pyproject.toml edited without a
+      # re-lock is quietly re-resolved here, and a newer ruff fails
+      # `format --check` on lines nobody touched.
+      - name: Install the linters
+        run: uv sync --locked --only-group lint
+
+      # One step per check, so the failing one is named, and `github` output
+      # so findings land on the PR diff as annotations. The config for all
+      # three is in pyproject.toml; AGENTS.md's Development section has the
+      # commands that fix what they report.
+      - name: Lint Python (ruff check)
+        run: uv run ruff check --output-format=github .
+
+      - name: Check Python formatting (ruff format)
+        run: uv run ruff format --check --diff .
+
+      - name: Lint Markdown (rumdl)
+        run: uv run rumdl check --output-format github .

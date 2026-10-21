@@ -22,7 +22,7 @@ import pytest
         ("Sep-Dec", "Sep-Dec"),
         ("Jul-Aug", "Jul-Aug"),
         ("Spring", "Spring"),
-        ("13", ""),         # a number that isn't a month is garbage, not a season
+        ("13", ""),  # a number that isn't a month is garbage, not a season
         (None, ""),
         ("", ""),
     ],
@@ -36,14 +36,14 @@ def test_normalize_month(raw, expected):
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        ("1994 Sep-Dec", "Sep-Dec"),      # the DocumentMetadataAPI example, PMID:8000234
+        ("1994 Sep-Dec", "Sep-Dec"),  # the DocumentMetadataAPI example, PMID:8000234
         ("1998 Spring", "Spring"),
         ("1978 Jul-Aug", "Jul-Aug"),
         ("1998 Dec-1999 Jan", "Dec-1999 Jan"),  # verbatim; we don't invent "Dec-Jan"
         ("  2001 Winter", "Winter"),
-        ("1999-2000", ""),                # a year range has no month; not "-2000"
+        ("1999-2000", ""),  # a year range has no month; not "-2000"
         ("n.d.", ""),
-        ("Spring 1998", ""),              # year not leading; don't guess
+        ("Spring 1998", ""),  # year not leading; don't guess
         (None, ""),
         ("", ""),
     ],
@@ -62,8 +62,7 @@ def test_month_from_medline_date(raw, expected):
         # The same record, both ways PubMed serves it -- these MUST converge.
         ("PMID:8000234 via efetch <Season>", ("1994", "Sep-Dec", None, None), "1994 Sep-Dec"),
         ("PMID:8000234 via <MedlineDate>", (None, None, None, "1994 Sep-Dec"), "1994 Sep-Dec"),
-        ("PMID:10188493 cross-year", (None, None, None, "1998 Dec-1999 Jan"),
-         "1998 Dec-1999 Jan"),
+        ("PMID:10188493 cross-year", (None, None, None, "1998 Dec-1999 Jan"), "1998 Dec-1999 Jan"),
         ("year only", ("2019", None, None, None), "2019"),
         ("numeric month normalizes", ("2019", "03", "15", None), "2019 Mar 15"),
         # The archival XML zero-pads the day and esummary does not. Verified
@@ -92,7 +91,7 @@ def test_pub_month_prefers_the_column_over_the_medline_date():
 
     assert pub_month("Mar", "1998 Spring") == "Mar"
     assert pub_month(None, "1994 Sep-Dec") == "Sep-Dec"
-    assert pub_month("Sep-Dec", None) == "Sep-Dec"   # efetch's <Season> form
+    assert pub_month("Sep-Dec", None) == "Sep-Dec"  # efetch's <Season> form
     assert pub_month(None, None) == ""
 
 
@@ -101,11 +100,11 @@ def test_pub_month_prefers_the_column_over_the_medline_date():
     [
         ("1998 Spring", "1998"),
         ("1978 Jul-Aug", "1978"),
-        ("1998 Dec-1999 Jan", "1998"),   # leading year wins on a cross-year range
+        ("1998 Dec-1999 Jan", "1998"),  # leading year wins on a cross-year range
         ("1999-2000", "1999"),
         ("  2001 Winter", "2001"),
-        ("n.d.", ""),                     # no year to recover
-        ("Spring 1998", ""),              # year not leading; don't guess
+        ("n.d.", ""),  # no year to recover
+        ("Spring 1998", ""),  # year not leading; don't guess
         (None, ""),
         ("", ""),
     ],
@@ -174,7 +173,7 @@ def test_curie_sql_is_derived_from_id_prefixes():
     reach the validator alone — reporting every sampled record as a mismatch
     against a correct export.
     """
-    from pubmed2db.export import ID_PREFIXES, MESH_PREFIX, _LATEST_METADATA_SQL
+    from pubmed2db.export import _LATEST_METADATA_SQL, ID_PREFIXES, MESH_PREFIX
 
     for id_type, prefix in ID_PREFIXES.items():
         assert f"'{id_type}'" in _LATEST_METADATA_SQL
@@ -200,8 +199,11 @@ def test_docs_spell_pmc_ids_with_the_exported_prefix():
         f"{name}: {m.group(0)}"
         # Not docs/data-model/Changelog.md: naming old spellings is its job.
         for name in (
-            "README.md", "AGENTS.md", "FUTURE.md",
-            "docs/data-model/README.md", "docs/data-model/Reference.md",
+            "README.md",
+            "AGENTS.md",
+            "FUTURE.md",
+            "docs/data-model/README.md",
+            "docs/data-model/Reference.md",
         )
         for m in re.finditer(r"\bPMC(?:ID)?:PMC", (root / name).read_text())
         if m.group(0) != expected
@@ -349,7 +351,6 @@ def test_placeholder_looking_fields_survive_to_the_export(con, gz_fixture, tmp_p
     """A validation run flagged two records as exporting blank where Entrez has a
     value: a non-numeric `<Issue>Suppl</Issue>` and an `<ArticleTitle>` of the
     literal "[Not Available].". Neither is dropped anywhere in the pipeline."""
-    import json
 
     from pubmed2db.export import export_json
     from pubmed2db.load import load_file
@@ -391,8 +392,7 @@ def test_parquet_exports_every_table(loaded_con, tmp_path):
     tables = {
         row[0]
         for row in loaded_con.execute(
-            "SELECT table_name FROM duckdb_tables() "
-            "WHERE schema_name = 'main' AND NOT temporary"
+            "SELECT table_name FROM duckdb_tables() WHERE schema_name = 'main' AND NOT temporary"
         ).fetchall()
     }
     assert {path.stem for path in written} == tables
@@ -403,9 +403,12 @@ def test_parquet_exports_every_table(loaded_con, tmp_path):
         exported = loaded_con.execute(
             f"SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM '{path.as_posix()}')"
         ).fetchall()
-        assert exported == loaded_con.execute(
-            f"SELECT column_name, column_type FROM (DESCRIBE {path.stem})"
-        ).fetchall(), path.stem
+        assert (
+            exported
+            == loaded_con.execute(
+                f"SELECT column_name, column_type FROM (DESCRIBE {path.stem})"
+            ).fetchall()
+        ), path.stem
 
 
 def test_exports_describe_themselves_in_metadata_json(loaded_con, tmp_path):
@@ -492,27 +495,70 @@ def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog)
 #: while "\tMar" gave "Mar" from the function and "" from the export. `parse`
 #: stores `findtext("Month")` verbatim, so a `<Month>` spanning a line does
 #: reach here.
-_MONTH_INPUTS = ["3", "03", " 3 ", "Mar", "March", "Sept", "SEPTEMBER", "sep",
-                 "Spring", "Sep-Dec", "Winter", "Frühling",
-                 "13", "0", "99999999999999999999", "", "  ", None,
-                 "\tMar", "3\n", "\n3", "\r\nMarch\t", "\t\n", "\tSep-Dec",
-                 "²", "١٢", "3²",
-                 # Unicode whitespace at the *edges*: `.strip()` removes it and
-                 # an ASCII-only SQL trim does not, which is the half of the
-                 # whitespace bug the first fix left open.
-                 "\xa0Mar", "Mar\u2003", "\xa03", "\u2003"]
+_MONTH_INPUTS = [
+    "3",
+    "03",
+    " 3 ",
+    "Mar",
+    "March",
+    "Sept",
+    "SEPTEMBER",
+    "sep",
+    "Spring",
+    "Sep-Dec",
+    "Winter",
+    "Frühling",
+    "13",
+    "0",
+    "99999999999999999999",
+    "",
+    "  ",
+    None,
+    "\tMar",
+    "3\n",
+    "\n3",
+    "\r\nMarch\t",
+    "\t\n",
+    "\tSep-Dec",
+    "²",
+    "١٢",
+    "3²",
+    # Unicode whitespace at the *edges*: `.strip()` removes it and
+    # an ASCII-only SQL trim does not, which is the half of the
+    # whitespace bug the first fix left open.
+    "\xa0Mar",
+    "Mar\u2003",
+    "\xa03",
+    "\u2003",
+]
 #: The non-ASCII and vertical-tab separators are the cases the pinning test
 #: could not previously reach: every entry used a plain space, so it could not
 #: see that RE2's `\s` is `[\t\n\f\r ]` while Python's includes `\v` and
 #: Unicode spaces. The `"²"`/`"١٢"` month entries above are the matching pair —
 #: `isdigit()` admits both, `int()` parses only one, and SQL's `[0-9]+` neither.
-_MEDLINE_INPUTS = ["1998 Spring", "1994 Sep-Dec", "1978 Jul-Aug", "1998 September",
-                   "1998 Dec-1999 Jan", "1999-2000",
-                   "1998\xa0Spring", "1998\x0bSpring", "1998\u2003Sep-Dec",
-                   # ...and at the edges, where a blank-vs-not answer decides
-                   # which branch of _PUB_DATE_SQL runs at all.
-                   "\xa01998 Spring", "1998 Spring\u2003", "\xa0", "\u2003\xa0",
-                   "  2001 Winter", "n.d.", "Spring 1998", "12345", "", None]
+_MEDLINE_INPUTS = [
+    "1998 Spring",
+    "1994 Sep-Dec",
+    "1978 Jul-Aug",
+    "1998 September",
+    "1998 Dec-1999 Jan",
+    "1999-2000",
+    "1998\xa0Spring",
+    "1998\x0bSpring",
+    "1998\u2003Sep-Dec",
+    # ...and at the edges, where a blank-vs-not answer decides
+    # which branch of _PUB_DATE_SQL runs at all.
+    "\xa01998 Spring",
+    "1998 Spring\u2003",
+    "\xa0",
+    "\u2003\xa0",
+    "  2001 Winter",
+    "n.d.",
+    "Spring 1998",
+    "12345",
+    "",
+    None,
+]
 
 
 def test_pub_month_sql_matches_python(con):
@@ -552,10 +598,12 @@ def _twin_rows(con, sql: str, columns: list[str], rows: list[tuple]) -> list:
     """
     import pyarrow as pa
 
-    table = pa.table({
-        name: pa.array([row[i] for row in rows], type=pa.string())
-        for i, name in enumerate(columns)
-    })
+    table = pa.table(
+        {
+            name: pa.array([row[i] for row in rows], type=pa.string())
+            for i, name in enumerate(columns)
+        }
+    )
     con.register("_twin_inputs", table)
     try:
         return [r[0] for r in con.execute(f"SELECT {sql} FROM _twin_inputs la").fetchall()]
@@ -576,9 +624,7 @@ def test_pub_date_sql_matches_python(con):
     from pubmed2db.export import _PUB_DATE_SQL, pub_date
 
     rows = list(itertools.product(_YEAR_INPUTS, _MONTH_INPUTS, _DAY_INPUTS, _MEDLINE_INPUTS))
-    got = _twin_rows(
-        con, _PUB_DATE_SQL, ["pub_year", "pub_month", "pub_day", "medline_date"], rows
-    )
+    got = _twin_rows(con, _PUB_DATE_SQL, ["pub_year", "pub_month", "pub_day", "medline_date"], rows)
     for (year, month, day, medline), value in zip(rows, got):
         assert value == pub_date(year, month, day, medline), (
             f"{year=!r} {month=!r} {day=!r} {medline=!r}"
@@ -586,7 +632,7 @@ def test_pub_date_sql_matches_python(con):
 
 
 def test_a_day_without_a_usable_month_is_dropped(con):
-    """"2019 15" reads as a date and is not one.
+    """ "2019 15" reads as a date and is not one.
 
     `normalize_month` blanks an out-of-range number, and `_MONTH_INPUTS` shows
     those reach the export. Floating the day up next to the year would hand the
@@ -596,9 +642,7 @@ def test_a_day_without_a_usable_month_is_dropped(con):
     from pubmed2db.export import _PUB_DATE_SQL, pub_date
 
     rows = [("2019", bad, "15", None) for bad in ("13", "0", "", None)]
-    got = _twin_rows(
-        con, _PUB_DATE_SQL, ["pub_year", "pub_month", "pub_day", "medline_date"], rows
-    )
+    got = _twin_rows(con, _PUB_DATE_SQL, ["pub_year", "pub_month", "pub_day", "medline_date"], rows)
     for row, value in zip(rows, got):
         assert value == "2019", row
         assert pub_date(*row) == "2019", row
@@ -632,13 +676,12 @@ def test_json_export_writes_utf8_not_escapes(loaded_con, tmp_path):
     from pubmed2db.export import export_json
 
     loaded_con.execute(
-        "UPDATE article SET article_title = 'Étude sur les protéines — a test'"
-        " WHERE pmid = 1003"
+        "UPDATE article SET article_title = 'Étude sur les protéines — a test' WHERE pmid = 1003"
     )
     paths = export_json(loaded_con, tmp_path / "json")
     raw = b"".join(gzip.decompress(p.read_bytes()) for p in paths)
     assert "Étude sur les protéines — a test".encode() in raw
-    assert rb"\u00c9" not in raw.lower()   # not json.dumps(ensure_ascii=True)'s form
+    assert rb"\u00c9" not in raw.lower()  # not json.dumps(ensure_ascii=True)'s form
     assert _read_ndjson(paths)["PMID:1003"]["article_title"].startswith("Étude")
 
 
@@ -706,7 +749,7 @@ def test_the_heartbeat_survives_a_shard_vanishing(tmp_path):
 
     def racing(directory):
         paths = real_glob(directory)
-        ghost.unlink()          # vanishes between the glob and the stat
+        ghost.unlink()  # vanishes between the glob and the stat
         return paths
 
     ex._shard_paths = racing
@@ -782,8 +825,13 @@ def test_sha256sums_verifies_with_the_standard_tool(loaded_con, tmp_path):
 
     out = tmp_path / "json"
     export_json(loaded_con, out)
-    tool = (["sha256sum"] if shutil.which("sha256sum")
-            else ["shasum", "-a", "256"] if shutil.which("shasum") else None)
+    tool = (
+        ["sha256sum"]
+        if shutil.which("sha256sum")
+        else ["shasum", "-a", "256"]
+        if shutil.which("shasum")
+        else None
+    )
     if tool is None:
         pytest.skip("no sha256sum or shasum on this machine")
     checked = subprocess.run([*tool, "-c", "SHA256SUMS"], cwd=out, capture_output=True, text=True)

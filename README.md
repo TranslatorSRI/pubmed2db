@@ -316,7 +316,7 @@ Stdout is a test report: every check is listed with what it expected and what it
 saw, so a reviewer can tell what was verified, what was skipped, and what is not
 covered at all. Abridged, from a full-corpus run:
 
-```
+```text
 Validation WARN: 40,901,984 record(s) in 16 shard(s) of data/json
   database available · Entrez online, no API key (3 req/s; set NCBI_API_KEY for 10/s)
   ran in 10m 51s, peak RSS 5.177 GiB
@@ -523,7 +523,7 @@ build. Everything the pipeline writes, and what to do with it:
 | `logs/` | `submit.sh` | Permanent. Step logs are copied into each build; `submit.log` is the record of every submission. |
 | `ncbi/`, `README.md` | pystow | Noise; ignore. |
 
-**Before a new run on the same database**
+#### Before a new run on the same database
 
 1. If `data/json/metadata.json` exists, archive the build:
    `uv run python scripts/archive_build.py`. It refuses an export that has not
@@ -539,8 +539,9 @@ build. Everything the pipeline writes, and what to do with it:
 3. Nothing else. Manifests and logs accumulate by design, and `download`,
    `journals` and `load` are incremental.
 
-**Before a new run on a fresh database** (a new baseline year, or a major
-data-model bump)
+#### Before a new run on a fresh database
+
+Do this for a new baseline year, or after a major data-model bump.
 
 1. Steps 1–2 above.
 2. `uv run python scripts/fresh_database.py`. It shows what it will do and asks:

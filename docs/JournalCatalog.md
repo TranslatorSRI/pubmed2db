@@ -53,7 +53,7 @@ differ after normalizing whitespace and the trailing period:
 > non-J_Entrez case matched *neither* source (`Foot & ankle surgery` — a real
 > title change, not a rendering difference).
 
-```
+```text
 esummary PMID 42564453  fulljournalname = 'Microbial cell (Graz, Austria)'
    J_Entrez = 'Microbial cell (Graz, Austria)'      serfile = 'Microbial cell.'
 esummary PMID 42641187  fulljournalname = 'Cirugia y cirujanos'
@@ -319,7 +319,7 @@ cache.
 
 ## Verifying a real run
 
-```
+```bash
 uv run pubmed2db --data-dir data journals   # ~70 s, ~890 MB of downloads
 ```
 

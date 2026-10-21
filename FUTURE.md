@@ -81,7 +81,7 @@ The dependency is pinned `<0.2` because we call private APIs (`_extract_article`
 
 Nothing has been filed against `cthoyt/pubmed-downloader` for either, and nothing
 should be until the open items below are answered. (The journal-model fix is the
-exception: filed and merged as https://github.com/cthoyt/pubmed-downloader/pull/16.
+exception: filed and merged as <https://github.com/cthoyt/pubmed-downloader/pull/16>.
 Its maintainer will not consider a pull request or issue whose text or code is
 AI-generated, so whatever we report must be written by hand.)
 
@@ -213,9 +213,10 @@ Still open:
   `None` (no MeSH/ROR/ORCID lookups). Data model 1.0 dropped the always-NULL
   `author_affiliation.ror` column rather than ship it empty, so grounding would
   return as new columns (a minor version bump). The library's `[process]` extra
-  (pyobo/orcid-downloader) could enable it if needed — at significant dependency
-  + runtime cost. Note that PubMed's own `AffiliationInfo/Identifier` (ROR, GRID,
-  ISNI) is not read either; that needs no grounding at all.
+  (pyobo/orcid-downloader) could enable it if needed — at significant
+  dependency and runtime cost. Note that PubMed's own
+  `AffiliationInfo/Identifier` (ROR, GRID, ISNI) is not read either; that needs
+  no grounding at all.
 
 ## Misc
 

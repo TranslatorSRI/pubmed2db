@@ -143,7 +143,6 @@ explains its part; this table is only a map.
     response read as "retired". On a clean rebuild it is capped at
     `_DROP_CONFIRM_LIMIT`, and a run over the cap fails, so the cap has to sit
     well above a year's deletions or the chain never recovers.
-
 - **Reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
   as-is, no upstream changes.** We take its file listings, its cache layout and
   its `Article` data model, but not its transfers (see below) or its
@@ -421,7 +420,6 @@ explains its part; this table is only a map.
   module they replace. A file that fails is skipped and the sync carries on,
   then `download` exits non-zero naming it; a SIGKILL skips `download_file`'s
   cleanup, so `download` and the catalog prune each sweep stale `.part` files.
-
 - **The `#SBATCH` headers in `slurm/` are the only place an allocation is
   written down**, and `slurm/README.md` deliberately does not repeat them — it
   carries the *evidence* (dated run tables, peak RSS, the shard-read breakdown)
@@ -464,11 +462,29 @@ explains its part; this table is only a map.
 ## Development
 
 ```bash
-uv sync --extra dev
+uv sync --extra dev --group lint
 uv run pytest          # no network needed
+uv run ruff check . && uv run ruff format --check . && uv run rumdl check .
+uv run ruff check --fix . && uv run ruff format . && uv run rumdl fmt .   # to fix
 ```
 
 Tests gzip the readable XML fixtures under `tests/fixtures/` into temp
 `pubmedNNnNNNN.xml.gz` files. Scratch downloads and databases go under `./data`
 (gitignored); the CLI points `PYSTOW_HOME` at `--data-dir` so
 `pubmed_downloader` caches under `data/pubmed/{baseline,updates}/`.
+
+The lint line is what `.github/workflows/lint.yml` runs; the config is in
+`pyproject.toml`, and `uv.lock` pins both tools (the `lint` dependency group,
+which CI installs on its own), since a new ruff can reformat code. Three things the fixers get wrong:
+
+- **ruff format reformats code inside a multi-line f-string**, and in a SQL
+  template that strands a dozen lines of Python at column 0 mid-query. Name
+  the expression first and interpolate the name (`export._ASSEMBLED_DATE_SQL`).
+- **In wrapped Markdown, a line starting with `+`, `-`, `*` or `1.` becomes a
+  list item, and one starting `#13` is a heading away from a fix.** rumdl
+  flags them (MD032, MD018), and its autofixes would make the damage
+  permanent: MD018's adds the space that makes the heading, MD032's the blank
+  lines that split the paragraph. Both are `unfixable` in `pyproject.toml`,
+  so `rumdl fmt` leaves them reported; rewrap the line by hand.
+- **`docs/data-model/Reference.md` is generated**, so a rumdl finding there is
+  fixed in `datamodel.render_reference`, not in the file.
