@@ -298,7 +298,7 @@ def test_a_fresh_database_has_exactly_this_versions_shape(con):
 def test_the_newest_golden_file_is_this_version():
     """A golden file for an unreleased version, or a minor bump without one,
     both mean the version and the shape have come apart. One file per
-    MAJOR.MINOR: a patch cannot change the shape."""
+    MAJOR.MINOR: those are the levels that describe the shape."""
     assert _golden_files()[-1][1].stem == datamodel.shape_version(DATA_MODEL_VERSION)
 
 
@@ -511,9 +511,25 @@ def test_every_recipe_in_the_doc_runs(edge_con, tmp_path, monkeypatch):
         session.close()
 
 
+def test_the_patch_level_is_unused():
+    """The version is the contract, so a value fix does not bump it: it goes in
+    the code's release notes. Without this, a 1.0.1 for a value fix, with its
+    `## 1.0.1` changelog entry, would pass every other test here."""
+    assert datamodel.parse_version(DATA_MODEL_VERSION)[2] == 0, (
+        "the data model's patch level is unused (docs/data-model/README.md, "
+        "\"Versioning and stability\"): list a value fix in the release notes, "
+        "and bump the minor or major version only for a change to the contract"
+    )
+    import re
+
+    headings = re.findall(r"^## (\d+\.\d+\.\d+)$", CHANGELOG.read_text(), re.M)
+    assert headings and all(heading.split(".")[2] == "0" for heading in headings)
+
+
 def test_patch_levels_neither_refuse_nor_downgrade(tmp_path, monkeypatch):
-    """A patch fixes values, never the shape, so code a patch behind or ahead
-    opens the database, and the stored version only ever rises."""
+    """The patch level is unused (test_the_patch_level_is_unused), so it must
+    never decide whether a database opens: code a patch behind or ahead opens
+    it, and the stored version only ever rises."""
     path = tmp_path / "db.duckdb"
     connect(path).close()
     major, minor, patch = datamodel.parse_version(DATA_MODEL_VERSION)
@@ -529,8 +545,8 @@ def test_patch_levels_neither_refuse_nor_downgrade(tmp_path, monkeypatch):
 
 
 def test_the_changelog_has_an_entry_for_this_version():
-    """Every bump, patch included, tells consumers what changed and what each
-    output's consumers must do; a version with no entry has told them nothing."""
+    """Every bump tells consumers what changed and what each output's
+    consumers must do; a version with no entry has told them nothing."""
     assert f"\n## {DATA_MODEL_VERSION}\n" in CHANGELOG.read_text()
 
 
