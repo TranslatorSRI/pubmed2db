@@ -140,7 +140,7 @@ between the two (46.4 vs 47.3 s/file), so neither limit was low enough to spill.
 
 **DuckDB does see the Slurm cgroup**, so its default is not the node-sized
 disaster it looks like: measured on duckdb 1.5.4, it takes ~76% of `--mem`
-(6.1 GiB under `--mem=8G`, 47.3 GiB under `--mem=62G`; off a cluster it is ~80%
+(6.1 GiB under `--mem=8G`, again on 1.5.5; 47.3 GiB under `--mem=62G`; off a cluster it is ~80%
 of physical RAM). The problem with the default is subtler — **its limit governs
 only its own buffer pool**, while the lxml tree, the parsed records and the
 Arrow batch live in the same cgroup and count against the same `--mem`. A
@@ -312,8 +312,9 @@ last two are it. Read the pair together: DuckDB's peak tracks the buffer-pool
 limit it is given, not what the query needs — 40 GB more limit bought 38 GiB
 more peak and a slightly *slower* run — so `config.sh` now sets `160GB`, the
 lower of the two measured values. `--mem=256G` is the allocation both ran
-under; a 192G node would leave ~38 GiB over the 160GB run's peak and is the
-next thing to measure, not a number to assume.
+under. 192G would leave ~38 GiB over the 160GB run's peak, so
+`04-export.sbatch` now tries that; until a run under it is in the table, it is
+a guess, not a measurement.
 
 For the record, the 2026-08-05 run on `ht1` was submitted as `srun --mem=256G
 --cpus-per-task=8 --time=02:00:00` (12:14:50 started, 12:32:56 finished) — kept
@@ -576,7 +577,7 @@ and `DUCKDB_TEMP_DIR` in `slurm/config.sh` are where to change it. The forms
 above are for running a step by hand.
 
 **DuckDB reads your allocation, not the node.** Both of its sized defaults come
-from the Slurm cgroup, measured on duckdb 1.5.4: `threads` from the CPU quota
+from the Slurm cgroup, measured on duckdb 1.5.4 and 1.5.5: `threads` from the CPU quota
 (2 under `--cpus-per-task=2`, on a node whose `os.cpu_count()` is 64) and
 `memory_limit` from the memory quota (~76% of `--mem`). Neither flag below is
 rescuing DuckDB from a node-sized default — that was this repo's belief twice

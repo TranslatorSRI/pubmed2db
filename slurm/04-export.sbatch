@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=pubmed2db-export
 #SBATCH --output=data/logs/%x-%j.out
-#SBATCH --mem=256G
+#SBATCH --mem=192G
 #SBATCH --cpus-per-task=8
 #SBATCH --time=01:00:00
 #
@@ -12,9 +12,11 @@
 # the database rather than the largest input file. Measured on the COPY-based
 # writer: 41.2M documents in 13m 14s at 191.9 GiB peak under a 200GB buffer
 # limit, and 41.0M in 12m 03s at 153.3 GiB under 160GB -- DuckDB fills whatever
-# it is given, so config.sh now sets 160GB. 256G is the allocation that has
-# been run; 192G is the next thing to try, not a number to assume. Do NOT copy
-# the loader's 64G here. One hour is 4x the measured wall time.
+# it is given, so config.sh now sets 160GB. Both ran under 256G; 192G leaves
+# ~38 GiB over the 160GB run's peak and is being tried (#42), not yet measured.
+# If it is OOM-killed, put 256G back here and record the failure in
+# slurm/README.md. Do NOT copy the loader's 64G here. One hour is 4x the
+# measured wall time.
 #
 # Slurm will not grow --mem mid-job, so an under-requested export is OOM-killed
 # partway through with nothing to show for it. Grab the memory up front.
