@@ -94,7 +94,8 @@ explains its part; this table is only a map.
     key on.** `export` refuses to run while one exists in its output
     directory unless given `--overwrite` (it deletes the previous shards
     first, #24; the check is in `export.py`, not the Slurm script, so a
-    hand-run export gets it too), and
+    hand-run export gets it too, and `submit.sh` repeats it before submitting
+    so an `all` chain does not run its load first), and
     `scripts/archive_build.py` moves the directory to `data/builds/<build>/`
     named from its `corpus.build_name`. Two things there are deliberate:
     `data/manifests/` is copied and never moved, because the dated files are
@@ -122,8 +123,8 @@ explains its part; this table is only a map.
     every ID it was asked about (a missing one with `"error"`): efetch's
     recovering parser skips what it cannot read, which made a degraded
     response read as "retired". On a clean rebuild it is capped at
-    `_DROP_CONFIRM_LIMIT`, and a run over the cap fails, so the cap has to sit well above a year's
-    deletions or the chain never recovers.
+    `_DROP_CONFIRM_LIMIT`, and a run over the cap fails, so the cap has to sit
+    well above a year's deletions or the chain never recovers.
 
 - **Reuse [`pubmed-downloader`](https://github.com/cthoyt/pubmed-downloader)
   as-is, no upstream changes.** We take its file listings, its cache layout and

@@ -39,13 +39,18 @@ pytestmark = pytest.mark.skipif(
 
 
 def run_submit(*args: str, **env: str) -> subprocess.CompletedProcess[str]:
-    """Run ``submit.sh`` from the repo root with a minimal environment."""
+    """Run ``submit.sh`` from the repo root with a minimal environment.
+
+    ``EXPORT_DIR`` points nowhere unless a test sets it, so a finished export
+    in the checkout's own ``data/json`` cannot trip the archive pre-flight.
+    """
     return subprocess.run(
         ["bash", str(SUBMIT), *args],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT), **env},
+        env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT),
+             "EXPORT_DIR": "/nonexistent/pubmed2db-export", **env},
     )
 
 
@@ -182,6 +187,21 @@ def test_online_validate_without_an_email_is_refused_before_submitting() -> None
     assert "NCBI_EMAIL" in result.stderr
     # Nothing should have been submitted, including the step that was fine.
     assert "sbatch" not in result.stdout
+
+
+def test_an_unarchived_export_is_refused_before_submitting(tmp_path: Path) -> None:
+    """`all` would otherwise run download and load, then die at export."""
+    (tmp_path / "metadata.json").write_text("{}")
+    result = run_submit("--dry-run", "all", NCBI_EMAIL="someone@example.org",
+                        EXPORT_DIR=str(tmp_path))
+    assert result.returncode == 64
+    assert "archive_build.py" in result.stderr
+    assert "sbatch" not in result.stdout
+
+    for args, env in ((("load",), {}), (("all",), {"EXPORT_OVERWRITE": "1"})):
+        result = run_submit("--dry-run", *args, NCBI_EMAIL="someone@example.org",
+                            EXPORT_DIR=str(tmp_path), **env)
+        assert result.returncode == 0, result.stderr
 
 
 def test_offline_validate_needs_no_email() -> None:

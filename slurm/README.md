@@ -35,7 +35,9 @@ to export, which is the quickest way to confirm a step did what you expected.
 `uv run python scripts/archive_build.py` moves `data/json` to
 `data/builds/<build>/` with its validation report, manifest and these logs.
 `export` refuses to run while `data/json/metadata.json` exists
-(`EXPORT_OVERWRITE=1` to replace it anyway). The README's
+(`EXPORT_OVERWRITE=1` to replace it anyway), and `submit.sh` refuses to submit
+a plan that includes `export` until then, so `all` does not spend a download
+and a load first. The README's
 ["Between runs"](../README.md#between-runs-what-to-keep-archive-and-delete)
 has the full inventory of what persists.
 
