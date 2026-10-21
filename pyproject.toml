@@ -88,6 +88,11 @@ disable = [
     # which GitHub renders as two quotes.
     "MD028",
 ]
+# Reported, never autofixed. On wrapped prose, a line that happens to start
+# with `#13` or `+` trips these, and the fix is to rewrap it: MD018's autofix
+# adds the space that makes the line a heading, MD032's adds the blank lines
+# that split the paragraph around a one-item list.
+unfixable = ["MD018", "MD032"]
 
 [tool.rumdl.per-file-ignores]
 "CLAUDE.md" = ["MD041"]   # it is only "@AGENTS.md", which has no heading to give

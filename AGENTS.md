@@ -482,7 +482,9 @@ code. Three things the fixers get wrong:
   the expression first and interpolate the name (`export._ASSEMBLED_DATE_SQL`).
 - **In wrapped Markdown, a line starting with `+`, `-`, `*` or `1.` becomes a
   list item, and one starting `#13` is a heading away from a fix.** rumdl
-  flags them (MD004/MD032, MD018), but its MD018 autofix adds the space that
-  makes the heading. Rewrap the line instead.
+  flags them (MD032, MD018), and its autofixes would make the damage
+  permanent: MD018's adds the space that makes the heading, MD032's the blank
+  lines that split the paragraph. Both are `unfixable` in `pyproject.toml`,
+  so `rumdl fmt` leaves them reported; rewrap the line by hand.
 - **`docs/data-model/Reference.md` is generated**, so a rumdl finding there is
   fixed in `datamodel.render_reference`, not in the file.
