@@ -140,7 +140,7 @@ between the two (46.4 vs 47.3 s/file), so neither limit was low enough to spill.
 
 **DuckDB does see the Slurm cgroup**, so its default is not the node-sized
 disaster it looks like: measured on duckdb 1.5.4, it takes ~76% of `--mem`
-(6.1 GiB under `--mem=8G`, 47.3 GiB under `--mem=62G`; off a cluster it is ~80%
+(6.1 GiB under `--mem=8G`, again on 1.5.5; 47.3 GiB under `--mem=62G`; off a cluster it is ~80%
 of physical RAM). The problem with the default is subtler — **its limit governs
 only its own buffer pool**, while the lxml tree, the parsed records and the
 Arrow batch live in the same cgroup and count against the same `--mem`. A
@@ -577,7 +577,7 @@ and `DUCKDB_TEMP_DIR` in `slurm/config.sh` are where to change it. The forms
 above are for running a step by hand.
 
 **DuckDB reads your allocation, not the node.** Both of its sized defaults come
-from the Slurm cgroup, measured on duckdb 1.5.4: `threads` from the CPU quota
+from the Slurm cgroup, measured on duckdb 1.5.4 and 1.5.5: `threads` from the CPU quota
 (2 under `--cpus-per-task=2`, on a node whose `os.cpu_count()` is 64) and
 `memory_limit` from the memory quota (~76% of `--mem`). Neither flag below is
 rescuing DuckDB from a node-sized default — that was this repo's belief twice

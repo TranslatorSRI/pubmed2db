@@ -351,34 +351,34 @@ explains its part; this table is only a map.
   `test_cli_export_then_validate_needs_no_flags` runs both commands with no
   flags, because a compressed default is only safe while the checker downstream
   stays flag-free.
-- **The cgroup measurements below were taken on duckdb 1.5.4 and have not been
-  re-taken.** The dependency floor is now 1.5.5, and nothing about the readings
-  is version-fragile in principle — but they are measurements, and the rule that
-  produced them is *measure it, don't reason about it*. Every Slurm step now
-  takes the reading itself: its log has a `DuckDB <version>: memory_limit=…,
-  threads=…` line, and the download, journals and validate steps pass no
-  limit, so theirs are the cgroup-derived defaults (`slurm/README.md` →
-  "Monitoring memory and runtime"). Compare them with that step's `--mem` and `--cpus-per-task`.
-  Off the pipeline, the same check is one line inside an allocation:
-
-  ```bash
-  srun --mem=8G --cpus-per-task=2 uv run python -c "import duckdb; c = duckdb.connect(); print(c.execute(\"SELECT current_setting('memory_limit'), current_setting('threads')\").fetchone())"
-  ```
-
-  Expect ~76% of `--mem` and `--cpus-per-task`; anything else means the
-  paragraph below needs re-measuring, not re-reading.
 - **DuckDB reads the Slurm cgroup. Both of its sized defaults do — we guessed
   otherwise twice and were wrong twice.** Measured on duckdb 1.5.4:
   `memory_limit` is ~76% of `--mem` (6.1 GiB under `--mem=8G`, 47.3 GiB under
   `--mem=62G`; ~80% of physical RAM off a cluster) and `threads` is
   `--cpus-per-task` (2 under `--cpus-per-task=2` on a 64-core node — and via the
-  cgroup's CPU quota, not an affinity mask, which read the full 64). **Do not
-  reason from "DuckDB cannot see the allocation"; measure it.** Both claims
-  reached the docs, the `--help` text and an issue before anyone ran the
-  one-line probe in #36/#38 that disproves them. So the buffer pool is not what
-  overruns the allocation; what its limit does not cover is, since the lxml
-  tree, the parsed records and the Arrow batch share the same cgroup and the
-  default already claims three quarters of it.
+  cgroup's CPU quota, not an affinity mask, which read the full 64). Re-taken
+  on 1.5.5 on `ht1` (2026-10-21): 6.1 GiB and 2 under `--mem=8G
+  --cpus-per-task=2`, unchanged. **Do not reason from "DuckDB cannot see the
+  allocation"; measure it.** Both claims reached the docs, the `--help` text
+  and an issue before anyone ran the one-line probe in #36/#38 that disproves
+  them. So the buffer pool is not what overruns the allocation; what its limit
+  does not cover is, since the lxml tree, the parsed records and the Arrow
+  batch share the same cgroup and the default already claims three quarters
+  of it.
+
+  These are measurements, so re-take them after a DuckDB upgrade rather than
+  assume they carried over. Every Slurm step's log has a `DuckDB <version>:
+  memory_limit=…, threads=…` line, and the download, journals and validate
+  steps pass no limit, so theirs are the cgroup-derived defaults
+  (`slurm/README.md` → "Monitoring memory and runtime"); compare them with
+  that step's `--mem` and `--cpus-per-task`. Off the pipeline, it is one line
+  inside an allocation, and should print ~76% of `--mem` and
+  `--cpus-per-task`:
+
+  ```bash
+  srun --mem=8G --cpus-per-task=2 uv run python -c "import duckdb; c = duckdb.connect(); print(c.execute(\"SELECT current_setting('memory_limit'), current_setting('threads')\").fetchone())"
+  ```
+
 - **Two memory numbers mislead, and both have bitten.** `util.peak_rss_gib` is
   `ru_maxrss`, a high-water mark that only ever rises, so a climbing per-file
   "peak" is not evidence of a leak; `current_rss_gib` is the one that can fall —

@@ -252,7 +252,7 @@ Three more group-level options tune DuckDB itself, which matters on a cluster:
   `--cpus-per-task` (it uses the machine's core count only off a cluster).
 - `--memory-limit SIZE` (`PUBMED2DB_DUCKDB_MEMORY_LIMIT`, e.g. `48GB`) caps the
   buffer pool. DuckDB does read the Slurm cgroup, defaulting to ~76% of `--mem`
-  (measured on duckdb 1.5.4), so this is not about rescuing it from a node-sized
+  (measured on duckdb 1.5.4 and 1.5.5), so this is not about rescuing it from a node-sized
   default — it is about leaving room for the memory DuckDB's limit does *not*
   cover: the lxml tree, the parsed records and the Arrow batch all live in the
   same cgroup.
