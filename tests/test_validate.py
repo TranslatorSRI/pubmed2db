@@ -609,13 +609,30 @@ def test_a_drop_pubmed_no_longer_serves_is_a_warning(
     assert manifest_out.exists()
 
 
-def _manifest_from_before_the_database(tmp_path, pmids):
-    """A previous manifest written before the database existed: a rebuild."""
+def _manifest_from_before_the_database(tmp_path, pmids, *, copied=False):
+    """A previous manifest written before the database existed: a rebuild.
+
+    ``copied`` gives the file a fresh mtime, as ``cp -r`` would, leaving only
+    the gzip header to say when it was written.
+    """
     manifest = tmp_path / "prev.txt.gz"
-    validate.write_manifest(pmids, manifest)
     an_hour_ago = time.time() - 3600
-    os.utime(manifest, (an_hour_ago, an_hour_ago))
+    with gzip.GzipFile(manifest, "wb", mtime=an_hour_ago) as handle:
+        handle.write("".join(f"{p}\n" for p in sorted(pmids)).encode())
+    if not copied:
+        os.utime(manifest, (an_hour_ago, an_hour_ago))
     return manifest
+
+
+def test_a_copied_manifest_still_marks_a_rebuild(export_dir, loaded_con, monkeypatch, tmp_path):
+    """The gzip header, not the file's mtime, says when a manifest was written."""
+    monkeypatch.setattr(validate, "_eutils", _fake_eutils_factory(_EFETCH))
+    manifest = _manifest_from_before_the_database(tmp_path, {1001, 1003, 4242}, copied=True)
+    report = validate.run_validation(
+        export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
+    )
+    assert report["checks"]["drops_since_previous"]["database_rebuilt_since"] is True
+    assert any(w["code"] == "drops_retired_upstream" for w in report["warnings"])
 
 
 def test_a_drop_pubmed_no_longer_serves_fails_a_continuing_database(
@@ -724,10 +741,10 @@ def test_a_continuing_database_asks_pubmed_about_a_sample_only(
         export_dir, con=loaded_con, previous_manifest=manifest, email="me@example.com"
     )
     drops = report["checks"]["drops_since_previous"]
-    assert asked == ["4242", "4243"]
+    assert len(asked) == 2 and set(asked) < {"4242", "4243", "4244"}
     assert drops["pubmed_confirmation"] == "sampled"
-    assert drops["retired_upstream"] == [4242, 4243]
-    assert drops["unexplained"] == [4244]
+    assert drops["retired_upstream"] == sorted(int(p) for p in asked)
+    assert drops["unexplained"] == sorted({4242, 4243, 4244} - {int(p) for p in asked})
     codes = {e["code"] for e in report["errors"]}
     assert codes == {"unexplained_drops", "missed_deletions"}
 

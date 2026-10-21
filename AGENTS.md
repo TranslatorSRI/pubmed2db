@@ -113,7 +113,9 @@ explains its part; this table is only a map.
     still serves is the error; one it no longer serves is the
     `drops_retired_upstream` warning, **but only on a database created after
     the previous manifest** (`pubmed2db_metadata.created_at` against the
-    manifest's mtime) **and with no gap in its files** (`status.load_gaps`):
+    write time in the manifest's gzip header, which a `cp -r` of the data
+    directory keeps and the file's mtime does not) **and with no gap in its
+    files** (`status.load_gaps`):
     a skipped update file's deletions look exactly like the ones published
     before the baseline. On a continuing database the same drop means an update
     file was missed, and stays a `missed_deletions` error; there PubMed's

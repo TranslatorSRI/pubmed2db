@@ -606,6 +606,29 @@ def read_manifest(path: Path) -> set[int]:
         return {int(line) for line in handle if line.strip()}
 
 
+def manifest_written_at(path: Path) -> float:
+    """When a manifest was written, as a POSIX timestamp.
+
+    Read from the gzip header's MTIME, which :func:`write_manifest` sets at
+    write time and which a copy (``cp -r``, ``rsync`` without ``-t``, a restore
+    from ``builds/<x>/manifests``) carries unchanged, unlike the file's mtime.
+    A plain-text manifest, or a gzip one written with MTIME 0, falls back to the
+    file's mtime. So does one whose file mtime is within the header's second:
+    that file was not copied, and its mtime is the finer of the two, which
+    matters for a database created in the same second.
+    """
+    file_mtime = path.stat().st_mtime
+    try:
+        with gzip.open(path, "rb") as handle:
+            handle.read(1)  # the header is parsed on the first read
+            header = handle.mtime
+    except (OSError, EOFError):
+        return file_mtime
+    if not header or 0 <= file_mtime - header < 1:
+        return file_mtime
+    return float(header)
+
+
 # --------------------------------------------------------------------------- #
 # Check 1: structure
 # --------------------------------------------------------------------------- #
@@ -1131,14 +1154,16 @@ def _rebuilt_since(con: duckdb.DuckDBPyConnection, manifest: Path) -> bool:
 
     That is the fresh-database rebuild, the one case where a drop the database
     cannot explain may still be legitimate. False when the creation time is
-    unknown: the strict answer.
+    unknown: the strict answer. The manifest's time is
+    :func:`manifest_written_at`, so copying the data directory does not turn a
+    rebuild into a continuing database.
     """
     from .datamodel import metadata
 
     created = metadata(con).get("created_at")
     if not created:
         return False
-    return datetime.fromisoformat(created).timestamp() > manifest.stat().st_mtime
+    return datetime.fromisoformat(created).timestamp() > manifest_written_at(manifest)
 
 
 # --------------------------------------------------------------------------- #
@@ -1666,6 +1691,7 @@ def check_drops_since(
     online: bool,
     api_key: str | None,
     email: str | None,
+    seed: int = 0,
 ) -> None:
     """Diff this export's PMID set against a previous export's manifest.
 
@@ -1693,7 +1719,8 @@ def check_drops_since(
     a rebuilt database with a gap in its files (:func:`status.load_gaps`): the
     deletions the skipped file carried look exactly like the ones published
     before the baseline. Where PubMed's answer cannot excuse anything, only
-    :data:`_DROP_DIAGNOSE_SAMPLE` drops are sent, to tell lost records
+    :data:`_DROP_DIAGNOSE_SAMPLE` drops, drawn at random with ``seed``, are
+    sent, to tell lost records
     (``unexplained_drops``) from missed deletions (``missed_deletions``); both
     are recorded when both occur.
 
@@ -1746,13 +1773,20 @@ def check_drops_since(
         elif excusable and len(unexplained) > _DROP_CONFIRM_LIMIT:
             confirmation = "over_limit"
         else:
-            sample = unexplained if excusable else unexplained[:_DROP_DIAGNOSE_SAMPLE]
+            # At random, not the lowest PMIDs: a recent load that lost new
+            # records would otherwise be hidden behind old missed deletions.
+            if excusable or len(unexplained) <= _DROP_DIAGNOSE_SAMPLE:
+                sample = unexplained
+            else:
+                sample = sorted(random.Random(seed).sample(unexplained, _DROP_DIAGNOSE_SAMPLE))
             try:
                 served = pmids_served(sample, api_key=api_key, email=email)
                 asked = sample
                 confirmation = "entrez" if len(sample) == len(unexplained) else "sampled"
                 retired_upstream = [p for p in sample if p not in served]
-                unexplained = [p for p in unexplained if p in served or p not in asked]
+                # A set: on a rebuild `asked` is every drop, up to 200,000.
+                retired = set(retired_upstream)
+                unexplained = [p for p in unexplained if p not in retired]
             except Exception as exc:
                 logger.warning("could not confirm dropped PMIDs via API: %s", exc)
                 confirmation = "unreachable"
@@ -1962,7 +1996,7 @@ def run_validation(
     check_drops_since(
         report, all_pmids=structure.all_pmids,
         previous_manifest=previous_manifest, con=con,
-        online=online, api_key=api_key, email=email,
+        online=online, api_key=api_key, email=email, seed=seed,
     )
 
     # A manifest is a *baseline*: the next run diffs its export against it and
