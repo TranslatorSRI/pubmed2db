@@ -65,7 +65,8 @@ testpaths = ["tests"]
 # The code already ran past 88 on hundreds of lines but past 100 on few, so 100
 # reformats least.
 line-length = 100
-target-version = "py311"   # requires-python
+# No target-version: ruff reads it from requires-python, so the two cannot
+# disagree when the floor is raised.
 
 [tool.ruff.lint]
 # Listed explicitly: ruff's own default set is far broader (~400 rules in
@@ -76,7 +77,7 @@ select = [
     "E4", "E7", "E9",  # pycodestyle errors that are not style
     "F",               # pyflakes
     "I",               # import order
-    "UP",              # pyupgrade, to target-version
+    "UP",              # pyupgrade, to requires-python
 ]
 
 [tool.rumdl]
