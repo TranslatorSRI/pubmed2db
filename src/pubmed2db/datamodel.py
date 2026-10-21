@@ -5,9 +5,11 @@ One version number covers every output — the DuckDB database, the Parquet expo
 consumer of any of them pins one thing. It is **not** the code version: the
 code version says how the *code* changed, this one how consumers' code is
 affected, and `docs/data-model/README.md` says what each bump means. It is standard
-semantic versioning: a patch fixes values without changing the shape or meaning
-of anything, a minor bump only *adds* (a table, a column, a view, an NDJSON
-field), and a major bump renames, removes or changes the meaning of one.
+semantic versioning over the contract, not the contents: a minor bump only
+*adds* (a table, a column, a view, an NDJSON field), a major bump renames,
+removes or changes the meaning of one, and the patch level is not used. New
+PubMed data, and fixes that change values without changing how to read them,
+leave the version alone.
 
 The version is written into the database when it is created, in the key/value
 ``pubmed2db_metadata`` table, and checked every time it is opened
@@ -165,10 +167,10 @@ def stamp(con: duckdb.DuckDBPyConnection) -> None:
     Runs after ``schema.sql`` on every open. On a new database it writes all
     three creation keys; on an older one it raises the stored version to ours,
     which for a minor is only correct because ``schema.sql`` has just added the
-    columns that version introduced (:func:`check_migrated` holds it to that). A patch's fixes reach rows already loaded
-    only when they are reloaded; its entry in `docs/data-model/Changelog.md` says whether that is needed, and
-    ``last_loaded_by`` says which code did the loading. Never lowered: older code
-    opening a newer-patch database leaves its version alone.
+    columns that version introduced (:func:`check_migrated` holds it to that).
+    ``last_loaded_by`` says which code did the loading, which is how to tell
+    whether a value fix from a later release reached the rows. Never lowered:
+    older code opening a newer-patch database leaves its version alone.
     """
     stored = stored_version(con)
     if stored is None:

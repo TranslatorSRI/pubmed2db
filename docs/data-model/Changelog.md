@@ -1,8 +1,10 @@
 # pubmed2db data model changelog
 
 What changed in each version of the [pubmed2db data model](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/README.md),
-newest first. Each entry says, per output, what a consumer has to do. The
-version scheme is in
+newest first. Each entry says, per output, what a consumer has to do. A fix
+that changes values but not how to read them does not change the version, so
+it is not here: the code's release notes list it, and say whether an existing
+database needs a reload. The version scheme is in
 [Versioning and stability](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/README.md#versioning-and-stability).
 
 ## 1.0.0

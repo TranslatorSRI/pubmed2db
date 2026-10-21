@@ -44,13 +44,19 @@ explains its part; this table is only a map.
   Changing the shape fails `tests/test_data_model.py` until you bump it:
   - **minor** only appends (a column at a table's end, a table, a view, an
     NDJSON field);
-  - **major** for anything else.
-  - **Patch** is for value fixes, and no test can detect that you owe one.
+  - **major** for anything else, including a change in what a value *means*
+    (what NULL stands for, an ordering's base) with no change to the shape.
+    No test catches that one; ask whether a consumer must read anything
+    differently.
+  - **Patch** is not used. The version is the contract, not the contents:
+    new PubMed or MeSH data never bumps it, and neither does a fix that
+    changes values without changing how to read them. That goes in the code's
+    release notes, with whether it needs a reload.
 
   Then write `tests/data_model/<MAJOR.MINOR>.json` with
   `python -m pubmed2db.datamodel --golden`; there is one file per
-  `MAJOR.MINOR`, because a patch cannot change the shape. Every bump, patch
-  included, also needs an entry in `docs/data-model/Changelog.md` saying, per
+  `MAJOR.MINOR`, because a patch cannot change the shape. Every bump also
+  needs an entry in `docs/data-model/Changelog.md` saying, per
   output, what consumers must do; a test checks that it exists. That per-output
   table is the deliberate alternative to an extra version level for "breaks
   some consumers but not others". **Never edit an existing version's

@@ -24,9 +24,9 @@ once the release PR has merged.
 - **Z** for smaller improvements and fixes that shouldn't significantly change the output (`v1.1.1`).
 
 **The data model version** (`datamodel.DATA_MODEL_VERSION`, 1.0.0 since the build after `2026sep26`) is what consumers pin. It is standard semantic versioning, defined in [`docs/data-model/README.md`](./data-model/README.md#versioning-and-stability):
-- **patch:** values fixed, shape and meaning unchanged;
 - **minor:** only additions;
-- **major:** anything renamed, removed or changed in meaning.
+- **major:** anything renamed, removed or changed in meaning;
+- **patch:** not used. The version describes how to read the outputs, not what they contain, so a fix that changes values without changing how to read them is a code change, listed in the release notes with whether a database needs a reload.
 
 A major bump is often breaking for one output and harmless for another (1.0.0 renamed Parquet tables and left the NDJSON untouched). So rather than a separate level for "breaks some consumers", every bump gets an entry in [the data model changelog](./data-model/Changelog.md) saying, output by output, what a consumer must do. A test fails until the entry exists. A release that changes the data model says so in its release PR and GitHub release notes, and links that entry.
 
@@ -35,7 +35,7 @@ A major bump is often breaking for one output and harmless for another (1.0.0 re
 1. **Plan.**
    - Open a milestone named for the version, with the planned build date as its due date. It is named for the version, not the date, so a build that slips does not leave it misnamed; the data-build tag records the actual date.
    - Put the build's issues and PRs on it. An item the run only has to *observe*, such as a measurement read from its logs, goes on the next milestone, with a line in the release PR's post-run checklist to record what the run showed.
-   - Decide whether the release changes the data model, and at which level. `tests/test_data_model.py` fails on any shape change that was not bumped, but only a person can spot a patch-level change in values, so ask of every merged PR: does any output now hold different values?
+   - Decide whether the release changes the data model, and at which level. `tests/test_data_model.py` fails on any shape change that was not bumped, but only a person can spot a change of meaning, so ask of every merged PR: does a consumer need to read anything differently? A PR that only changes values (a parsing fix, an upstream library that parses differently) does not bump the version; list it in the release notes, with whether it needs a reload.
    - Feature PRs may be stacked on each other, and each is reviewed on its own.
 
 2. **Cut the release branch.**

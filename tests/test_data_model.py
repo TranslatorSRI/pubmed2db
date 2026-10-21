@@ -512,8 +512,9 @@ def test_every_recipe_in_the_doc_runs(edge_con, tmp_path, monkeypatch):
 
 
 def test_patch_levels_neither_refuse_nor_downgrade(tmp_path, monkeypatch):
-    """A patch fixes values, never the shape, so code a patch behind or ahead
-    opens the database, and the stored version only ever rises."""
+    """The patch level is unused, but a patch can never change the shape, so
+    code a patch behind or ahead opens the database, and the stored version
+    only ever rises."""
     path = tmp_path / "db.duckdb"
     connect(path).close()
     major, minor, patch = datamodel.parse_version(DATA_MODEL_VERSION)
@@ -529,8 +530,8 @@ def test_patch_levels_neither_refuse_nor_downgrade(tmp_path, monkeypatch):
 
 
 def test_the_changelog_has_an_entry_for_this_version():
-    """Every bump, patch included, tells consumers what changed and what each
-    output's consumers must do; a version with no entry has told them nothing."""
+    """Every bump tells consumers what changed and what each output's
+    consumers must do; a version with no entry has told them nothing."""
     assert f"\n## {DATA_MODEL_VERSION}\n" in CHANGELOG.read_text()
 
 

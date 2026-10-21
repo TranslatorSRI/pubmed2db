@@ -133,27 +133,34 @@ stream or as a CRC error. Checksums cover the export's files only, not
 ## Versioning and stability
 
 The data model has its own version, `MAJOR.MINOR.PATCH` in the standard
-[semantic versioning](https://semver.org/) sense. It says how *your* code is
-affected. pubmed2db's code version (`v1.2`, …) is separate and says how the
+[semantic versioning](https://semver.org/) sense. It describes the contract,
+not the contents: what the tables, columns and fields are, and how to read
+their values. It changes only when you would have to read something
+differently. The contents change with every build, as PubMed and MeSH publish
+new records, revise old ones and rename descriptors, and none of that moves the
+version. pubmed2db's code version (`v1.2`, …) is separate and says how the
 code itself changed, so many code releases can share one data model.
 
-- **Patch** (1.0.0 → 1.0.1) fixes values without changing the shape or meaning
-  of anything: a parsing bug that left a field blank, a normalization that
-  missed a case. Your code needs no change; some outputs will differ, for the
-  better. The changelog says whether an existing database needs a reload to
-  pick the fix up.
 - **Minor** (1.0 → 1.1) only *adds*: a table, a column (appended, never
   inserted), a view, or an NDJSON field. Code written against 1.0 keeps working
   against 1.1.
 - **Major** (1 → 2) renames, removes, retypes or changes the meaning of
   something. Changing an ordering column's base, or what NULL means in a
-  column, counts as a change of meaning. A major bump often leaves one output
-  untouched while breaking another, so its [changelog](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/Changelog.md) entry says,
+  column, counts as a change of meaning: if a fix showed that a NULL taken to
+  mean "missing" actually meant "restricted", code reading it as missing
+  would be wrong, so that is a major bump even though no column changed. A
+  major bump often leaves one output untouched while breaking another, so its
+  [changelog](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/Changelog.md) entry says,
   **output by output**, what a consumer must do. Pin the major version, and
   read that entry before moving to the next one.
+- **Patch** is not used. It is kept so the version stays standard semver,
+  and pubmed2db opens any patch level.
 - **No bump** is needed for:
+  - anything PubMed or MeSH publish: new rows, revised records, renamed descriptors;
   - new values in a column documented as an open vocabulary, such as `article_id.id_type`;
-  - new rows;
+  - a fix in pubmed2db that changes values but not how to read them, such as a
+    parsing bug that left a field blank. The code's release notes say so, and
+    whether an existing database needs a reload to pick it up;
   - reworded comments;
   - anything in the *internal* tier.
 
@@ -178,7 +185,7 @@ pubmed2db's own code enforces the rules on the database it writes:
 - It refuses to open a database from another major version, or from a newer
   minor version, and leaves that database untouched.
 - It upgrades an older minor version in place, since that only adds columns.
-- It opens any patch level, since a patch cannot change the shape.
+- It opens any patch level, which by definition cannot change the shape.
 - It refuses every database built before 1.0.
 
 The repository's tests pin each version's exact shape, and check that a minor
