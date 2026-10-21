@@ -140,13 +140,14 @@ explains its part; this table is only a map.
   `J_Entrez.txt` ourselves even though 0.1.0's `process_journal_overview()`
   now works: upstream's parser raises on a field it does not know, ours
   ignores it, and `load._parse_journal_overview` says why that matters.
-  **An upstream bump needs a data-model bump only if the loaded values
-  change**, so check by loading, not by reading upstream's diff: load the same
-  few PubMed files under the old and new version (a `git worktree` of `main`
-  with its own `uv sync` holds the old one), then compare every table with
-  `EXCEPT ALL` both ways, leaving out `TIMESTAMPTZ` columns and
-  `pubmed2db_metadata.created_by`. For 0.0.14 → 0.1.0, four 2026 files
-  (n0001, n0750, n1334, n1690) matched row for row.
+  **Check whether an upstream bump changes the loaded values by loading, not
+  by reading upstream's diff**: load the same few PubMed files under the old
+  and new version (a `git worktree` of `main` with its own `uv sync` holds the
+  old one), then compare every table with `EXCEPT ALL` both ways, leaving out
+  `TIMESTAMPTZ` columns and `pubmed2db_metadata.created_by`. A difference goes
+  in the release notes, with whether it needs a reload; it bumps the data
+  model only if consumers must read a value differently. For 0.0.14 → 0.1.0,
+  four 2026 files (n0001, n0750, n1334, n1690) matched row for row.
 - **The journal dimension reads two NLM sources, and swapping to one loses
   data.** `J_Entrez.txt` gives `title`/`abbreviation_*`; NLM's serial catalog
   (serfile) gives `start_year`/`end_year`/`active`. The tempting simplification —
