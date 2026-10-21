@@ -5,8 +5,9 @@ Times parsing and the load's phases *separately* (the parse and the row build
 are CPU-bound Python, ~2 s/file between them, and do not grow; the delete, the
 per-table inserts and the COMMIT are DuckDB's, and at corpus scale their sum
 grows with the database, #68). Reports per-file throughput, the database's size
-(its WAL included) and the process's peak RSS. Use it to spot performance regressions, to size Slurm ``--mem``/wall time,
-and to measure a candidate setting before it goes into ``db.connect``.
+(its WAL included) and the process's peak RSS. Use it to spot performance
+regressions, to size Slurm ``--mem``/wall time, and to measure a candidate
+setting before it goes into ``db.connect``.
 
     uv run python scripts/benchmark_load.py data/pubmed/baseline/pubmed26n0001.xml.gz
 
