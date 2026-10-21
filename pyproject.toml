@@ -13,11 +13,12 @@ authors = [{ name = "Gaurav Vaidya", email = "gaurav@ggvaidya.com" }]
 # and a green suite.
 dependencies = [
     # Upper bound: we call private APIs (`_extract_article`, `_ensure_urls`), so
-    # any 0.0.x release can break us. Re-test before raising the ceiling.
-    # 0.1.0 (2026-10-08) is out and excluded until it has been re-tested; it
-    # carries pubmed-downloader#16, which would let us drop
-    # `load._parse_journal_overview` (see FUTURE.md).
-    "pubmed-downloader>=0.0.14,<0.1",
+    # any release can break us; 0.1.0 already renamed `Heading.mesh_id` and
+    # changed how it reads MeSH IDs, which is why `parse._mesh_headings` reads
+    # them from the XML instead. Re-test before raising the ceiling. The floor
+    # is the version this release was tested against, per the note above:
+    # nothing we call needs a 0.1.0 feature.
+    "pubmed-downloader>=0.1.0,<0.2",
     # The export is one COPY statement whose SQL leans on version-specific
     # behaviour (regexp classes, TRY_CAST, PER_THREAD_OUTPUT options), so the
     # floor tracks what the twin tests actually ran against.
@@ -31,7 +32,8 @@ dependencies = [
     # Imported directly: util.download_file reads the undecoded body through
     # urllib3 and translates its exceptions.
     "urllib3>=2",
-    "pystow>=0.9",
+    # pubmed-downloader 0.1.0 itself requires >=0.10.2.
+    "pystow>=0.10.3",
     "tqdm>=4.70",
     "lxml>=6.1",
 ]

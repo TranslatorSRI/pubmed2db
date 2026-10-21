@@ -511,7 +511,7 @@ wheels = [
 
 [[package]]
 name = "pubmed-downloader"
-version = "0.0.14"
+version = "0.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -529,9 +529,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5a/bb/bb53ee889df3d0ec7325e258bb88ca19182b144fc9e6b708a5eb0b15000c/pubmed_downloader-0.0.14.tar.gz", hash = "sha256:048ead2b4af6f9cf65018d70fb2bb7951ec54e0a93a15f698b2bd73aa7173d83", size = 28443, upload-time = "2026-03-23T11:03:10.633Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a2/d8/0626a17a4ac66311153dd8aac9a5c4fdb7dce5f2092769e0b33fe3fd551f/pubmed_downloader-0.1.0.tar.gz", hash = "sha256:bd8aac767ad3e252ee20d9750e324d182e7222ef17181d944ac1fb4cdcb9f43f", size = 31329, upload-time = "2026-10-08T11:46:03.887Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/14/4c/6e3493c957c9fffcc0bc8c78f79a30a98b93eb615c6c92db2f287588d2c5/pubmed_downloader-0.0.14-py3-none-any.whl", hash = "sha256:efaa6e533dd2204ba47d84ed28fbdba01d2b263a6c47fe4052c5b84799b1cd4a", size = 31441, upload-time = "2026-03-23T11:03:09.534Z" },
+    { url = "https://files.pythonhosted.org/packages/43/7c/5822a326a8ca2757a63c47a9e20630f602246daddabce392f496d79c6838/pubmed_downloader-0.1.0-py3-none-any.whl", hash = "sha256:4199337c62937973d35c9c6b24fc8afbd67349fac27f770ff1f51c95440348e8", size = 33588, upload-time = "2026-10-08T11:46:02.724Z" },
 ]
 
 [[package]]
@@ -561,9 +561,9 @@ requires-dist = [
     { name = "click", specifier = ">=8.4" },
     { name = "duckdb", specifier = ">=1.5.5" },
     { name = "lxml", specifier = ">=6.1" },
-    { name = "pubmed-downloader", specifier = ">=0.0.14,<0.1" },
+    { name = "pubmed-downloader", specifier = ">=0.1.0,<0.2" },
     { name = "pyarrow", specifier = ">=25" },
-    { name = "pystow", specifier = ">=0.9" },
+    { name = "pystow", specifier = ">=0.10.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9" },
     { name = "pytz", specifier = ">=2026.5" },
     { name = "requests", specifier = ">=2.34" },
@@ -770,16 +770,16 @@ wheels = [
 
 [[package]]
 name = "pystow"
-version = "0.9.0"
+version = "0.10.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "backports-zstd", marker = "python_full_version < '3.14'" },
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/97/a2/f928f76bc9b80bc13a46ef632a435263b56711149eb1aab6a1f63368fa5b/pystow-0.9.0.tar.gz", hash = "sha256:347861b53cfbc6692000a9fc03f13e572ac2995b94d30de2722e9bdd2eda0717", size = 55085, upload-time = "2026-08-10T10:26:36.863Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/56/a2/6e17e1fd6385b4426acfd75369593856536c04073576aa35b055bda6fc33/pystow-0.10.3.tar.gz", hash = "sha256:09276e0eeff99069eec1cc6ca24a0e90e4202981d98b2783c2a7c7bb323f8817", size = 64277, upload-time = "2026-10-17T08:12:59.548Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ed/7e/e7ceaf949ecee97ba6003872b3d88bed1b22941742381030d9fc8ea4525e/pystow-0.9.0-py3-none-any.whl", hash = "sha256:5d33926cea3c03c60731df6ffbe9b9467b11d5b1d280f13201874b80fc5f4ba2", size = 62380, upload-time = "2026-08-10T10:26:35.475Z" },
+    { url = "https://files.pythonhosted.org/packages/60/90/399349845ee1f84c182cb3f7e02ee0e89c6881ee6296571d19ee63989c7a/pystow-0.10.3-py3-none-any.whl", hash = "sha256:d70467457362a1c9373c575904bca5c63799bd011b6313ba15b4cf82f313957a", size = 65858, upload-time = "2026-10-17T08:12:58.105Z" },
 ]
 
 [[package]]

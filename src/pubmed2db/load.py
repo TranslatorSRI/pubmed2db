@@ -101,14 +101,14 @@ def _article_rows(parsed: ParsedArticle, source_file: str, order_key: int) -> di
 
     # A descriptor can repeat within one record, so a qualifier is tied to its
     # heading by position; the descriptor UI alone was ambiguous.
-    for heading_position, heading in enumerate(a.headings):
+    for heading_position, heading in enumerate(parsed.mesh_headings):
         rows["mesh_heading"].append(
-            (pmid, source_file, heading_position, heading.mesh_id, heading.name, heading.major)
+            (pmid, source_file, heading_position, heading.ui, heading.name, heading.major)
         )
-        for qualifier in heading.qualifiers or []:
+        for qualifier in heading.qualifiers:
             rows["mesh_qualifier"].append(
-                (pmid, source_file, heading_position, heading.mesh_id,
-                 qualifier.mesh_id, qualifier.name, qualifier.major)
+                (pmid, source_file, heading_position, heading.ui,
+                 qualifier.ui, qualifier.name, qualifier.major)
             )
 
     for position, (type_ui, type_name) in enumerate(parsed.publication_types):
@@ -357,10 +357,15 @@ def _parse_journal_overview(path: Path):
     """Yield ``(record, issns)`` from an NLM journal overview file.
 
     The file is a series of ``key: value`` blocks separated by ``---`` lines.
-    We parse it directly rather than via ``pubmed_downloader.catalog`` because
-    that package's ``Journal`` model (<=0.0.14) requires start/end years that the
-    overview file does not provide, so it raises on the real data. 0.1.0 fixes
-    that (pubmed-downloader#16), but our ``<0.1`` pin excludes it.
+    Upstream's ``catalog.process_journal_overview()`` works since 0.1.0
+    (pubmed-downloader#16), and reads today's file identically (42,130 journals,
+    checked 2026-10-19), but we keep this parser because it is tolerant where
+    upstream's is strict: upstream raises on a key outside its ``REMAPPING``, on
+    a line with no ``:`` and on a block with no ``NlmId``. If NLM added a field,
+    upstream's parser would fail the whole ``journals`` step, while this one
+    ignores the field. Upstream also opens the file without an ``encoding``.
+    #74 tracks the next steps: making what this skips visible, and whether to
+    propose tolerance upstream and swap.
     """
     record: dict[str, str] = {}
     issns: list[tuple[str, str]] = []

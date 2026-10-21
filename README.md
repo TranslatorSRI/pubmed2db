@@ -562,17 +562,20 @@ data-model bump)
 ## Notes
 
 - We reuse `pubmed-downloader` **as-is** for file listings and XML parsing, but work
-  around three bugs in it (≤ 0.0.14), all tracked in [`FUTURE.md`](./FUTURE.md):
-  `catalog.process_journal_overview()` requires `start_year`/`end_year` fields the
-  real `J_Entrez.txt` does not contain, so it raises on live data (fixed by
-  [pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16) in
-  0.1.0, which our `<0.1` pin still excludes); its reference
+  around two bugs in it, both tracked in [`FUTURE.md`](./FUTURE.md) and each
+  pinned by a test in `tests/test_parse.py` that fails once upstream fixes it: its reference
   extraction looks under `MedlineCitation` for a `<ReferenceList>` that PubMed puts
   under `<PubmedData>`, so it never finds one; and its article-ID extraction
   descends into that `<ReferenceList>`, attributing every cited reference's DOI to
-  the citing article. We parse the journal file and the article IDs ourselves; the
+  the citing article. We parse the article IDs ourselves, and the MeSH headings
+  too, since upstream's model of them rewrites IDs between releases; the
   reference bug is moot here because we deliberately do not store the citation
   graph (one article carries ~444 references, and nothing consumes them).
+  We also parse `J_Entrez.txt` ourselves. Upstream's
+  `catalog.process_journal_overview()` raised on the real file until
+  [pubmed-downloader#16](https://github.com/cthoyt/pubmed-downloader/pull/16)
+  (0.1.0), and it still raises on any field it does not recognise, where ours
+  ignores the field.
   Separately, `catalog.ensure_serfile_catalog()` skips the `serfilebase*` baseline
   and takes all 83 monthly deltas instead; that costs 2.52 GiB rather than 872 MiB
   and returns 80% duplicate records for the same coverage, which is why `journals`
