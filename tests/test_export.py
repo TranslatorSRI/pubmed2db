@@ -841,7 +841,7 @@ def test_sha256sums_verifies_with_the_standard_tool(loaded_con, tmp_path):
 def test_a_finished_export_is_refused_without_overwrite(loaded_con, tmp_path):
     """A finished export is the only local copy of its build until it is archived.
 
-    The guard lives in the export itself, not only in 04-export.sbatch, so
+    The guard lives in the export itself, not only in 05-export.sbatch, so
     `pubmed2db export` run by hand cannot delete it either (#24).
     """
     from pubmed2db.export import export_json, export_parquet

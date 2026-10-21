@@ -14,6 +14,7 @@ export NCBI_EMAIL=you@example.org     # required by validate; NCBI_API_KEY optio
 
 ./slurm/submit.sh download
 ./slurm/submit.sh journals
+./slurm/submit.sh stage
 ./slurm/submit.sh load
 ./slurm/submit.sh export
 ./slurm/submit.sh validate
@@ -63,9 +64,10 @@ has the rest.
 | --- | --- | --- |
 | `download` | `01-download.sbatch` | small, network-bound, long |
 | `journals` | `02-journals.sbatch` | small, network-bound |
-| `load` | `03-load.sbatch` | the long pole; memory-capped |
-| `export` | `04-export.sbatch` | the big one; whole-corpus, memory is the constraint |
-| `validate` | `05-validate.sbatch` | small, needs internet, writes the PMID manifest |
+| `stage` | `03-stage.sbatch` | CPU-bound and parallel: every core of the allocation, ~1 GiB each |
+| `load` | `04-load.sbatch` | the single writer; memory-capped |
+| `export` | `05-export.sbatch` | the big one; whole-corpus, memory is the constraint |
+| `validate` | `06-validate.sbatch` | small, needs internet, writes the PMID manifest |
 
 `validate` passes a dated `--manifest` on every run: it is the only record of
 *which* PMIDs an export contained, and the next run cannot diff against a
@@ -83,10 +85,11 @@ and the new baseline (the new database never loaded those deletions, so
 slurm/
   config.sh            settings shared across steps; every value overridable from the environment
   01-download.sbatch   \
-  02-journals.sbatch    |  one step each. The #SBATCH headers are the only place
-  03-load.sbatch        |  an allocation is written down.
-  04-export.sbatch      |
-  05-validate.sbatch   /
+  02-journals.sbatch    |
+  03-stage.sbatch       |  one step each. The #SBATCH headers are the only place
+  04-load.sbatch        |  an allocation is written down.
+  05-export.sbatch      |
+  06-validate.sbatch   /
   submit.sh            submits one step, several, or `all` chained with --dependency=afterok
 ```
 
@@ -104,7 +107,7 @@ DATA_DIR=/scratch/$USER/pubmed ./slurm/submit.sh all
 VALIDATE_OFFLINE=1 ./slurm/submit.sh validate
 ```
 
-Steps remain ordinary scripts: `sbatch slurm/03-load.sbatch` works, and so does
+Steps remain ordinary scripts: `sbatch slurm/04-load.sbatch` works, and so does
 running the `uv run` line inside one directly on an interactive node. One catch
 if you bypass `submit.sh`: `#SBATCH --output` is a static directive, so it
 cannot follow a `DATA_DIR` you overrode — a bare `sbatch` writes its log under
@@ -113,9 +116,35 @@ not exist. `submit.sh` passes `--output` on the command line (which overrides
 the directive) and creates the directory first, which is why it is the
 recommended entry point rather than a convenience.
 
+## Running `stage`: parallel parse to Parquet shards
+
+`stage` parses every downloaded file that `load` has not yet inserted, as many
+at once as `STAGE_WORKERS` (the allocation's `--cpus-per-task`), and writes
+one directory of Parquet shards per file under `STAGE_DIR` for `04-load.sbatch`
+to insert in bulk. It opens the database read-only, only to ask which files
+need loading; the workers never touch it. That is the whole reason it is a
+separate step: DuckDB has a single writer, so the serial `load` spent a day
+parsing files one at a time in the same process that inserted them (#68).
+
+Memory is per worker. The parse of a 30,000-article baseline file peaks at
+~1.1 GiB now that it streams the XML (#25; it was 3.7 GiB with the whole tree),
+plus the Arrow tables being written, so `--mem` is roughly workers × 1.5 GiB
+with headroom. Each `staged` line in the log carries its worker's peak RSS;
+read the next run's `--mem` off those and `--time` off the progress line's
+`s/file`, which is per *completed* file across all workers. On a laptop core
+the parse is ~7 s/file, so 16 workers take the 2026 corpus in well under an
+hour of wall time before I/O.
+
+The shards are transient: `load` deletes each one as its transaction commits,
+so `STAGE_DIR` holds at most the files staged and not yet loaded (budget
+roughly the size of the XML it was cut from until the first run measures it).
+`scripts/fresh_database.py` deletes the directory with the database.
+
+**Run table:** none yet; the first cluster run fills this in.
+
 ## Running `load`: how much memory? (`--mem`)
 
-**Short answer: `03-load.sbatch` asks for a generous allocation and caps DuckDB's
+**Short answer: `04-load.sbatch` asks for a generous allocation and caps DuckDB's
 buffer pool below it. Measured on two full loads, the process settles at that
 cap plus ~5–6 GiB: everything above our own working set is DuckDB's cache, and
 it fills whatever it is given.**
@@ -243,9 +272,38 @@ the per-file `DELETE ... WHERE source_file = ?` over every versioned table,
 `timing` line follows, with the registry apart and the three slowest tables.
 
 The 24h limit that ran the 2026-09-25 load was 90% used, and each month's
-update files add ~50 files to the count, so `03-load.sbatch` now asks for 36h.
-Don't guess the next run's limit — the progress line reports the rate and the
-elapsed time to date, which is exactly what scales:
+update files add ~50 files to the count, so `04-load.sbatch` asked for 36h,
+and still does until the first staged run is measured.
+
+**Where the time goes, measured locally (2026-10-21).** The serial loader's
+phases were timed separately (`loaded` lines now carry parse, insert and
+commit seconds; `DEBUG` lines break the insert down by table) while
+`scripts/benchmark_load.py --synthetic 400` grew a database to 26 GB on a
+laptop SSD by reloading five real baseline files under made-up names:
+
+| Database | delete | insert | commit | DuckDB total | per file |
+| --- | --- | --- | --- | --- | --- |
+| empty | 0.00 s | 0.45 s | 0.10 s | 0.55 s | + ~7 s parse |
+| 6.7 GB | 0.03 s | 0.43 s | 0.39 s | 0.85 s | |
+| 13 GB | 0.05 s | 0.39 s | 0.38 s | 0.82 s | |
+| 26 GB | 0.09 s | 0.44 s | 0.38 s | 0.91 s | |
+
+So DuckDB's own work on a 30,000-article file is under a second and barely
+grows: the per-file `DELETE ... WHERE source_file = ?` is pruned by zone maps
+(0.14 s on the 76 GB 2026-09-25 database's 379M-row `mesh_heading`), and the
+commit, where DuckDB checkpoints, plateaus. The cluster's 30 s/file on an
+empty database and ~65 s at the end of the baseline are therefore its
+environment (the filesystem under the database file, most likely), not the
+insert, and the per-phase figures in the next cluster log are what will name
+it. That is also why the parse was moved out rather than the insert tuned:
+with the insert this cheap, parallelizing the parse and committing fewer,
+larger transactions is what is left.
+
+Since v1.3 `load` inserts staged files `LOAD_FILES_PER_TXN` (50) per
+transaction, and its progress line counts staged files; the rate to size the
+next `--time` from is that line's `s/file`. Don't guess the next run's limit —
+the progress line reports the rate and the elapsed time to date, which is
+exactly what scales:
 
 ```text
 INFO pubmed2db.load: progress: 1000/1636 files this run, 636 remaining · 40.4 s/file · elapsed 11h 13m · ~7h 08m to go
@@ -333,10 +391,10 @@ next thing to measure, not a number to assume.
 For the record, the 2026-08-05 run on `ht1` was submitted as `srun --mem=256G
 --cpus-per-task=8 --time=02:00:00` (12:14:50 started, 12:32:56 finished) — kept
 here as the provenance of the numbers above, not as a command to copy;
-`04-export.sbatch` is what to run. The 2026-08-21 and 2026-09-26 runs were
+`05-export.sbatch` is what to run. The 2026-08-21 and 2026-09-26 runs were
 `./slurm/submit.sh all`, the first with `EXPORT_MEMORY_LIMIT=160GB` set by hand.
 
-Time is the cheap dimension: `04-export.sbatch` asks for an hour against a
+Time is the cheap dimension: `05-export.sbatch` asks for an hour against a
 measured 13 minutes. Expect the first ~5 minutes to log `0.0 GiB across 0
 shard(s)` while RSS climbs — that is the `_latest_snapshot` window and the
 `string_agg` materializing before the first shard opens; both runs did it.
@@ -385,7 +443,7 @@ Notes on the knobs:
   oversubscribes the step that gets OOM-killed, and one set deliberately below
   it is also the only way `--shards` interacts with a group-level `--threads` —
   the `SET` overrides it for the duration of the COPY.
-- **`--sample-size` is per shard, so `05-validate.sbatch` derives it from a
+- **`--sample-size` is per shard, so `06-validate.sbatch` derives it from a
   target total.** `validate` samples that many records from *each* shard, and
   since the export writes one shard per writer thread the shard count follows
   `--cpus-per-task`. Left alone, halving the export's allocation would halve how
@@ -433,7 +491,7 @@ export NCBI_EMAIL=you@example.org     # NCBI_API_KEY too, if you have one
 ./slurm/submit.sh validate
 ```
 
-`05-validate.sbatch` handles the manifest bookkeeping that
+`06-validate.sbatch` handles the manifest bookkeeping that
 `drops_since_previous` needs: it writes this run's PMID set to
 `data/manifests/pmids-<today>.txt.gz` and passes the newest *earlier* manifest as
 `--previous-manifest`. The first run after adopting this reports `skip` — it has
@@ -453,7 +511,7 @@ report the recovered corpus as "N added" while the real drops go unnoticed. A
 unreachable", which says nothing about the PMID set the shard read built.
 
 **The script also moves the report.** `validate` on its own writes
-`validation_report.json` into the export directory; `05-validate.sbatch` passes
+`validation_report.json` into the export directory; `06-validate.sbatch` passes
 `--out data/manifests/validation_report-<today>.json` instead, so it lands beside
 the manifest it belongs with. Same reasoning as the manifest: the next `export`
 republishes the export directory, so a report left there would outlive the

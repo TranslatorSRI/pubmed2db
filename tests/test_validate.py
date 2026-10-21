@@ -1389,7 +1389,7 @@ def test_offline_results_survive_an_entrez_outage(export_dir, loaded_con, monkey
 def test_a_failed_run_writes_no_manifest(export_dir, monkeypatch, tmp_path, caplog):
     """A manifest is the next run's baseline, so a failed run must not leave one.
 
-    05-validate.sbatch passes --manifest on every cluster run, which makes this
+    06-validate.sbatch passes --manifest on every cluster run, which makes this
     the default path rather than a deliberate choice. A truncated or half-written
     export yields a short PMID set; adopting it as the baseline makes the *next*
     run report the recovered corpus as "N added" while the real drops go
@@ -1573,7 +1573,7 @@ def test_export_metadata_catches_a_changed_or_missing_shard(loaded_con, tmp_path
 
 
 def test_report_records_absolute_paths(export_dir, tmp_path, monkeypatch):
-    """05-validate.sbatch passes paths relative to SLURM_SUBMIT_DIR; the report
+    """06-validate.sbatch passes paths relative to SLURM_SUBMIT_DIR; the report
     must not, or archive_build.py run from elsewhere cannot match it to its export."""
     monkeypatch.chdir(export_dir.parent)
     report = validate.run_validation(

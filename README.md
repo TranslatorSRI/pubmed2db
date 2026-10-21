@@ -82,7 +82,13 @@ uv run pubmed2db --data-dir data download
 # (~890 MB on a first run).
 uv run pubmed2db --data-dir data journals
 
-# Parse downloaded files into the database (full history).
+# Parse downloaded files in parallel into Parquet shards under data/stage/
+# (one directory per file; --workers defaults to every CPU).
+uv run pubmed2db --data-dir data stage --workers 8
+
+# Insert the shards into the database (full history), 50 files per
+# transaction, deleting each shard as it lands; a file with no shard is
+# parsed here, one at a time.
 uv run pubmed2db --data-dir data load
 
 # Export the latest abstract of every PMID as sharded NDJSON (DocumentMetadataAPI fields).
@@ -92,7 +98,7 @@ uv run pubmed2db --data-dir data export --format json --out data/json --shards 1
 # Note: unlike the JSON export, this has not yet been run against the full corpus.
 uv run pubmed2db --data-dir data export --format parquet --out data/parquet
 
-# Download + journals + load in one step (for scheduled runs).
+# Download + journals + stage + load in one step (for scheduled runs).
 uv run pubmed2db --data-dir data update
 
 # Report what's been downloaded, loaded, and is ready to export (read-only).
@@ -105,6 +111,18 @@ uv run pubmed2db --data-dir data validate data/json --email you@example.com
 
 `--data-dir data` is the default, so omitting it gives the same result.
 The DuckDB database is stored as `<data-dir>/pubmed.duckdb`; override with `--db`.
+The shards go under `<data-dir>/stage/`; override with `--stage-dir`.
+
+`stage` exists because DuckDB has a single writer and the parse is the part
+that parallelizes: a serial parse-and-insert of the 2026 corpus was a day
+(21h 29m for 1,636 files), nearly all of it in the database. `stage` opens no
+database, so it can use every CPU; `load` keeps the one writer and inserts
+whole groups of files per transaction. The two produce the same rows by
+construction, since both build them with the same code and differ only in
+whether the rows reach DuckDB through memory or through a Parquet file; a test
+loads the fixtures both ways and compares every table. `load --no-stage`
+ignores the shards and parses every file itself, which is the pre-v1.3
+behaviour.
 
 Both exports finish by writing `metadata.json` into the output directory: the
 data model version, the record count, the corpus cutoff (the last file loaded,
@@ -397,16 +415,23 @@ Use `--limit N` on `download`/`update` to fetch only the newest N files when tes
 
 ### Re-running after a gap
 
-Running `download` and then `load` again is safe: `load` picks up only the files
-that are new or changed, and it cannot introduce duplicate data.
+Running `download`, `stage` and `load` again is safe: `load` picks up only
+the files that are new or changed, and it cannot introduce duplicate data.
 
 - **Only new/changed files are loaded.** `download` bumps a file's
   `downloaded_at` only when its published MD5 is new or differs from the stored
   one, and `load` skips every file whose `processed_at` is at or after its
-  `downloaded_at`. Unchanged files are no-ops.
+  `downloaded_at`. Unchanged files are no-ops. `stage` applies the same rule
+  (it reads the database read-only), and also skips a file whose shard is
+  fresh: cut from the XML now on disk (same size and mtime) by the code now
+  running. A shard that is not fresh is re-staged, so a re-downloaded file is
+  never served from an old shard.
 - **Reloading a file replaces it.** Before inserting, `load` deletes all rows
   previously loaded from that `source_file`, in the same transaction, so even a
-  forced reload (`load --force`) is idempotent.
+  forced reload (`load --force`) is idempotent. From shards, a transaction
+  covers a group of files (`--files-per-txn`, default 50): a group that fails
+  is rolled back and retried one file at a time, and a shard that fails on its
+  own is set aside as `<name>.bad` so the next `load` parses its XML instead.
 - **Several versions of a PMID are the design, not duplication.** A row's
   identity is `(pmid, source_file)`; the `latest_article` view returns the
   version with the highest `file_order_key` per PMID, and drops the PMID if a
@@ -427,9 +452,12 @@ Two ways to apply one, and they are not interchangeable:
 > major version. An older *minor* version is upgraded on open, since it only
 > lacks columns.
 
-- **`load --force`** re-parses every local file and replaces its rows, so it
-  applies a *parsing* change to the whole corpus: roughly a full load's worth of
-  time (about a day at corpus scale — see [`slurm/README.md`](./slurm/README.md#running-load-how-long---time)),
+- **`load --force`** replaces every local file's rows, so it applies a
+  *parsing* change to the whole corpus; run `stage --force` first so the
+  shards carry the new parse (a shard written by other code is never used, so
+  without it `load --force` would re-parse every file itself, serially). The
+  cost is a full load's: at corpus scale, about a day serially before v1.3
+  (see [`slurm/README.md`](./slurm/README.md#running-load-how-long---time)),
   no re-download, and the database keeps its history.
 - **A fresh database** (delete `<data-dir>/pubmed.duckdb`, then `journals` and
   `load`) is the answer whenever the schema *removed or redefined* something,
@@ -516,6 +544,7 @@ build. Everything the pipeline writes, and what to do with it:
 | `pubmed/baseline/`, `pubmed/updates/` | `download` | Keep. `load` parses every `*.xml.gz` here, so a superseded baseline year must *leave* these two directories before a fresh database is loaded: `scripts/fresh_database.py` moves it to `pubmed-archive/<year>/`. |
 | `pubmed-archive/<year>/` | `fresh_database.py` | The kept XML; nothing reads it. `rm -r` it if you do not want it. |
 | `pubmed.duckdb` (+ `.wal`, `.tmp/`) | every command | Months: one database per baseline year, or until a major data-model bump. Deleted by `fresh_database.py`. |
+| `stage/` | `stage` | **Transient.** One directory of Parquet shards per file awaiting `load`, which deletes each as its transaction commits (`--keep-stage` to keep them). Reproducible from the XML; never archived. Deleted by `fresh_database.py` with the database. |
 | `pubmed2db/serfile/`, `pubmed/J_Entrez.txt` | `journals` | Caches. The catalog prunes itself and `J_Entrez.txt` is refetched every run; nothing to do. |
 | `json/` | `export` | **One build.** `metadata.json` marks it finished; `scripts/archive_build.py` moves it to `builds/<build>/`, and `export` refuses to overwrite it until then (`--overwrite`, or `EXPORT_OVERWRITE=1` under Slurm). |
 | `builds/<build>/` | `archive_build.py` | Until published (and after, as long as you like). Laid out as on stars: shards, `metadata.json` and `SHA256SUMS` at the top, `manifests/`, `logs/`, `source_file.csv`. |
@@ -546,8 +575,8 @@ Do this for a new baseline year, or after a major data-model bump.
 1. Steps 1–2 above.
 2. `uv run python scripts/fresh_database.py`. It shows what it will do and asks:
    move every year's XML but the baseline NCBI serves now to
-   `data/pubmed-archive/<year>/`, delete the database and any spill files a
-   dead job left (in `$DUCKDB_TEMP_DIR` too). At the year boundary
+   `data/pubmed-archive/<year>/`, delete the database, the stage directory
+   and any spill files a dead job left (in `$DUCKDB_TEMP_DIR` too). At the year boundary
    that is all of last year's, before the new baseline is downloaded in step 3;
    mid-year it moves nothing. It asks NCBI which year that is (`--keep-year 2027`
    names it instead), and leaves `manifests/`, `logs/`, `builds/` and the
@@ -600,10 +629,12 @@ dimension reads from two NLM sources rather than one.
 
 ## Information on running this pipeline
 
-- `uv run pubmed2db load` takes a long time to run, and it might be beneficial to parallelize this: transform each PubMed
-  file into a separate DuckDB file, then use a query that spans multiple files to either load everything into one
-  file or to simply export it from the multiple files (using PMIDs to group related queries might not take very long?).
-  Running it with 64G of memory seems sufficient.
+- `uv run pubmed2db load` on its own took a day for the corpus (21h 29m for 1,636 files on 2026-09-25),
+  which is why the parse is now a separate, parallel `stage` step writing per-file Parquet shards that
+  `load` inserts in groups (#68). Locally, DuckDB's own work per 30,000-article file is under a second
+  even at 26 GB (insert ~0.4 s, commit ~0.4 s), so the cluster's 30–65 s per file is its environment,
+  and the load's log now says per file where the time went (parse, insert, commit).
+  Running `load` with 64G of memory seems sufficient.
 - `uv run pubmed2db export --format json` is fast but memory-hungry: 41,153,516 documents in 13m 14s
   (≈52k documents/s) at a peak RSS of 191.9 GiB, run with `--mem 256G` and a 200GB DuckDB memory limit
   (153.3 GiB and 12m 03s under a 160GB limit — the peak follows the limit, not the query).

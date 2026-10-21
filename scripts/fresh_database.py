@@ -23,13 +23,16 @@ showing you the plan and asking:
    superseded. Mid-year, NCBI's year is the one on disk, nothing moves, and the
    fresh ``load`` re-parses it all, which is the point of a mid-year rebuild.
    ``--keep-year`` names the year instead of asking NCBI.
-3. **Delete the database**, its write-ahead log and its spill files: the
-   default ``<db>.tmp`` directory, and DuckDB's ``duckdb_temp_*`` files in a
-   configured one (``--temp-dir``, default ``$DUCKDB_TEMP_DIR`` as
-   ``slurm/config.sh`` sets it, else ``$PUBMED2DB_DUCKDB_TEMP_DIR``). A
-   configured directory may be shared, so only those files go, never the
-   directory. DuckDB removes them on a clean exit, so any left are from a job
-   that died.
+3. **Delete the database**, its write-ahead log, its spill files and the
+   stage directory. Spill files are the default ``<db>.tmp`` directory, and
+   DuckDB's ``duckdb_temp_*`` files in a configured one (``--temp-dir``,
+   default ``$DUCKDB_TEMP_DIR`` as ``slurm/config.sh`` sets it, else
+   ``$PUBMED2DB_DUCKDB_TEMP_DIR``). A configured directory may be shared, so
+   only those files go, never the directory. DuckDB removes them on a clean
+   exit, so any left are from a job that died. The stage directory
+   (``$STAGE_DIR``, else ``$PUBMED2DB_STAGE_DIR``, else ``<data-dir>/stage``)
+   holds Parquet shards ``stage`` cut for the registry being deleted; they
+   are reproducible from the XML.
 
 Left alone, deliberately: ``data/manifests/`` (the next ``validate`` diffs the
 rebuilt corpus against the last build's manifest, which is the one comparison
@@ -132,9 +135,21 @@ def main(argv: list[str] | None = None) -> None:
     cache_dirs = [cache / "baseline", cache / "updates"]
     archive = data_dir / "pubmed-archive"
     db_path = data_dir / "pubmed.duckdb"
+    # The stage directory goes with the database: its shards were cut for the
+    # registry this deletes, and `load` would otherwise insert them all into
+    # the new one before it had decided anything (they are reproducible from
+    # the XML, so nothing is lost).
+    stage_dir = Path(
+        os.environ.get("STAGE_DIR") or os.environ.get("PUBMED2DB_STAGE_DIR") or data_dir / "stage"
+    )
     to_delete = [
         p
-        for p in (db_path, db_path.with_suffix(".duckdb.wal"), db_path.with_suffix(".duckdb.tmp"))
+        for p in (
+            db_path,
+            db_path.with_suffix(".duckdb.wal"),
+            db_path.with_suffix(".duckdb.tmp"),
+            stage_dir,
+        )
         if p.exists()
     ]
     temp_dir = args.temp_dir or next(

@@ -4,7 +4,7 @@
 #
 #   ./slurm/submit.sh load              # one step; read its log, then decide
 #   ./slurm/submit.sh export validate   # two, the second gated on the first
-#   ./slurm/submit.sh all               # download -> journals -> load -> export -> validate
+#   ./slurm/submit.sh all               # download -> journals -> stage -> load -> export -> validate
 #   ./slurm/submit.sh --dry-run all     # print the sbatch commands and stop
 #
 # Chained steps use --dependency=afterok plus --kill-on-invalid-dep=yes, so a
@@ -27,15 +27,16 @@ usage() {
 
 # Pipeline order; `all` runs them in this sequence. A `case` rather than an
 # associative array so this works on bash 3.2 as well as 4+.
-STEPS=(download journals load export validate)
+STEPS=(download journals stage load export validate)
 
 step_file() {
     case "$1" in
         download) echo slurm/01-download.sbatch ;;
         journals) echo slurm/02-journals.sbatch ;;
-        load)     echo slurm/03-load.sbatch ;;
-        export)   echo slurm/04-export.sbatch ;;
-        validate) echo slurm/05-validate.sbatch ;;
+        stage)    echo slurm/03-stage.sbatch ;;
+        load)     echo slurm/04-load.sbatch ;;
+        export)   echo slurm/05-export.sbatch ;;
+        validate) echo slurm/06-validate.sbatch ;;
         *)        return 1 ;;
     esac
 }

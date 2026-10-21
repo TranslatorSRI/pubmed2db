@@ -21,12 +21,15 @@ ARCHIVE = REPO_ROOT / "scripts" / "archive_build.py"
 FRESH = REPO_ROOT / "scripts" / "fresh_database.py"
 
 
-def run(script: Path, *args: str, stdin: str = "") -> subprocess.CompletedProcess[str]:
+def run(
+    script: Path, *args: str, stdin: str = "", env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(script), *args],
         capture_output=True,
         text=True,
         input=stdin,
+        env={**os.environ, **env} if env else None,
     )
 
 
@@ -511,3 +514,31 @@ def test_the_between_runs_section_exists_where_the_docs_point() -> None:
     assert heading in (REPO_ROOT / "README.md").read_text()
     for name in ("README.md", "slurm/README.md", "docs/Releases.md"):
         assert anchor in (REPO_ROOT / name).read_text(), name
+
+
+def test_fresh_database_clears_the_stage_directory(two_years: Path) -> None:
+    """Shards were cut for the registry being deleted; a fresh `load` would
+    otherwise insert them all before it had decided anything."""
+    stage = two_years / "stage"
+    (stage / "pubmed26n0001").mkdir(parents=True)
+    (stage / "pubmed26n0001" / "manifest.json").write_text("{}")
+    result = run(FRESH, "--data-dir", str(two_years), "--keep-year", "2026", "--yes")
+    assert result.returncode == 0, result.stderr
+    assert not stage.exists()
+    assert f"delete {stage}" in result.stdout
+
+    # An overridden stage directory is the one that goes.
+    elsewhere = two_years / "elsewhere"
+    (elsewhere / "pubmed26n0001").mkdir(parents=True)
+    (two_years / "pubmed.duckdb").write_text("db")
+    result = run(
+        FRESH,
+        "--data-dir",
+        str(two_years),
+        "--keep-year",
+        "2026",
+        "--yes",
+        env={"STAGE_DIR": str(elsewhere)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert not elsewhere.exists()
