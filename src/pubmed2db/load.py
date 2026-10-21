@@ -364,6 +364,8 @@ def _parse_journal_overview(path: Path):
     a line with no ``:`` and on a block with no ``NlmId``. If NLM added a field,
     upstream's parser would fail the whole ``journals`` step, while this one
     ignores the field. Upstream also opens the file without an ``encoding``.
+    #74 tracks the next steps: making what this skips visible, and whether to
+    propose tolerance upstream and swap.
     """
     record: dict[str, str] = {}
     issns: list[tuple[str, str]] = []
