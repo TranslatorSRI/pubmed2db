@@ -157,10 +157,11 @@ silently caps a later export at the load's much smaller figure.
 
 ### Reading the logged numbers
 
-Each file logs both figures, and the difference between them is the point:
+Each file logs both memory figures, and the difference between them is the
+point (the seconds before them are the next section's):
 
 ```text
-INFO pubmed2db.load: loaded pubmed26n1201.xml.gz: 30000 articles, 0 deletions, 0 failed to parse, 0 book record(s) skipped (RSS 12.4 GiB, peak 42.1 GiB)
+INFO pubmed2db.load: loaded pubmed26n1201.xml.gz: 30000 articles, 0 deletions, 0 failed to parse, 0 book record(s) skipped (parse 2.1s, build 0.9s, delete 0.1s, insert 30.4s, commit 12.0s; RSS 12.4 GiB, peak 42.1 GiB)
 ```
 
 - **`RSS`** is what the process holds *right now*. It can fall. This is the one
@@ -226,6 +227,15 @@ and the two runs — with different limits — landed within 2% of each other. T
 `scripts/benchmark_load.py` on a handful of files against a small database,
 which is the one regime a corpus load never sees. Overlapping parse with insert
 (#26) is where the remaining per-file time is.
+
+Which part of a file's time grows is on its `loaded` line (example in
+[Reading the logged numbers](#reading-the-logged-numbers)), at the default log
+level. `parse` is reading the XML and `build` is turning it into rows and Arrow
+tables: both are Python, and should stay flat. The rest is DuckDB's: `delete` is
+the per-file `DELETE ... WHERE source_file = ?` over every versioned table,
+`insert` the `INSERT` statements (plus the one-row registry upsert), and
+`commit` the `COMMIT`, which is also where DuckDB checkpoints. With `-v` a
+`timing` line follows, with the registry apart and the three slowest tables.
 
 The 24h limit that ran the 2026-09-25 load was 90% used, and each month's
 update files add ~50 files to the count, so `03-load.sbatch` now asks for 36h.
