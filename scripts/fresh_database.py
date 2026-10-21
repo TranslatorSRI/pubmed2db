@@ -98,8 +98,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--data-dir", type=Path, default=Path("data"),
-                        help="The pipeline's --data-dir (default: data).")
+    parser.add_argument("--data-dir", type=Path, default=Path(os.environ.get("DATA_DIR") or "data"),
+                        help="The pipeline's --data-dir (default: $DATA_DIR, else data).")
     parser.add_argument("--export-dir", type=Path, default=None,
                         help="Where export writes (default: $EXPORT_DIR, else <data-dir>/json).")
     parser.add_argument("--temp-dir", type=Path, default=None,

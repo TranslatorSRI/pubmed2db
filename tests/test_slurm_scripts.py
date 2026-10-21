@@ -41,8 +41,9 @@ pytestmark = pytest.mark.skipif(
 def run_submit(*args: str, **env: str) -> subprocess.CompletedProcess[str]:
     """Run ``submit.sh`` from the repo root with a minimal environment.
 
-    ``EXPORT_DIR`` points nowhere unless a test sets it, so a finished export
-    in the checkout's own ``data/json`` cannot trip the archive pre-flight.
+    ``EXPORT_DIR`` and ``MANIFEST_DIR`` point nowhere unless a test sets them,
+    so what the checkout's own ``data/`` holds cannot trip the archive
+    pre-flight or the old-default checks in ``config.sh``.
     """
     return subprocess.run(
         ["bash", str(SUBMIT), *args],
@@ -50,7 +51,8 @@ def run_submit(*args: str, **env: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         env={"PATH": "/usr/bin:/bin", "HOME": str(REPO_ROOT),
-             "EXPORT_DIR": "/nonexistent/pubmed2db-export", **env},
+             "EXPORT_DIR": "/nonexistent/pubmed2db-export",
+             "MANIFEST_DIR": "/nonexistent/pubmed2db-manifests", **env},
     )
 
 
@@ -161,8 +163,11 @@ def test_a_federated_job_id_is_stripped_before_it_reaches_a_dependency() -> None
                 "PATH": f"{stub_dir}:/usr/bin:/bin",
                 "HOME": str(REPO_ROOT),
                 "NCBI_EMAIL": "someone@example.org",
-                # Keep the stub run out of the real ./data directory.
+                # Keep the stub run out of the real ./data directory, and its
+                # old-path checks off whatever the checkout's ./data holds.
                 "DATA_DIR": str(stub_dir / "data"),
+                "EXPORT_DIR": str(stub_dir / "data" / "json"),
+                "MANIFEST_DIR": str(stub_dir / "data" / "manifests"),
             },
         )
     assert result.returncode == 0, result.stderr
@@ -668,6 +673,8 @@ def _submit_with_stub_sbatch(tmp: Path, *args: str) -> subprocess.CompletedProce
             "HOME": str(REPO_ROOT),
             "NCBI_EMAIL": "someone@example.org",
             "DATA_DIR": str(tmp / "data"),
+            "EXPORT_DIR": str(tmp / "data" / "json"),
+            "MANIFEST_DIR": str(tmp / "data" / "manifests"),
         },
     )
 
@@ -712,6 +719,33 @@ def test_export_and_manifest_dirs_follow_an_overridden_data_dir(sandbox: Path) -
     assert result.returncode == 0, result.stderr
     assert f"validate {elsewhere}/json" in result.stdout
     assert f"--manifest {elsewhere}/manifests/pmids-" in result.stdout
+
+
+def test_manifests_at_the_old_default_path_stop_the_run(sandbox: Path) -> None:
+    """A deployment that set DATA_DIR kept its manifests in ./data/manifests.
+
+    Following the new default silently would find no previous manifest there
+    and skip the drop check, so config.sh refuses until they move or are named.
+    """
+    (sandbox / "data" / "manifests" / "pmids-20261020.txt.gz").write_text("")
+    elsewhere = sandbox / "elsewhere"
+    (elsewhere / "json").mkdir(parents=True)
+    result = run_validate(sandbox, NCBI_EMAIL="me@example.org", DATA_DIR=str(elsewhere))
+    assert result.returncode == 64
+    assert "MANIFEST_DIR=data/manifests" in result.stderr
+
+    result = run_validate(sandbox, NCBI_EMAIL="me@example.org", DATA_DIR=str(elsewhere),
+                          MANIFEST_DIR="data/manifests")
+    assert result.returncode == 0, result.stderr
+
+
+def test_an_export_at_the_old_default_path_stops_the_run(sandbox: Path) -> None:
+    (sandbox / "data" / "json" / "metadata.json").write_text("{}")
+    elsewhere = sandbox / "elsewhere"
+    (elsewhere / "json").mkdir(parents=True)
+    result = run_validate(sandbox, NCBI_EMAIL="me@example.org", DATA_DIR=str(elsewhere))
+    assert result.returncode == 64
+    assert "archive_build.py --export-dir data/json" in result.stderr
 
 
 def run_export(sandbox: Path, **env: str) -> subprocess.CompletedProcess[str]:

@@ -354,6 +354,22 @@ def test_fresh_database_clears_spill_files_from_a_configured_temp_dir(
     assert "1 DuckDB spill file(s)" in result.stdout
 
 
+def test_fresh_database_follows_data_dir_from_the_environment(two_years: Path, tmp_path: Path) -> None:
+    """As the Slurm config and archive_build.py do: never a stale ./data instead."""
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "data").mkdir(parents=True)
+    (elsewhere / "data" / "pubmed.duckdb").write_text("a stale database")
+    result = subprocess.run(
+        [sys.executable, str(FRESH), "--keep-year", "2026", "--yes"],
+        capture_output=True, text=True, cwd=elsewhere,
+        env={**os.environ, "DATA_DIR": str(two_years)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert not (two_years / "pubmed.duckdb").exists()
+    assert (two_years / "pubmed-archive" / "2025").is_dir()
+    assert (elsewhere / "data" / "pubmed.duckdb").is_file()
+
+
 def test_fresh_database_refuses_while_a_finished_export_is_unarchived(two_years: Path) -> None:
     (two_years / "json" / "metadata.json").write_text("{}")
     before = _listing(two_years)
