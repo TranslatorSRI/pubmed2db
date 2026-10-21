@@ -541,7 +541,7 @@ build. Everything the pipeline writes, and what to do with it:
 
 #### Before a new run on a fresh database
 
-For a new baseline year, or a major data-model bump:
+Do this for a new baseline year, or after a major data-model bump.
 
 1. Steps 1–2 above.
 2. `uv run python scripts/fresh_database.py`. It shows what it will do and asks:
