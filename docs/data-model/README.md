@@ -146,23 +146,42 @@ code itself changed, so many code releases can share one data model.
   against 1.1.
 - **Major** (1 → 2) renames, removes, retypes or changes the meaning of
   something. Changing an ordering column's base, or what NULL means in a
-  column, counts as a change of meaning: if a fix showed that a NULL taken to
-  mean "missing" actually meant "restricted", code reading it as missing
-  would be wrong, so that is a major bump even though no column changed. A
+  column, counts as a change of meaning even though no column changed: if
+  NULL in a column came to mean "withheld" as well as "absent", code reading
+  it as absent would be wrong. That holds wherever the change comes from:
+  pubmed2db writing the column differently, or PubMed starting to use a field
+  in a way its description here no longer covers. Either way the description
+  changes, and that is the contract. A
   major bump often leaves one output untouched while breaking another, so its
   [changelog](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/Changelog.md) entry says,
   **output by output**, what a consumer must do. Pin the major version, and
   read that entry before moving to the next one.
-- **Patch** is not used. It is kept so the version stays standard semver,
-  and pubmed2db opens any patch level.
+- **Patch** is not used, and stays 0. It is kept so the version stays
+  standard semver.
 - **No bump** is needed for:
-  - anything PubMed or MeSH publish: new rows, revised records, renamed descriptors;
+  - what PubMed or MeSH publish within the meanings described here: new rows,
+    revised records, renamed descriptors;
   - new values in a column documented as an open vocabulary, such as `article_id.id_type`;
   - a fix in pubmed2db that changes values but not how to read them, such as a
-    parsing bug that left a field blank. The code's release notes say so, and
-    whether an existing database needs a reload to pick it up;
+    parsing bug that left a field blank. The code's
+    [release notes](https://github.com/TranslatorSRI/pubmed2db/releases) say
+    so, and whether an existing database needs a reload to pick it up;
   - reworded comments;
   - anything in the *internal* tier.
+
+**Whether a build carries a value fix** is therefore not in the version. Each
+pubmed2db release lists its fixes in its
+[release notes](https://github.com/TranslatorSRI/pubmed2db/releases), and a
+build's `metadata.json` names the code behind it: `generated_by` exported it,
+and `database.created_by` created its database (both as `git describe` gives
+them, such as `v1.2.0` or `v1.2.0-3-gabc1234`). A fix to the export reaches
+every build exported by code that has it. A fix to how files are parsed
+reaches only the files loaded by code that has it, which is what "needs a
+reload" means: a build carries it if its database was created by that release
+or a later one, or if the release notes for the build say it reloaded the
+files.
+`database.last_loaded_by` does not tell you: it names whichever code loaded
+the most recent file, and says nothing about the rows loaded before.
 
 **Check the major version before reading anything else.** Each output gives it:
 
@@ -185,7 +204,7 @@ pubmed2db's own code enforces the rules on the database it writes:
 - It refuses to open a database from another major version, or from a newer
   minor version, and leaves that database untouched.
 - It upgrades an older minor version in place, since that only adds columns.
-- It opens any patch level, which by definition cannot change the shape.
+- It ignores the patch level, which is unused.
 - It refuses every database built before 1.0.
 
 The repository's tests pin each version's exact shape, and check that a minor

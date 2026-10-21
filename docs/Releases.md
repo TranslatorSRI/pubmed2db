@@ -21,7 +21,7 @@ once the release PR has merged.
 **Code versions** (`vX.Y.Z`, the release tags). Tags always carry all three components (`v1.1.0`, not `v1.1`), the same form as `pyproject.toml`'s `version`, while the milestone, release branch and release PR name only the first two. `v1.0` predates this and keeps its name.
 - **X** for a rewrite: a new language, framework or code organization.
 - **Y** for a release with substantial changes or improvements. This is the usual release, one per milestone (`v1.1.0`, `v1.2.0`).
-- **Z** for smaller improvements and fixes that shouldn't significantly change the output (`v1.1.1`).
+- **Z** for smaller improvements and fixes (`v1.1.1`). A Z release can still change output values, since a value fix never moves the data model version; its release notes say which values change and whether an existing database needs a reload, the same as a Y release's.
 
 **The data model version** (`datamodel.DATA_MODEL_VERSION`, 1.0.0 since the build after `2026sep26`) is what consumers pin. It is standard semantic versioning, defined in [`docs/data-model/README.md`](./data-model/README.md#versioning-and-stability):
 - **minor:** only additions;
@@ -96,6 +96,8 @@ A major bump is often breaking for one output and harmless for another (1.0.0 re
    Tag `main`, not the release branch's last commit. If `main` moved on while the release was being built and was never merged into the release branch, the merge commit is the only commit holding exactly what shipped; the branch's last commit lacks `main`'s changes. Tagging `main` also puts the tag on its first-parent history, where `git describe` finds it.
 
    `--generate-notes` lists the merged PRs by title, which is why PR titles are written as changelog lines.
+
+   Value fixes are not in the data model changelog, so these notes are the only place consumers find them ([`docs/data-model/README.md`](./data-model/README.md#versioning-and-stability) sends them here). Above the generated list, name every PR that changes output values, say for each whether an existing database needs a reload, and say whether this release's data build has it: a build on a fresh database does, one that continued an older database does only if it reloaded the files.
 
 8. **Close the milestone.** Move anything still open on it to the next version's milestone or to one of the undated ones ("Needed soon", "Needed later", "Not urgent"). Never rename a milestone to reuse it for the next version: its closed items are the record of what that version shipped.
 
