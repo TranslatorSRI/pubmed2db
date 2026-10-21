@@ -671,7 +671,7 @@ Helper scripts live in `scripts/` and document themselves — run one with
 and each phase of its load (build, delete, insert, commit) separately, and with
 `--synthetic N --db PATH` grows an on-disk database from a few files to see
 what changes with size; its knobs (`--checkpoint-threshold`, `--files-per-txn`,
-`--no-preserve-insertion-order`, `--skip-delete`) are the candidate settings,
+`--no-preserve-insertion-order`) are the candidate settings,
 which is where [`slurm/README.md`](slurm/README.md)'s
 memory and wall-time figures come from; `archive_build.py` and
 `fresh_database.py` are the two steps of

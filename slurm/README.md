@@ -323,7 +323,8 @@ measured saving.
 Two of those are now in the code: the load sets the checkpoint threshold
 (`LOAD_CHECKPOINT_THRESHOLD`, below), and a file the registry has never
 loaded skips its DELETEs, since having deleted in a transaction makes the
-inserts after it slower and a fresh load has nothing to delete. Groups of
+inserts after it slower and a fresh load has nothing to delete (which retired
+`--skip-delete`: a synthetic file now skips them without it). Groups of
 files per transaction are what the staged load does anyway. The cluster's 30 s/file on an
 empty database and ~65 s at the end of the baseline are therefore its
 environment (the filesystem under the database file, most likely), not the
