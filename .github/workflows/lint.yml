@@ -27,9 +27,12 @@ jobs:
           cache-dependency-glob: uv.lock
 
       # ruff and rumdl come from the dev extra at the versions uv.lock pins, so
-      # this run and `uv run ruff format` on a dev box agree.
+      # this run and `uv run ruff format` on a dev box agree. `--locked` is what
+      # makes that pin hold: without it, a pyproject.toml edited without a
+      # re-lock is quietly re-resolved here, and a newer ruff fails
+      # `format --check` on lines nobody touched.
       - name: Install the project
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev
 
       # One step per check, so the failing one is named, and `github` output
       # so findings land on the PR diff as annotations. The config for all

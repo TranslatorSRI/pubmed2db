@@ -32,8 +32,10 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
+      # --locked: test what uv.lock pins, and fail on a stale lock rather than
+      # re-resolve it here into something no dev box has run.
       - name: Install the project
-        run: uv sync --extra dev --python ${{ matrix.python-version }}
+        run: uv sync --locked --extra dev --python ${{ matrix.python-version }}
 
       - name: Run the tests
         # No network needed, by design — the fixtures are gzipped into temp
