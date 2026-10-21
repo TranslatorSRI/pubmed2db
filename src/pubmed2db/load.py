@@ -8,12 +8,14 @@ first — which is also how an MD5 change triggers a refresh.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 import duckdb
 import pyarrow as pa
@@ -23,7 +25,7 @@ from lxml import etree
 from pubmed_downloader.utils import Collective
 
 from .datamodel import record_load
-from .db import NEEDS_LOAD_SQL, parse_file_name, record_run
+from .db import NEEDS_LOAD_SQL, init_schema, parse_file_name, record_run
 from .parse import ParsedArticle, ParsedFile, parse_file
 from .util import current_rss_gib, download_file, eta_str, fmt_duration, peak_rss_gib
 
@@ -136,22 +138,84 @@ def _article_rows(
     return rows
 
 
+@functools.cache
+def table_schemas() -> dict[str, pa.Schema]:
+    """The Arrow schema of every versioned table, read from ``schema.sql`` itself.
+
+    ``article.loaded_at`` is left out: it is ``now()`` at insert time, not a
+    value the parse produces. Every batch is built against these types rather
+    than letting Arrow infer them, so a column that is NULL throughout one
+    file (``author.orcid`` in a file of collective authors, a ``deleted_pmid``
+    table with no rows) still carries the table's type. That is what lets a
+    batch be written to Parquet and read back beside a thousand others in one
+    ``read_parquet`` (`stage`), and it holds the in-process insert to the same
+    rule, so the two sinks cannot drift.
+    """
+    con = duckdb.connect()
+    try:
+        init_schema(con)
+        schemas = {}
+        for table in _VERSIONED_TABLES:
+            exclude = " EXCLUDE (loaded_at)" if table == "article" else ""
+            schemas[table] = con.execute(f"SELECT *{exclude} FROM {table} LIMIT 0").arrow().schema
+        return schemas
+    finally:
+        con.close()
+
+
+def build_batches(
+    parsed: ParsedFile, source_file: str, order_key: int
+) -> tuple[dict[str, pa.Table], int]:
+    """One typed Arrow table per versioned table for a parsed file, and the article count.
+
+    This is the single definition of the rows a file contributes: the direct
+    insert registers these tables, and `stage` writes them to Parquet. A PMID
+    can appear more than once within a single file (e.g. citation correction
+    artifacts); only the last occurrence is kept, so `article`'s documented
+    (pmid, source_file) identity actually holds and `latest_article`'s
+    per-file ranking never needs a tiebreaker. Every table is present, with
+    zero rows where the file has none, so a reader never has to special-case
+    a missing one.
+    """
+    deduped: dict[int, ParsedArticle] = {}
+    for article in parsed.articles:
+        deduped[article.pubmed] = article
+
+    rows: dict[str, list[tuple]] = {t: [] for t in _VERSIONED_TABLES}
+    for article in deduped.values():
+        for table, table_rows in _article_rows(article, source_file, order_key).items():
+            rows[table].extend(table_rows)
+    for pmid in parsed.deleted_pmids:
+        rows["deleted_pmid"].append((pmid, source_file, order_key))
+
+    tables = {}
+    for table, schema in table_schemas().items():
+        columns = list(zip(*rows[table])) if rows[table] else [[] for _ in schema]
+        tables[table] = pa.Table.from_arrays(
+            [pa.array(column, type=f.type) for column, f in zip(columns, schema)], schema=schema
+        )
+    return tables, len(deduped)
+
+
 #: Name under which a per-table batch is registered for the bulk insert below.
 _BATCH = "_load_batch"
 
 
-def _arrow_batch(rows: list[tuple]) -> pa.Table:
-    """Transpose ``rows`` (positional tuples) into an Arrow table for :func:`_insert_batch`.
+def _insert_from(
+    con: duckdb.DuckDBPyConnection, table: str, source_sql: str, params: list | None = None
+) -> None:
+    """``INSERT INTO table`` from any relation whose columns match `table_schemas`.
 
-    Separate from the insert so the two are timed apart: this is a fixed Python
-    cost per row, the insert is DuckDB's and is what can grow with the database.
+    The one place the insert is written: the in-process batch and the staged
+    Parquet shards differ only in what ``source_sql`` names. ``article`` gets
+    ``now()`` appended for its server-side ``loaded_at`` column.
     """
-    columns = zip(*rows)  # transpose row tuples -> per-column sequences
-    return pa.table({str(i): pa.array(col) for i, col in enumerate(columns)})
+    loaded_at = ", now()" if table == "article" else ""
+    con.execute(f"INSERT INTO {table} BY POSITION SELECT *{loaded_at} FROM {source_sql}", params)
 
 
 def _insert_batch(con: duckdb.DuckDBPyConnection, table: str, batch: pa.Table) -> None:
-    """Columnar bulk-insert of ``batch`` (from :func:`_arrow_batch`) into ``table``.
+    """Columnar bulk-insert of one typed batch into ``table``.
 
     Registering the batch as an Arrow table and inserting it via
     ``INSERT ... SELECT`` is ~25x faster than row-by-row ``executemany`` on the
@@ -160,9 +224,7 @@ def _insert_batch(con: duckdb.DuckDBPyConnection, table: str, batch: pa.Table) -
     """
     con.register(_BATCH, batch)
     try:
-        # `article` appends now() for its server-side `loaded_at` column.
-        loaded_at = ", now()" if table == "article" else ""
-        con.execute(f"INSERT INTO {table} BY POSITION SELECT *{loaded_at} FROM {_BATCH}")
+        _insert_from(con, table, _BATCH)
     finally:
         con.unregister(_BATCH)
 
@@ -231,53 +293,45 @@ def _load_parsed_rows(
     costs -- while `load_parsed` keeps the one-file-one-transaction rule
     `load_files` relies on for its failure semantics.
     """
-    year_yy, file_number, order_key = parse_file_name(source_file)
+    order_key = parse_file_name(source_file)[2]
+    started = time.perf_counter()
+    batches, n_articles = build_batches(parsed, source_file, order_key)
+    timing.build += time.perf_counter() - started
 
     started = time.perf_counter()
     delete_file_rows(con, source_file)
     timing.delete += time.perf_counter() - started
 
-    started = time.perf_counter()
-    # A PMID can appear more than once within a single file (e.g. citation
-    # correction artifacts); keep only the last occurrence so `article`'s
-    # documented (pmid, source_file) identity actually holds and
-    # `latest_article`'s per-file ranking never needs a tiebreaker.
-    deduped: dict[int, ParsedArticle] = {}
-    for article in parsed.articles:
-        deduped[article.pubmed] = article
-
-    rows_by_table: dict[str, list[tuple]] = {t: [] for t in _VERSIONED_TABLES}
-    for article in deduped.values():
-        for table, table_rows in _article_rows(article, source_file, order_key).items():
-            rows_by_table[table].extend(table_rows)
-    for pmid in parsed.deleted_pmids:
-        rows_by_table["deleted_pmid"].append((pmid, source_file, order_key))
-    batches = {table: _arrow_batch(rows) for table, rows in rows_by_table.items() if rows}
-    timing.build += time.perf_counter() - started
-
     for table, batch in batches.items():
-        started = time.perf_counter()
-        _insert_batch(con, table, batch)
-        timing.inserts[table] = timing.inserts.get(table, 0.0) + time.perf_counter() - started
-        timing.n_rows += batch.num_rows
+        if batch.num_rows:
+            started = time.perf_counter()
+            _insert_batch(con, table, batch)
+            timing.inserts[table] = timing.inserts.get(table, 0.0) + time.perf_counter() - started
+            timing.n_rows += batch.num_rows
 
     started = time.perf_counter()
-    _upsert_source_file(con, source_file, kind, year_yy, file_number, order_key, deduped, parsed)
+    counts = FileCounts(
+        n_articles, len(parsed.deleted_pmids), parsed.n_failed, parsed.n_book_records
+    )
+    _upsert_source_file(con, source_file, kind, counts)
     timing.registry += time.perf_counter() - started
-    return len(deduped)
+    return n_articles
+
+
+class FileCounts(NamedTuple):
+    """What a file's parse yielded, as the ``source_file`` registry records it."""
+
+    n_articles: int  #: post-dedup, what `build_batches` stored
+    n_deletions: int
+    n_failed: int
+    n_book_records: int
 
 
 def _upsert_source_file(
-    con: duckdb.DuckDBPyConnection,
-    source_file: str,
-    kind: str,
-    year_yy: int,
-    file_number: int,
-    order_key: int,
-    deduped: dict[int, ParsedArticle],
-    parsed: ParsedFile,
+    con: duckdb.DuckDBPyConnection, source_file: str, kind: str, counts: FileCounts
 ) -> None:
     """Record the file as processed, with its counts, in the ``source_file`` registry."""
+    year_yy, file_number, order_key = parse_file_name(source_file)
     con.execute(
         """
             INSERT INTO source_file
@@ -301,17 +355,7 @@ def _upsert_source_file(
                 n_failed = excluded.n_failed,
                 n_book_records = excluded.n_book_records
             """,
-        [
-            source_file,
-            kind,
-            year_yy,
-            file_number,
-            order_key,
-            len(deduped),
-            len(parsed.deleted_pmids),
-            parsed.n_failed,
-            parsed.n_book_records,
-        ],
+        [source_file, kind, year_yy, file_number, order_key, *counts],
     )
 
 
