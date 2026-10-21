@@ -21,8 +21,8 @@ We drive the XML iteration ourselves (rather than using
 
 from __future__ import annotations
 
+import gzip
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
@@ -240,66 +240,91 @@ def _pmid_version(element: etree._Element) -> int | None:
     return int(version) if version else None
 
 
+#: The top-level children of ``PubmedArticleSet`` that `parse_file` reads. The
+#: DTD is ``((PubmedArticle | PubmedBookArticle)+, DeleteCitation?)``.
+_RECORD_TAGS = ("PubmedArticle", "PubmedBookArticle", "DeleteCitation")
+
+
+def _parse_article(element: etree._Element, path: str | Path, result: ParsedFile) -> None:
+    """Read one ``<PubmedArticle>`` into ``result``, counting one that is rejected."""
+    try:
+        article = _extract_article(
+            element,
+            ror_grounder=None,
+            mesh_grounder=None,
+            author_grounder=None,
+        )
+    except (ValueError, KeyError) as exc:
+        logger.warning("skipping article in %s: %s", path, exc)
+        result.n_failed += 1
+        return
+    if article is None:
+        # Upstream returns None rather than raising for an empty
+        # <ArticleTitle> or a missing <MedlineJournalInfo> — both real in
+        # PubMed. Count them, or they vanish from n_articles unremarked.
+        logger.warning("skipping article in %s: extractor returned None", path)
+        result.n_failed += 1
+        return
+    year, month, day, medline_date = _raw_pubdate(element)
+    result.articles.append(
+        ParsedArticle(
+            article=article,
+            pmid_version=_pmid_version(element),
+            pub_year=year,
+            pub_month=month,
+            pub_day=day,
+            medline_date=medline_date,
+            article_ids=_article_ids(element),
+            publication_types=_publication_types(element),
+            mesh_headings=_mesh_headings(element),
+        )
+    )
+
+
 def parse_file(path: str | Path) -> ParsedFile:
     """Parse a (gzipped) PubMed XML file into a :class:`ParsedFile`.
 
-    lxml transparently decompresses ``.xml.gz`` files given a path.
+    The file is streamed with ``iterparse`` and each record's element is
+    discarded once read, so the process holds the parsed records but never
+    the document tree. ``etree.parse`` kept the whole tree alive while every
+    record was built: ~1.2 GiB of a ~2.2 GiB per-file peak for a 30,000-article
+    baseline file (#25), paid once per process today and once per *worker*
+    when files are parsed in parallel (#68). Nothing needed the tree: every
+    extractor works on one ``<PubmedArticle>`` at a time.
+
+    ``iterparse`` does not decompress a ``.gz`` path the way ``etree.parse``
+    does, hence the explicit ``gzip.open``. The three record kinds are read in
+    one pass, in document order, so a file with a ``<DeleteCitation>`` and no
+    articles, or the reverse, parses the same as before.
     """
-    tree = etree.parse(os.fspath(path))
-    root = tree.getroot()
-
     result = ParsedFile()
+    opener = gzip.open if str(path).endswith(".gz") else open
+    with opener(path, "rb") as handle:
+        for _event, element in etree.iterparse(handle, events=("end",), tag=_RECORD_TAGS):
+            if element.tag == "PubmedArticle":
+                _parse_article(element, path, result)
+            elif element.tag == "PubmedBookArticle":
+                # Bookshelf citations share these files per the DTD. We parse
+                # journal citations only; say how many records that skipped
+                # rather than dropping them silently — the count is what
+                # issue #27 needs to decide whether to support them.
+                result.n_book_records += 1
+            else:
+                for pmid_tag in element.findall("PMID"):
+                    if pmid_tag.text and pmid_tag.text.strip().isdigit():
+                        result.deleted_pmids.append(int(pmid_tag.text.strip()))
+            # Drop the record, and any earlier siblings still hanging off the
+            # root, so the tree never holds more than the current record.
+            element.clear(keep_tail=True)
+            while element.getprevious() is not None:
+                del element.getparent()[0]
 
-    for element in root.findall("PubmedArticle"):
-        try:
-            article = _extract_article(
-                element,
-                ror_grounder=None,
-                mesh_grounder=None,
-                author_grounder=None,
-            )
-        except (ValueError, KeyError) as exc:
-            logger.warning("skipping article in %s: %s", path, exc)
-            result.n_failed += 1
-            continue
-        if article is None:
-            # Upstream returns None rather than raising for an empty
-            # <ArticleTitle> or a missing <MedlineJournalInfo> — both real in
-            # PubMed. Count them, or they vanish from n_articles unremarked.
-            logger.warning("skipping article in %s: extractor returned None", path)
-            result.n_failed += 1
-            continue
-        year, month, day, medline_date = _raw_pubdate(element)
-        result.articles.append(
-            ParsedArticle(
-                article=article,
-                pmid_version=_pmid_version(element),
-                pub_year=year,
-                pub_month=month,
-                pub_day=day,
-                medline_date=medline_date,
-                article_ids=_article_ids(element),
-                publication_types=_publication_types(element),
-                mesh_headings=_mesh_headings(element),
-            )
-        )
-
-    # The DTD is `PubmedArticleSet ((PubmedArticle | PubmedBookArticle)+, ...)`,
-    # so Bookshelf citations can share these files. We parse journal citations
-    # only; say how many records that skipped rather than dropping them silently
-    # — the count is what issue #27 needs to decide whether to support them.
-    result.n_book_records = len(root.findall("PubmedBookArticle"))
     if result.n_book_records:
         logger.warning(
             "%s: skipped %d PubmedBookArticle record(s); book citations are not parsed (see #27)",
             path,
             result.n_book_records,
         )
-
-    for pmid_tag in root.findall("DeleteCitation/PMID"):
-        if pmid_tag.text and pmid_tag.text.strip().isdigit():
-            result.deleted_pmids.append(int(pmid_tag.text.strip()))
-
     if result.n_failed:
         logger.warning("%s: %d article(s) failed to parse and were skipped", path, result.n_failed)
 

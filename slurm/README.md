@@ -120,9 +120,14 @@ buffer pool below it. Measured on two full loads, the process settles at that
 cap plus ~5–6 GiB: everything above our own working set is DuckDB's cache, and
 it fills whatever it is given.**
 
-The loader holds one file at a time (full lxml tree + that file's parsed
-records + the Arrow batch), then inserts it and moves on. *Our* footprint does
-not grow with the number of files or the size of the database.
+The loader holds one file at a time (that file's parsed records + the Arrow
+batch), then inserts it and moves on. *Our* footprint does not grow with the
+number of files or the size of the database. It used to include the file's
+whole lxml tree, which `parse_file` kept alive for nothing (#25): streaming
+the file instead took the parse of a 30,000-article baseline file from a
+3.66 GiB peak to 1.06 GiB (pubmed26n1333, measured 2026-10-21), so the "~5–6
+GiB on top" below, measured before that change, is now an overestimate. Both
+full-load rows in the table predate it.
 
 DuckDB's does. It runs in the same process and caches ever more of a growing
 database, so its buffer pool is what makes a long load's RSS climb run-long —

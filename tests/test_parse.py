@@ -239,3 +239,43 @@ def test_book_records_are_counted_not_dropped_silently(gz_fixture, caplog, tmp_p
 
     assert 9001 not in {a.pubmed for a in parsed.articles}
     assert "skipped 1 PubmedBookArticle record(s)" in caplog.text
+
+
+def test_a_file_with_only_deletions_parses(tmp_path):
+    """Streaming reads the three record kinds in one pass, so a file holding a
+    DeleteCitation and no articles (a real shape for an update file) must still
+    yield its deletions, and one with articles and no DeleteCitation none."""
+    import gzip
+
+    from pubmed2db.parse import parse_file
+
+    xml = (
+        "<?xml version='1.0'?><PubmedArticleSet><DeleteCitation>"
+        "<PMID Version='1'>1002</PMID><PMID Version='1'>1003</PMID>"
+        "</DeleteCitation></PubmedArticleSet>"
+    )
+    dst = tmp_path / "pubmed25n0009.xml.gz"
+    with gzip.open(dst, "wt", encoding="utf-8") as handle:
+        handle.write(xml)
+
+    parsed = parse_file(dst)
+    assert parsed.articles == []
+    assert parsed.deleted_pmids == [1002, 1003]
+    assert parsed.n_failed == 0 and parsed.n_book_records == 0
+
+
+def test_an_uncompressed_xml_file_parses_too(gz_fixture, tmp_path):
+    """`iterparse` does not decompress by path as `etree.parse` did; both
+    spellings go through the same opener choice."""
+    import gzip
+
+    from pubmed2db.parse import parse_file
+
+    src = gz_fixture("pubmed25n0001")
+    plain = tmp_path / "pubmed25n0001.xml"
+    with gzip.open(src, "rb") as handle:
+        plain.write_bytes(handle.read())
+
+    assert [a.pubmed for a in parse_file(plain).articles] == [
+        a.pubmed for a in parse_file(src).articles
+    ]
