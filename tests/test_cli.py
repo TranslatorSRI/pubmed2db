@@ -474,3 +474,49 @@ def test_version_is_pyprojects():
 
     pyproject = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())
     assert __version__ == pyproject["project"]["version"]
+
+
+def test_cli_stage_then_load(staged_download):
+    """`stage` then `load`, both flag-free, is the pipeline's shape from v1.3:
+    the shards are consumed and the registry reads as a direct load's would."""
+    db_path = staged_download / "cli.duckdb"
+    data = ("--data-dir", str(staged_download), "--db", str(db_path))
+    result = _run_cli(*data, "stage", "--workers", "2")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Staged 2 file(s); 2 local file(s) checked." in result.stdout
+    assert (staged_download / "stage" / "pubmed25n0001").is_dir()
+
+    result = _run_cli(*data, "load")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Loaded 2 file(s); 2 local file(s) checked." in result.stdout
+    assert "fresh shard(s) found" in result.stderr
+    assert not (staged_download / "stage" / "pubmed25n0001").exists()
+
+    # A second stage has nothing to do: the database says both are loaded.
+    result = _run_cli(*data, "stage")
+    assert "Staged 0 file(s)" in result.stdout, result.stdout + result.stderr
+
+    from pubmed2db.db import connect
+
+    con = connect(db_path)
+    try:
+        assert con.execute("SELECT count(*) FROM latest_article").fetchone()[0] == 2  # 1002 deleted
+        assert (
+            con.execute(
+                "SELECT count(*) FROM source_file WHERE processed_at IS NOT NULL"
+            ).fetchone()[0]
+            == 2
+        )
+    finally:
+        con.close()
+
+
+def test_cli_load_no_stage_ignores_shards(staged_download):
+    db_path = staged_download / "cli.duckdb"
+    data = ("--data-dir", str(staged_download), "--db", str(db_path))
+    assert _run_cli(*data, "stage", "--workers", "1").returncode == 0
+    result = _run_cli(*data, "load", "--no-stage")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Loaded 2 file(s)" in result.stdout
+    assert "fresh shard(s)" not in result.stderr
+    assert (staged_download / "stage" / "pubmed25n0001").is_dir()

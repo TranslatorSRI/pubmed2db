@@ -12,10 +12,11 @@ import functools
 import logging
 import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import duckdb
 import pyarrow as pa
@@ -29,7 +30,15 @@ from .db import NEEDS_LOAD_SQL, init_schema, parse_file_name, record_run
 from .parse import ParsedArticle, ParsedFile, parse_file
 from .util import current_rss_gib, download_file, eta_str, fmt_duration, peak_rss_gib
 
+if TYPE_CHECKING:
+    from .stage import Shard
+
 logger = logging.getLogger(__name__)
+
+#: Files per transaction when loading from shards. Measured against the
+#: alternatives: one transaction for the whole corpus loses hours to one bad
+#: shard, one per table breaks "no child row without its article version".
+DEFAULT_FILES_PER_TXN = 50
 
 #: Per-version tables that carry a ``source_file`` column (cleared on reload).
 _VERSIONED_TABLES = (
@@ -449,11 +458,109 @@ def needs_load(con: duckdb.DuckDBPyConnection, source_file: str, *, force: bool 
     return row is None or bool(row[0])
 
 
+def _load_group(con: duckdb.DuckDBPyConnection, group: list[Shard]) -> LoadTiming:
+    """Insert a group of shards in one transaction; raises after rolling back."""
+    timing = LoadTiming()
+    con.execute("BEGIN TRANSACTION")
+    try:
+        started = time.perf_counter()
+        for shard in group:
+            delete_file_rows(con, shard.file_name)
+        timing.delete = time.perf_counter() - started
+        for table in _VERSIONED_TABLES:
+            paths = [str(shard.parquet(table)) for shard in group]
+            started = time.perf_counter()
+            _insert_from(con, table, "read_parquet($paths)", {"paths": paths})
+            timing.inserts[table] = time.perf_counter() - started
+        started = time.perf_counter()
+        for shard in group:
+            _upsert_source_file(con, shard.file_name, shard.manifest.kind, shard.manifest.counts)
+        timing.registry = time.perf_counter() - started
+        started = time.perf_counter()
+        con.execute("COMMIT")
+        timing.commit = time.perf_counter() - started
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
+    return timing
+
+
+def load_staged(
+    con: duckdb.DuckDBPyConnection,
+    shards: list[Shard],
+    *,
+    files_per_txn: int = DEFAULT_FILES_PER_TXN,
+    keep: bool = False,
+) -> tuple[int, list[str]]:
+    """Insert staged shards (`pubmed2db.stage`), ``files_per_txn`` per transaction.
+
+    Returns ``(n_loaded, failed_file_names)``. A group that fails is rolled
+    back and retried one file at a time; a file that fails on its own is
+    skipped, and its shard renamed ``.bad`` so the next ``load`` parses the
+    XML instead and the operator can look at what was refused. Each shard is
+    deleted once its transaction has committed, unless ``keep``: a crash
+    between the two can only leave a shard whose rows are already in.
+    """
+    shards = sorted(shards, key=lambda s: s.manifest.file_order_key)
+    total = len(shards)
+    run_start = time.monotonic()
+    loaded = 0
+    failed: list[str] = []
+
+    def finish(group: list[Shard]) -> None:
+        if not keep:
+            for shard in group:
+                shutil.rmtree(shard.path, ignore_errors=True)
+
+    for start in range(0, total, files_per_txn):
+        group = shards[start : start + files_per_txn]
+        try:
+            timing = _load_group(con, group)
+            loaded += len(group)
+            finish(group)
+            logger.info("loaded %d staged file(s): %s", len(group), timing.describe())
+        except Exception:  # noqa: BLE001 - isolate the shard at fault, keep going
+            logger.exception("a group of %d staged file(s) failed; retrying one by one", len(group))
+            for shard in group:
+                try:
+                    _load_group(con, [shard])
+                    loaded += 1
+                    finish([shard])
+                except Exception:  # noqa: BLE001
+                    bad = shard.path.with_name(shard.path.name + ".bad")
+                    shutil.rmtree(bad, ignore_errors=True)
+                    shard.path.rename(bad)
+                    logger.exception(
+                        "failed to load %s from its shard; moved it to %s", shard.file_name, bad
+                    )
+                    failed.append(shard.file_name)
+        done = min(start + files_per_txn, total)
+        remaining = total - done
+        elapsed = time.monotonic() - run_start
+        current = current_rss_gib()
+        logger.info(
+            "progress: %d/%d staged files this run, %d remaining · %.1f s/file · elapsed %s · %s "
+            "(RSS %s, peak %.1f GiB)",
+            done,
+            total,
+            remaining,
+            elapsed / done,
+            fmt_duration(elapsed),
+            "done" if remaining <= 0 else f"~{eta_str(elapsed, done, remaining)} to go",
+            "n/a" if current is None else f"{current:.1f} GiB",
+            peak_rss_gib(),
+        )
+    return loaded, failed
+
+
 def load_files(
     con: duckdb.DuckDBPyConnection,
     files: list[tuple[Path, str]],
     *,
     force: bool = False,
+    shards: dict[str, Shard] | None = None,
+    files_per_txn: int = DEFAULT_FILES_PER_TXN,
+    keep_shards: bool = False,
 ) -> tuple[int, list[str]]:
     """Load a list of ``(path, kind)`` files in chronological order, skipping
     ones already up to date.
@@ -463,6 +570,11 @@ def load_files(
     files, and one truncated download shouldn't cost a multi-hour job. Each
     file loads in its own transaction, so a failure leaves no partial rows and
     no ``processed_at`` watermark — a later run retries it.
+
+    Files with a fresh shard in ``shards`` (`stage.find_shards`) are inserted
+    from it, ``files_per_txn`` per transaction, by `load_staged`; the rest are
+    parsed here one at a time. Which files need loading is decided the same
+    way for both, so a shard for a file already up to date is left alone.
     """
     # Filter before sorting: parse_file_name raises on anything that isn't a
     # PubMed XML filename, and one stray file in the download directory must not
@@ -475,13 +587,19 @@ def load_files(
             logger.warning("ignoring %s: not a PubMed XML filename", path.name)
     keyed.sort(key=lambda t: t[0])
     to_load = [(p, k) for _, p, k in keyed if needs_load(con, p.name, force=force)]
+    shards = shards or {}
+    staged = [shards[p.name] for p, _ in to_load if p.name in shards]
+    to_load = [(p, k) for p, k in to_load if p.name not in shards]
     total = len(to_load)
-    if total == 0:
+    if total == 0 and not staged:
         return 0, []
 
-    run_start = time.monotonic()
     loaded = 0
     failed: list[str] = []
+    if staged:
+        loaded, failed = load_staged(con, staged, files_per_txn=files_per_txn, keep=keep_shards)
+
+    run_start = time.monotonic()
     for i, (path, kind) in enumerate(to_load):
         try:
             load_file(con, path, kind=kind)
