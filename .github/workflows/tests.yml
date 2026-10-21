@@ -5,10 +5,14 @@ on:
   push:
     branches: [main]
 
-# A force-push or a quick follow-up commit should cancel the run it supersedes
-# rather than queue behind it.
+# On a PR, a force-push or a quick follow-up commit should cancel the run it
+# supersedes rather than queue behind it. Never on main: quick merges would
+# cancel each other's runs, leaving merge commits that were never checked. So
+# a push to main gets a group of its own, keyed on the commit; turning
+# cancel-in-progress off would not do, since a group holds one pending run and
+# drops the rest.
 concurrency:
-  group: tests-${{ github.ref }}
+  group: tests-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 jobs:
