@@ -421,3 +421,21 @@ def test_build_batches_keeps_the_last_occurrence_of_a_repeated_pmid(gz_fixture):
     )
     assert n_articles == len(titles) == len(parsed.articles) - 1
     assert titles[first.pubmed] == "an earlier version of the same record"
+
+
+def test_a_never_loaded_file_skips_the_delete(con, gz_fixture, monkeypatch):
+    """A file with no processed_at has no rows, so its DELETEs are skipped (they
+    make the inserts after them slower); a reload still deletes."""
+    from pubmed2db import load as load_module
+    from pubmed2db.load import load_file
+
+    deleted: list[str] = []
+    real = load_module.delete_file_rows
+    monkeypatch.setattr(
+        load_module, "delete_file_rows", lambda c, f: (deleted.append(f), real(c, f))
+    )
+    load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
+    assert deleted == []
+    load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
+    assert deleted == ["pubmed25n0001.xml.gz"]
+    assert con.execute("SELECT count(*) FROM article").fetchone()[0] == 3

@@ -244,6 +244,24 @@ def delete_file_rows(con: duckdb.DuckDBPyConnection, source_file: str) -> None:
         con.execute(f"DELETE FROM {table} WHERE source_file = ?", [source_file])
 
 
+def _processed(con: duckdb.DuckDBPyConnection, source_files: list[str]) -> set[str]:
+    """Which of ``source_files`` the registry says were loaded, so have rows to delete.
+
+    A load is one transaction with its registry row, so a file with no
+    ``processed_at`` has no rows: the eleven DELETEs are skipped for it.
+    Measured on a 26 GB database they cost ~0.05 s on their own, but a
+    transaction that has deleted makes the inserts that follow ~0.2 s slower
+    per file (`benchmark_load.py --skip-delete`), which on a fresh load is
+    paid for nothing.
+    """
+    rows = con.execute(
+        "SELECT file_name FROM source_file WHERE processed_at IS NOT NULL AND file_name IN "
+        "(SELECT unnest($names))",
+        {"names": source_files},
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
 @dataclass
 class LoadTiming:
     """Where one file's load spent its time, in seconds, phase by phase.
@@ -308,7 +326,8 @@ def _load_parsed_rows(
     timing.build += time.perf_counter() - started
 
     started = time.perf_counter()
-    delete_file_rows(con, source_file)
+    if _processed(con, [source_file]):
+        delete_file_rows(con, source_file)
     timing.delete += time.perf_counter() - started
 
     for table, batch in batches.items():
@@ -464,8 +483,8 @@ def _load_group(con: duckdb.DuckDBPyConnection, group: list[Shard]) -> LoadTimin
     con.execute("BEGIN TRANSACTION")
     try:
         started = time.perf_counter()
-        for shard in group:
-            delete_file_rows(con, shard.file_name)
+        for name in _processed(con, [shard.file_name for shard in group]):
+            delete_file_rows(con, name)
         timing.delete = time.perf_counter() - started
         for table in _VERSIONED_TABLES:
             paths = [str(shard.parquet(table)) for shard in group]

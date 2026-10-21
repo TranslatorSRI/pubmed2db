@@ -140,7 +140,20 @@ so `STAGE_DIR` holds at most the files staged and not yet loaded (budget
 roughly the size of the XML it was cut from until the first run measures it).
 `scripts/fresh_database.py` deletes the directory with the database.
 
-**Run table:** none yet; the first cluster run fills this in.
+**Run table.** Locally only so far (2026-10-21, a 12-core laptop, 20
+baseline files from `download --limit 20`, the same 20 in both rows):
+
+| Run | Workers | Files | Wall | CPU | Worker peak RSS | Shards on disk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `stage` | 4 | 20 (574,989 articles) | 1m 20s | 4m 27s | 1.6 GiB | 514 MB (~26 MB/file, XML ~30 MB/file) |
+| `load` from those shards | 1 (8 DuckDB threads) | 20 | **5 s** | 14 s | 2.0 GiB | deleted as loaded |
+| `load --no-stage`, serial | 1 | 20 | 3m 15s | 3m 14s | 2.7 GiB | |
+
+The two loads gave identical tables, compared with `EXCEPT ALL` both ways
+over all 19.25M rows and the registry. The staged insert ran 0.2 s/file in
+groups of 10 (`loaded 10 staged file(s): delete 0.01s · insert 1.88s ...`);
+the serial run is the parse, at ~10 s/file on a machine also running a
+benchmark. The first cluster run replaces this table.
 
 ## Running `load`: how much memory? (`--mem`)
 
@@ -291,7 +304,22 @@ laptop SSD by reloading five real baseline files under made-up names:
 So DuckDB's own work on a 30,000-article file is under a second and barely
 grows: the per-file `DELETE ... WHERE source_file = ?` is pruned by zone maps
 (0.14 s on the 76 GB 2026-09-25 database's 379M-row `mesh_heading`), and the
-commit, where DuckDB checkpoints, plateaus. The cluster's 30 s/file on an
+commit, where DuckDB checkpoints, plateaus. The same run with each candidate
+setting, as the mean per file over the 400 synthetic files:
+
+| Setting | delete | insert | commit | DuckDB per file | final file |
+| --- | --- | --- | --- | --- | --- |
+| defaults | 0.05 s | 0.47 s | 0.43 s | 0.95 s | 26.3 GiB |
+| `--checkpoint-threshold 4GB` | 0.05 s | 0.25 s | 0.10 s | **0.40 s** | 23.9 GiB |
+| `--files-per-txn 20` | 0.07 s | 0.37 s | 0.06 s | 0.49 s | 26.2 GiB |
+| `--no-preserve-insertion-order` | 0.05 s | 0.27 s | 0.45 s | 0.78 s | 26.3 GiB |
+| `--skip-delete` | 0 | 0.26 s | 0.44 s | 0.69 s | 26.3 GiB |
+
+Two of those are now in the code: the load sets the checkpoint threshold
+(`LOAD_CHECKPOINT_THRESHOLD`, below), and a file the registry has never
+loaded skips its DELETEs, since having deleted in a transaction makes the
+inserts after it slower and a fresh load has nothing to delete. Groups of
+files per transaction are what the staged load does anyway. The cluster's 30 s/file on an
 empty database and ~65 s at the end of the baseline are therefore its
 environment (the filesystem under the database file, most likely), not the
 insert, and the per-phase figures in the next cluster log are what will name
