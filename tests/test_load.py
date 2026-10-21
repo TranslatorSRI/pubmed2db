@@ -323,3 +323,39 @@ def test_build_name_is_the_utc_posting_date_of_the_cutoff():
     # Late enough in the US evening to be the next day in UTC: UTC decides.
     assert build_name(datetime(2026, 9, 24, 21, 0, tzinfo=eastern)) == "2026sep25"
     assert build_name(None) is None
+
+
+def test_load_logs_phase_timings(con, gz_fixture, caplog):
+    """Each phase is timed on its own, because the per-file total grows with
+    the database (#68) and the total cannot say which phase is growing."""
+    import logging
+
+    import pytest
+
+    from pubmed2db.load import LoadTiming, load_file, load_parsed
+    from pubmed2db.parse import parse_file
+
+    with caplog.at_level(logging.DEBUG, logger="pubmed2db.load"):
+        load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
+
+    messages = [r.getMessage() for r in caplog.records]
+    loaded = next(m for m in messages if m.startswith("loaded "))
+    for phase in ("parse ", "insert ", "commit "):
+        assert phase in loaded, loaded
+    timing = next(m for m in messages if m.startswith("timing "))
+    for phase in ("delete ", "insert ", "registry ", "commit "):
+        assert phase in timing, timing
+
+    # A caller-supplied record is filled in and adds up.
+    record = LoadTiming()
+    load_parsed(
+        con,
+        parse_file(gz_fixture("pubmed25n0001")),
+        "pubmed25n0001.xml.gz",
+        kind="baseline",
+        timing=record,
+    )
+    assert record.inserts and "article" in record.inserts
+    assert record.total == pytest.approx(
+        record.delete + record.insert + record.registry + record.commit
+    )

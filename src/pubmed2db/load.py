@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import duckdb
@@ -164,45 +165,103 @@ def delete_file_rows(con: duckdb.DuckDBPyConnection, source_file: str) -> None:
         con.execute(f"DELETE FROM {table} WHERE source_file = ?", [source_file])
 
 
-def load_parsed(
+@dataclass
+class LoadTiming:
+    """Where one file's load spent its time, in seconds, phase by phase.
+
+    The per-file total is what the progress line reports, and at corpus scale
+    it grows with the database (#68): 30 s/file on an empty one, ~65 s by the
+    end of the baseline. The total cannot say which phase grows, so each is
+    timed on its own -- the per-file ``DELETE`` (zone maps prune it, measured
+    at <0.15 s on a 76 GB database), the per-table inserts, the registry
+    upsert and the ``COMMIT``, which is also where DuckDB checkpoints.
+    """
+
+    delete: float = 0.0
+    inserts: dict[str, float] = field(default_factory=dict)
+    registry: float = 0.0
+    commit: float = 0.0
+
+    @property
+    def insert(self) -> float:
+        """Time in the inserts, all tables together."""
+        return sum(self.inserts.values())
+
+    @property
+    def total(self) -> float:
+        return self.delete + self.insert + self.registry + self.commit
+
+    def describe(self) -> str:
+        """One line, the slowest tables first, for the DEBUG log and the benchmark."""
+        slowest = sorted(self.inserts.items(), key=lambda kv: kv[1], reverse=True)[:3]
+        tables = ", ".join(f"{table} {seconds:.2f}" for table, seconds in slowest)
+        return (
+            f"delete {self.delete:.2f}s · insert {self.insert:.2f}s ({tables}) · "
+            f"registry {self.registry:.2f}s · commit {self.commit:.2f}s"
+        )
+
+
+def _load_parsed_rows(
     con: duckdb.DuckDBPyConnection,
     parsed: ParsedFile,
     source_file: str,
     *,
     kind: str,
+    timing: LoadTiming,
 ) -> int:
-    """Insert a :class:`ParsedFile` (replacing any prior rows for the file).
+    """The body of :func:`load_parsed`, inside whatever transaction is open.
 
-    Returns the number of articles stored, which is the post-dedup count
-    recorded in ``source_file.n_articles``.
+    Separate so a caller can put several files in one transaction -- the
+    benchmark's ``--files-per-txn``, which measures what a per-file COMMIT
+    costs -- while `load_parsed` keeps the one-file-one-transaction rule
+    `load_files` relies on for its failure semantics.
     """
     year_yy, file_number, order_key = parse_file_name(source_file)
 
-    con.execute("BEGIN TRANSACTION")
-    try:
-        delete_file_rows(con, source_file)
+    started = time.perf_counter()
+    delete_file_rows(con, source_file)
+    timing.delete += time.perf_counter() - started
 
-        # A PMID can appear more than once within a single file (e.g. citation
-        # correction artifacts); keep only the last occurrence so `article`'s
-        # documented (pmid, source_file) identity actually holds and
-        # `latest_article`'s per-file ranking never needs a tiebreaker.
-        deduped: dict[int, ParsedArticle] = {}
-        for article in parsed.articles:
-            deduped[article.pubmed] = article
+    # A PMID can appear more than once within a single file (e.g. citation
+    # correction artifacts); keep only the last occurrence so `article`'s
+    # documented (pmid, source_file) identity actually holds and
+    # `latest_article`'s per-file ranking never needs a tiebreaker.
+    deduped: dict[int, ParsedArticle] = {}
+    for article in parsed.articles:
+        deduped[article.pubmed] = article
 
-        batches: dict[str, list[tuple]] = {t: [] for t in _VERSIONED_TABLES}
-        for article in deduped.values():
-            for table, table_rows in _article_rows(article, source_file, order_key).items():
-                batches[table].extend(table_rows)
-        for pmid in parsed.deleted_pmids:
-            batches["deleted_pmid"].append((pmid, source_file, order_key))
+    batches: dict[str, list[tuple]] = {t: [] for t in _VERSIONED_TABLES}
+    for article in deduped.values():
+        for table, table_rows in _article_rows(article, source_file, order_key).items():
+            batches[table].extend(table_rows)
+    for pmid in parsed.deleted_pmids:
+        batches["deleted_pmid"].append((pmid, source_file, order_key))
 
-        for table, rows in batches.items():
-            if rows:
-                _insert_batch(con, table, rows)
+    for table, rows in batches.items():
+        if rows:
+            started = time.perf_counter()
+            _insert_batch(con, table, rows)
+            timing.inserts[table] = timing.inserts.get(table, 0.0) + time.perf_counter() - started
 
-        con.execute(
-            """
+    started = time.perf_counter()
+    _upsert_source_file(con, source_file, kind, year_yy, file_number, order_key, deduped, parsed)
+    timing.registry += time.perf_counter() - started
+    return len(deduped)
+
+
+def _upsert_source_file(
+    con: duckdb.DuckDBPyConnection,
+    source_file: str,
+    kind: str,
+    year_yy: int,
+    file_number: int,
+    order_key: int,
+    deduped: dict[int, ParsedArticle],
+    parsed: ParsedFile,
+) -> None:
+    """Record the file as processed, with its counts, in the ``source_file`` registry."""
+    con.execute(
+        """
             INSERT INTO source_file
                 (file_name, kind, year_yy, file_number, file_order_key,
                  downloaded_at, processed_at, n_articles, n_deletions,
@@ -224,23 +283,47 @@ def load_parsed(
                 n_failed = excluded.n_failed,
                 n_book_records = excluded.n_book_records
             """,
-            [
-                source_file,
-                kind,
-                year_yy,
-                file_number,
-                order_key,
-                len(deduped),
-                len(parsed.deleted_pmids),
-                parsed.n_failed,
-                parsed.n_book_records,
-            ],
-        )
+        [
+            source_file,
+            kind,
+            year_yy,
+            file_number,
+            order_key,
+            len(deduped),
+            len(parsed.deleted_pmids),
+            parsed.n_failed,
+            parsed.n_book_records,
+        ],
+    )
+
+
+def load_parsed(
+    con: duckdb.DuckDBPyConnection,
+    parsed: ParsedFile,
+    source_file: str,
+    *,
+    kind: str,
+    timing: LoadTiming | None = None,
+) -> int:
+    """Insert a :class:`ParsedFile` (replacing any prior rows for the file).
+
+    Returns the number of articles stored, which is the post-dedup count
+    recorded in ``source_file.n_articles``. One transaction per file: a
+    failure leaves no rows and no ``processed_at``. Pass a ``timing`` to
+    collect where the time went; it is logged at DEBUG either way.
+    """
+    timing = LoadTiming() if timing is None else timing
+    con.execute("BEGIN TRANSACTION")
+    try:
+        n_articles = _load_parsed_rows(con, parsed, source_file, kind=kind, timing=timing)
+        started = time.perf_counter()
         con.execute("COMMIT")
+        timing.commit += time.perf_counter() - started
     except Exception:
         con.execute("ROLLBACK")
         raise
-    return len(deduped)
+    logger.debug("timing %s: %s", source_file, timing.describe())
+    return n_articles
 
 
 def load_file(
@@ -253,20 +336,30 @@ def load_file(
     """Parse and load a single PubMed file, replacing any prior rows for it."""
     path = Path(path)
     source_file = source_file or path.name
+    started = time.perf_counter()
     parsed = parse_file(path)
-    n_articles = load_parsed(con, parsed, source_file, kind=kind)
+    parse_seconds = time.perf_counter() - started
+    timing = LoadTiming()
+    n_articles = load_parsed(con, parsed, source_file, kind=kind, timing=timing)
     # Report RSS *now* as well as the high-water mark: ru_maxrss only ever rises,
     # so on its own a growing number says nothing about whether this process is
     # actually holding more memory than it was ten files ago.
     current = current_rss_gib()
+    # Parse, insert and commit are the three phases that can grow apart: at
+    # corpus scale the parse is flat (~2 s) while the rest follows the size of
+    # the database, and the commit is where DuckDB checkpoints (#68).
     logger.info(
         "loaded %s: %d articles, %d deletions, %d failed to parse, "
-        "%d book record(s) skipped (RSS %s, peak %.1f GiB)",
+        "%d book record(s) skipped (parse %.1fs, insert %.1fs, commit %.1fs; "
+        "RSS %s, peak %.1f GiB)",
         source_file,
         n_articles,
         len(parsed.deleted_pmids),
         parsed.n_failed,
         parsed.n_book_records,
+        parse_seconds,
+        timing.delete + timing.insert + timing.registry,
+        timing.commit,
         "n/a" if current is None else f"{current:.1f} GiB",
         peak_rss_gib(),
     )
