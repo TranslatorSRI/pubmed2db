@@ -140,16 +140,24 @@ def _article_rows(
 _BATCH = "_load_batch"
 
 
-def _insert_batch(con: duckdb.DuckDBPyConnection, table: str, rows: list[tuple]) -> None:
-    """Columnar bulk-insert of ``rows`` (positional tuples) into ``table``.
+def _arrow_batch(rows: list[tuple]) -> pa.Table:
+    """Transpose ``rows`` (positional tuples) into an Arrow table for :func:`_insert_batch`.
+
+    Separate from the insert so the two are timed apart: this is a fixed Python
+    cost per row, the insert is DuckDB's and is what can grow with the database.
+    """
+    columns = zip(*rows)  # transpose row tuples -> per-column sequences
+    return pa.table({str(i): pa.array(col) for i, col in enumerate(columns)})
+
+
+def _insert_batch(con: duckdb.DuckDBPyConnection, table: str, batch: pa.Table) -> None:
+    """Columnar bulk-insert of ``batch`` (from :func:`_arrow_batch`) into ``table``.
 
     Registering the batch as an Arrow table and inserting it via
     ``INSERT ... SELECT`` is ~25x faster than row-by-row ``executemany`` on the
     large per-version tables (parse stays ~2s while insert drops from ~75s to
     ~4s per file — see scripts/benchmark_load.py).
     """
-    columns = zip(*rows)  # transpose row tuples -> per-column sequences
-    batch = pa.table({str(i): pa.array(col) for i, col in enumerate(columns)})
     con.register(_BATCH, batch)
     try:
         # `article` appends now() for its server-side `loaded_at` column.
@@ -173,30 +181,37 @@ class LoadTiming:
     it grows with the database (#68): 30 s/file on an empty one, ~65 s by the
     end of the baseline. The total cannot say which phase grows, so each is
     timed on its own -- the per-file ``DELETE`` (zone maps prune it, measured
-    at <0.15 s on a 76 GB database), the per-table inserts, the registry
-    upsert and the ``COMMIT``, which is also where DuckDB checkpoints.
+    at <0.15 s on a 76 GB database), building the rows (the dedup, the
+    per-article tuples and their Arrow tables: Python, and flat), the
+    per-table ``INSERT`` statements alone, the registry upsert and the
+    ``COMMIT``, which is also where DuckDB checkpoints. Together they are the
+    whole of :func:`load_parsed` but the ``BEGIN``.
     """
 
     delete: float = 0.0
+    build: float = 0.0
     inserts: dict[str, float] = field(default_factory=dict)
     registry: float = 0.0
     commit: float = 0.0
+    #: Rows inserted, every versioned table together: the denominator for a rate.
+    n_rows: int = 0
 
     @property
     def insert(self) -> float:
-        """Time in the inserts, all tables together."""
+        """Time in the ``INSERT`` statements, all tables together."""
         return sum(self.inserts.values())
 
     @property
     def total(self) -> float:
-        return self.delete + self.insert + self.registry + self.commit
+        return self.delete + self.build + self.insert + self.registry + self.commit
 
     def describe(self) -> str:
         """One line, the slowest tables first, for the DEBUG log and the benchmark."""
         slowest = sorted(self.inserts.items(), key=lambda kv: kv[1], reverse=True)[:3]
         tables = ", ".join(f"{table} {seconds:.2f}" for table, seconds in slowest)
         return (
-            f"delete {self.delete:.2f}s · insert {self.insert:.2f}s ({tables}) · "
+            f"delete {self.delete:.2f}s · build {self.build:.2f}s · "
+            f"insert {self.insert:.2f}s ({tables}) · "
             f"registry {self.registry:.2f}s · commit {self.commit:.2f}s"
         )
 
@@ -222,6 +237,7 @@ def _load_parsed_rows(
     delete_file_rows(con, source_file)
     timing.delete += time.perf_counter() - started
 
+    started = time.perf_counter()
     # A PMID can appear more than once within a single file (e.g. citation
     # correction artifacts); keep only the last occurrence so `article`'s
     # documented (pmid, source_file) identity actually holds and
@@ -230,18 +246,20 @@ def _load_parsed_rows(
     for article in parsed.articles:
         deduped[article.pubmed] = article
 
-    batches: dict[str, list[tuple]] = {t: [] for t in _VERSIONED_TABLES}
+    rows_by_table: dict[str, list[tuple]] = {t: [] for t in _VERSIONED_TABLES}
     for article in deduped.values():
         for table, table_rows in _article_rows(article, source_file, order_key).items():
-            batches[table].extend(table_rows)
+            rows_by_table[table].extend(table_rows)
     for pmid in parsed.deleted_pmids:
-        batches["deleted_pmid"].append((pmid, source_file, order_key))
+        rows_by_table["deleted_pmid"].append((pmid, source_file, order_key))
+    batches = {table: _arrow_batch(rows) for table, rows in rows_by_table.items() if rows}
+    timing.build += time.perf_counter() - started
 
-    for table, rows in batches.items():
-        if rows:
-            started = time.perf_counter()
-            _insert_batch(con, table, rows)
-            timing.inserts[table] = timing.inserts.get(table, 0.0) + time.perf_counter() - started
+    for table, batch in batches.items():
+        started = time.perf_counter()
+        _insert_batch(con, table, batch)
+        timing.inserts[table] = timing.inserts.get(table, 0.0) + time.perf_counter() - started
+        timing.n_rows += batch.num_rows
 
     started = time.perf_counter()
     _upsert_source_file(con, source_file, kind, year_yy, file_number, order_key, deduped, parsed)
