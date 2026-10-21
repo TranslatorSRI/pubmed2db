@@ -56,8 +56,8 @@ def parse_version(version: str) -> tuple[int, int, int]:
 def shape_version(version: str) -> str:
     """``MAJOR.MINOR``: the part of a version that a shape belongs to.
 
-    A patch cannot change the shape, so `tests/data_model/` holds one golden
-    file per ``MAJOR.MINOR``.
+    Only these two levels describe the shape (the patch level is unused), so
+    `tests/data_model/` holds one golden file per ``MAJOR.MINOR``.
     """
     major, minor, _ = parse_version(version)
     return f"{major}.{minor}"
@@ -117,7 +117,7 @@ def check_compatible(con: duckdb.DuckDBPyConnection) -> None:
     then add, which :func:`check_migrated` confirms before :func:`stamp` raises
     its version. A newer minor is refused too: ``load`` inserts ``BY POSITION``, so
     old code writing into a table that has grown a column would misalign rows.
-    The patch level never decides: it cannot change the shape.
+    The patch level is unused and never decides.
     """
     stored = stored_version(con)
     if stored is None:
@@ -168,9 +168,13 @@ def stamp(con: duckdb.DuckDBPyConnection) -> None:
     three creation keys; on an older one it raises the stored version to ours,
     which for a minor is only correct because ``schema.sql`` has just added the
     columns that version introduced (:func:`check_migrated` holds it to that).
-    ``last_loaded_by`` says which code did the loading, which is how to tell
-    whether a value fix from a later release reached the rows. Never lowered:
-    older code opening a newer-patch database leaves its version alone.
+    A value fix never moves the version, and nothing here records which code
+    loaded which rows: ``last_loaded_by`` is one key for the whole database,
+    overwritten by every load, so a v1.3 update file leaves it naming v1.3 over
+    baseline rows v1.2 parsed. Whether a fix reached rows already loaded is
+    for the release notes to say (does it need a reload?), and for
+    ``created_by`` to answer on a database created since. Never lowered, which
+    matters only for the unused patch level: a minor or major ahead is refused.
     """
     stored = stored_version(con)
     if stored is None:
@@ -294,8 +298,8 @@ def shape(con: duckdb.DuckDBPyConnection) -> dict:
     from .export import JSON_FIELDS
 
     return {
-        # MAJOR.MINOR only: a patch cannot change the shape, and must not need
-        # a new golden file.
+        # MAJOR.MINOR only: those are the levels that describe the shape (the
+        # patch level is unused), and each has one golden file.
         "data_model_version": shape_version(DATA_MODEL_VERSION),
         "relations": {
             relation["name"]: {
