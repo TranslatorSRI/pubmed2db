@@ -562,12 +562,13 @@ data-model bump)
 ## Notes
 
 - We reuse `pubmed-downloader` **as-is** for file listings and XML parsing, but work
-  around two bugs in it (still present in 0.1.0), both tracked in
-  [`FUTURE.md`](./FUTURE.md): its reference
+  around two bugs in it, both tracked in [`FUTURE.md`](./FUTURE.md) and each
+  pinned by a test in `tests/test_parse.py` that fails once upstream fixes it: its reference
   extraction looks under `MedlineCitation` for a `<ReferenceList>` that PubMed puts
   under `<PubmedData>`, so it never finds one; and its article-ID extraction
   descends into that `<ReferenceList>`, attributing every cited reference's DOI to
-  the citing article. We parse the article IDs ourselves; the
+  the citing article. We parse the article IDs ourselves, and the MeSH headings
+  too, since upstream's model of them rewrites IDs between releases; the
   reference bug is moot here because we deliberately do not store the citation
   graph (one article carries ~444 references, and nothing consumes them).
   We also parse `J_Entrez.txt` ourselves. Upstream's

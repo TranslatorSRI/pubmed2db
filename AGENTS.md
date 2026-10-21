@@ -134,11 +134,19 @@ explains its part; this table is only a map.
   `iterate_process_*`/JSONL cache — DuckDB is our store, and
   `parse.py` drives the XML itself for the fields that pipeline drops (its
   docstring says which). Pinned `<0.2` because we call private APIs
-  (`_extract_article`, `_ensure_urls`); 0.1.0 already renamed a model field we
-  read (`Heading.mesh_id`). We still parse `J_Entrez.txt` ourselves even
-  though 0.1.0's `process_journal_overview()` now works: upstream's parser
-  raises on a field it does not know, ours ignores it, and
-  `load._parse_journal_overview` says why that matters.
+  (`_extract_article`, `_ensure_urls`); 0.1.0 renamed `Heading.mesh_id` and
+  started rewriting MeSH IDs, so `parse._mesh_headings` now reads the headings
+  from the XML, as `_publication_types` and `_article_ids` do. We still parse
+  `J_Entrez.txt` ourselves even though 0.1.0's `process_journal_overview()`
+  now works: upstream's parser raises on a field it does not know, ours
+  ignores it, and `load._parse_journal_overview` says why that matters.
+  **An upstream bump needs a data-model bump only if the loaded values
+  change**, so check by loading, not by reading upstream's diff: load the same
+  few PubMed files under the old and new version (a `git worktree` of `main`
+  with its own `uv sync` holds the old one), then compare every table with
+  `EXCEPT ALL` both ways, leaving out `TIMESTAMPTZ` columns and
+  `pubmed2db_metadata.created_by`. For 0.0.14 → 0.1.0, four 2026 files
+  (n0001, n0750, n1334, n1690) matched row for row.
 - **The journal dimension reads two NLM sources, and swapping to one loses
   data.** `J_Entrez.txt` gives `title`/`abbreviation_*`; NLM's serial catalog
   (serfile) gives `start_year`/`end_year`/`active`. The tempting simplification —
