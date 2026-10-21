@@ -6,8 +6,9 @@ consumer of any of them pins one thing. It is **not** the code version: the
 code version says how the *code* changed, this one how consumers' code is
 affected, and `docs/data-model/README.md` says what each bump means. It is standard
 semantic versioning over the contract, not the contents: a minor bump only
-*adds* (a table, a column, a view, an NDJSON field), a major bump renames,
-removes or changes the meaning of one, and the patch level is not used. New
+*adds* (a table, a column, a view, an NDJSON field, or a guarantee that leaves
+every old reading correct), a major bump renames, removes or changes the
+meaning of one so that an old reading is wrong, and the patch level is not used. New
 PubMed data, and fixes that change values without changing how to read them,
 leave the version alone.
 

@@ -43,11 +43,17 @@ explains its part; this table is only a map.
   NDJSON fields are SQL over the tables, so documenting one documents the other.
   Changing the shape fails `tests/test_data_model.py` until you bump it:
   - **minor** only appends (a column at a table's end, a table, a view, an
-    NDJSON field);
-  - **major** for anything else, including a change in what a value *means*
-    (what NULL stands for, an ordering's base) with no change to the shape.
-    No test catches that one; ask whether a consumer must read anything
-    differently.
+    NDJSON field) or adds a guarantee: a change in what a value *means* that
+    leaves every reading of the old description correct (an unspecified order
+    becoming PubMed's). That bump still needs its golden file, with the same
+    shape as the last;
+  - **major** for anything else, including any change in meaning that makes an
+    old reading wrong (what NULL stands for, an ordering's base) with no
+    change to the shape, however mild. A minor is what consumers take without
+    reading, so severity and urgency go in the changelog entry, not the level.
+    No test catches a change of meaning; ask whether a consumer must read
+    anything differently, and whether code reading it the old way is now
+    wrong.
   - **Patch** is not used, and `test_the_patch_level_is_unused` holds it
     at 0. The version is the contract, not the contents: new PubMed or MeSH
     data never bumps it (unless PubMed starts using a field in a way its

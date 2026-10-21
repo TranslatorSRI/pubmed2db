@@ -142,20 +142,27 @@ version. pubmed2db's code version (`v1.2`, …) is separate and says how the
 code itself changed, so many code releases can share one data model.
 
 - **Minor** (1.0 → 1.1) only *adds*: a table, a column (appended, never
-  inserted), a view, or an NDJSON field. Code written against 1.0 keeps working
-  against 1.1.
+  inserted), a view, an NDJSON field, or a guarantee. A guarantee is a change
+  of meaning that leaves every reading of the old description correct: an
+  ordering left unspecified becoming PubMed's own, say, or a column documented
+  as sometimes NULL becoming never NULL. Code written against 1.0 keeps working
+  against 1.1. A guarantee, like an added column, reaches rows already in a
+  database only when they are reloaded, and the changelog entry says so.
 - **Major** (1 → 2) renames, removes, retypes or changes the meaning of
-  something. Changing an ordering column's base, or what NULL means in a
-  column, counts as a change of meaning even though no column changed: if
-  NULL in a column came to mean "withheld" as well as "absent", code reading
-  it as absent would be wrong. That holds wherever the change comes from:
-  pubmed2db writing the column differently, or PubMed starting to use a field
-  in a way its description here no longer covers. Either way the description
-  changes, and that is the contract. A
-  major bump often leaves one output untouched while breaking another, so its
-  [changelog](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/Changelog.md) entry says,
-  **output by output**, what a consumer must do. Pin the major version, and
-  read that entry before moving to the next one.
+  something in a way that makes some reading of the old description wrong.
+  Changing an ordering column's base, or what NULL means in a column, counts
+  even though no column changed: if NULL in a column came to mean "withheld"
+  as well as "absent", code reading it as absent would be wrong. That holds
+  wherever the change comes from: pubmed2db writing the column differently, or
+  PubMed starting to use a field in a way its description here no longer
+  covers. It also holds however small the change looks. How much a misreading
+  matters depends on what each consumer does with the field, which pubmed2db
+  cannot know, and a minor bump is one a consumer may take without reading
+  anything. How serious and how urgent the change is goes in its
+  [changelog](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/Changelog.md) entry, which says,
+  **output by output**, what a consumer must do. A major bump often leaves one
+  output untouched while breaking another. Pin the major version, and read that
+  entry before moving to the next one.
 - **Patch** is not used, and stays 0. It is kept so the version stays
   standard semver.
 - **No bump** is needed for:
