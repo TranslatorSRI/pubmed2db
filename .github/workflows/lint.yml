@@ -1,0 +1,45 @@
+name: lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A force-push or a quick follow-up commit should cancel the run it supersedes
+# rather than queue behind it.
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    # Separate from tests.yml, so a formatting slip never reads as a failing
+    # test. No Python matrix: the linters' verdict does not depend on it.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # ruff and rumdl come from the dev extra at the versions uv.lock pins, so
+      # this run and `uv run ruff format` on a dev box agree.
+      - name: Install the project
+        run: uv sync --extra dev
+
+      # One step per check, so the failing one is named, and `github` output
+      # so findings land on the PR diff as annotations. The config for all
+      # three is in pyproject.toml; AGENTS.md's Development section has the
+      # commands that fix what they report.
+      - name: Lint Python (ruff check)
+        run: uv run ruff check --output-format=github .
+
+      - name: Check Python formatting (ruff format)
+        run: uv run ruff format --check --diff .
+
+      - name: Lint Markdown (rumdl)
+        run: uv run rumdl check --output-format github .
