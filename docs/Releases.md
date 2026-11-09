@@ -12,7 +12,7 @@ once the release PR has merged.
 | --- | --- | --- |
 | Milestone | `pubmed2db v<version>`, due on the planned build date | "pubmed2db v1.1" |
 | Release branch | `pubmed2db-v<version>` | `pubmed2db-v1.1` |
-| Release PR | `pubmed2db v<version>`, stacked on the last feature PR | "pubmed2db v1.1" |
+| Release PR | `pubmed2db v<version>`, stacked on the last feature PR; `pubmed2db v<version>: <what it changes>` once the release branch carries changes of its own (step 3) | "pubmed2db v1.1"; "pubmed2db v1.2: hold freed memory so the export finishes on ht1, and log what explains a refused allocation" |
 | Data-build tag | the UTC date NCBI posted the last file the build loaded, its cutoff (step 4); unknown until the download, so write `2026sepNN` in anything drafted before the run | `2026sep24` |
 | Version tag and GitHub release | `v<version>.<patch>` / "pubmed2db v<version>.<patch>" | `v1.1.0` |
 
@@ -53,7 +53,7 @@ A major bump is often breaking for one output and harmless for another (1.0.0 re
    - Copy this build's lines from `data/logs/submit.log` into the release PR: `submit.sh` appends the command and commit behind every job it submits. The step logs carry the rest: each opens with the commit, the allocation and every setting it ran with, overrides included, and each command then logs DuckDB's effective limits ([`slurm/README.md`](../slurm/README.md#monitoring-memory-and-runtime)). The v1.1 build's logs had none of this, so its limits had to be confirmed from memory.
 
    Fix what the run turns up:
-   - Put the fixes in a PR against the release branch (#58 for v1.1), so they are reviewed and described like any other change, and merge it into the release branch.
+   - Put the fixes in a PR against the release branch (#58 for v1.1), so they are reviewed and described like any other change, and merge it into the release branch. A fix committed straight to the release branch instead, as v1.2's memory work was, has no title of its own in the generated release notes (step 7), so the release PR's title must say what it does.
    - GitHub links a closing keyword only while the PR's base is the default branch, so one in that PR does nothing. An issue the run answers gets `Closes #N` in the **release** PR. But the release PR is stacked on a feature branch too, so those keywords need checking once it is retargeted onto `main` (step 5).
    - Fix anything that belongs to a feature PR in that PR, then **merge** its branch into the release branch.
    - Merge rather than rebase: the commit the cluster ran has to stay reachable.
