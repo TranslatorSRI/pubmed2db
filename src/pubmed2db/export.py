@@ -19,7 +19,7 @@ from pathlib import Path
 import duckdb
 
 from . import datamodel
-from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
+from .util import dir_size_gib, eta_str, fmt_duration, memory_summary, peak_rss_gib
 
 #: Shard filename stem; DuckDB appends the writer-thread index and the extension.
 _SHARD_STEM = "pubmed_metadata_"
@@ -612,23 +612,31 @@ def _shard_bytes(paths: list[Path]) -> int:
     return total
 
 
-def _log_writing_progress(out_dir: Path, start: float) -> None:
-    """Log how much shard output exists so far, and current RSS."""
+def _log_writing_progress(out_dir: Path, start: float, temp_dir: str | None = None) -> None:
+    """Log how much shard output exists so far, memory, and DuckDB's spill size.
+
+    RSS alone looked healthy on the run that failed (#42): the node refused a
+    reservation at 68 GiB RSS under strict overcommit, so VSZ and the node's
+    commit charge are logged beside it, and the spill directory's size shows
+    when the buffer pool is full enough to be writing to disk.
+    """
     paths = _shard_paths(out_dir)
     written = _shard_bytes(paths)
     elapsed = time.monotonic() - start
-    current = current_rss_gib()
     logger.info(
-        "writing: %.1f GiB across %d shard(s) · %.0f MiB/s · elapsed %s · RSS %s",
+        "writing: %.1f GiB across %d shard(s) · %.0f MiB/s · elapsed %s · %s · spill %.1f GiB",
         written / 1024**3,
         len(paths),
         written / 1024**2 / elapsed if elapsed else 0.0,
         fmt_duration(elapsed),
-        "n/a" if current is None else f"{current:.1f} GiB",
+        memory_summary(),
+        dir_size_gib(temp_dir),
     )
 
 
-def _log_while_writing(out_dir: Path, stop: threading.Event, start: float) -> None:
+def _log_while_writing(
+    out_dir: Path, stop: threading.Event, start: float, temp_dir: str | None = None
+) -> None:
     """Log progress every ``_PROGRESS_INTERVAL_S`` until ``stop`` is set.
 
     The whole export is now a single ``COPY``, so there are no batches to log
@@ -636,7 +644,7 @@ def _log_while_writing(out_dir: Path, stop: threading.Event, start: float) -> No
     exactly what left the last run's ``--mem`` a guess. DuckDB releases the GIL
     while the statement runs, so this thread does get scheduled.
 
-    Bytes and RSS, no ETA — the total output size is not known until it has been
+    Bytes and memory, no ETA — the total output size is not known until it has been
     written. If a run ever needs one, split the COPY into PMID ranges and count
     rows per range.
 
@@ -647,7 +655,7 @@ def _log_while_writing(out_dir: Path, stop: threading.Event, start: float) -> No
     """
     while not stop.wait(_PROGRESS_INTERVAL_S):
         try:
-            _log_writing_progress(out_dir, start)
+            _log_writing_progress(out_dir, start, temp_dir)
         except Exception as exc:  # noqa: BLE001 - see the docstring
             logger.warning("could not log export progress: %s", exc)
 
@@ -740,10 +748,12 @@ def export_json(
     # stops when `stop` is set in the finally below, so a statement that raises
     # between start() and the try would hang the interpreter instead of
     # reporting the error.
-    previous_threads = con.execute("SELECT current_setting('threads')").fetchone()[0]
+    previous_threads, temp_dir = con.execute(
+        "SELECT current_setting('threads'), current_setting('temp_directory')"
+    ).fetchone()
 
     stop = threading.Event()
-    heartbeat = threading.Thread(target=_log_while_writing, args=(out_dir, stop, start))
+    heartbeat = threading.Thread(target=_log_while_writing, args=(out_dir, stop, start, temp_dir))
     heartbeat.start()
     try:
         if shards is not None:

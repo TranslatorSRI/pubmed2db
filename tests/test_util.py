@@ -7,7 +7,17 @@ from pathlib import Path
 import pytest
 import urllib3
 
-from pubmed2db.util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
+from pubmed2db.util import (
+    _proc_kib,
+    commit_charge_gib,
+    current_rss_gib,
+    dir_size_gib,
+    eta_str,
+    fmt_duration,
+    memory_summary,
+    peak_rss_gib,
+    virtual_size_gib,
+)
 
 
 @pytest.mark.parametrize(
@@ -53,6 +63,43 @@ def test_current_rss_is_optional_but_plausible():
     assert 0 < rss < 1024
     # It tracks the real footprint, so it must not exceed the high-water mark.
     assert rss <= peak_rss_gib() + 0.5
+
+
+def test_proc_kib_reads_the_named_line_only(tmp_path):
+    """The format of /proc/meminfo and /proc/self/status, checked off Linux too.
+    `CommitLimit` must not match `Committed_AS`, nor a key that is a prefix."""
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(
+        "MemTotal:       263623052 kB\nCommitLimit:    237260744 kB\nCommitted_AS:    9643544 kB\n"
+    )
+    assert _proc_kib(str(meminfo), "CommitLimit") == 237260744
+    assert _proc_kib(str(meminfo), "Committed_AS") == 9643544
+    assert _proc_kib(str(meminfo), "Commit") is None
+    assert _proc_kib(str(tmp_path / "missing"), "MemTotal") is None
+
+
+def test_memory_summary_names_every_figure_on_any_platform():
+    """The heartbeat's memory block: n/a off Linux rather than a crash or a gap."""
+    summary = memory_summary()
+    for fragment in ("RSS ", "VSZ ", "node commit "):
+        assert fragment in summary, summary
+    if virtual_size_gib() is None:
+        assert summary == "RSS n/a · VSZ n/a · node commit n/a"
+    else:
+        committed, limit = commit_charge_gib()
+        assert 0 < committed and 0 < limit
+        assert virtual_size_gib() >= current_rss_gib()
+
+
+def test_dir_size_counts_nested_files_and_tolerates_absence(tmp_path):
+    """DuckDB's spill directory may not exist until it spills, or be unset."""
+    assert dir_size_gib(None) == 0.0
+    assert dir_size_gib("") == 0.0
+    assert dir_size_gib(tmp_path / "missing") == 0.0
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.tmp").write_bytes(b"x" * 1024)
+    (tmp_path / "sub" / "b.tmp").write_bytes(b"x" * 1024)
+    assert dir_size_gib(tmp_path) == 2048 / 1024**3
 
 
 class _StreamedResponse:

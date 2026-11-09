@@ -47,6 +47,85 @@ def current_rss_gib() -> float | None:
     return pages * resource.getpagesize() / 1024**3
 
 
+def _proc_kib(path: str, key: str) -> int | None:
+    """The kB figure on a ``Key:   1234 kB`` line of a ``/proc`` file, or ``None``."""
+    try:
+        with open(path) as handle:
+            for line in handle:
+                name, _, rest = line.partition(":")
+                if name == key:
+                    return int(rest.split()[0])
+    except (OSError, IndexError, ValueError):
+        return None
+    return None
+
+
+def virtual_size_gib() -> float | None:
+    """This process's virtual size (``VmSize``) in GiB, or ``None`` off Linux.
+
+    Under strict overcommit (``vm.overcommit_memory=2``, as on ``ht1``) what the
+    kernel charges is reserved memory, not resident memory, so RSS can sit far
+    below the point where an allocation is refused. ``VmSize`` is an upper
+    bound on this process's share of that charge (it also counts read-only and
+    shared mappings, which are not charged).
+    """
+    kib = _proc_kib("/proc/self/status", "VmSize")
+    return None if kib is None else kib / 1024**2
+
+
+def commit_charge_gib() -> tuple[float, float] | None:
+    """The node's ``(Committed_AS, CommitLimit)`` in GiB, or ``None`` off Linux.
+
+    Both are **node-wide**, not per job: ``Committed_AS`` includes every
+    neighbour's reservations. Under ``vm.overcommit_memory=2`` an allocation
+    that would take it past ``CommitLimit`` fails, which DuckDB reports as
+    ``(bad allocation)``; in the other modes the limit is not enforced.
+    """
+    committed = _proc_kib("/proc/meminfo", "Committed_AS")
+    limit = _proc_kib("/proc/meminfo", "CommitLimit")
+    if committed is None or limit is None:
+        return None
+    return committed / 1024**2, limit / 1024**2
+
+
+def memory_summary() -> str:
+    """``RSS … · VSZ … · node commit …/… GiB``, with ``n/a`` for what is unavailable.
+
+    The three numbers that, together, say which memory limit a step is near:
+    RSS against ``--mem`` (the cgroup), VSZ and the node's commit charge
+    against ``CommitLimit`` (strict overcommit). slurm/README.md, "A refused
+    allocation", says how to read them.
+    """
+    rss = current_rss_gib()
+    vsz = virtual_size_gib()
+    commit = commit_charge_gib()
+    return " · ".join(
+        (
+            f"RSS {'n/a' if rss is None else f'{rss:.1f} GiB'}",
+            f"VSZ {'n/a' if vsz is None else f'{vsz:.1f} GiB'}",
+            "node commit " + ("n/a" if commit is None else f"{commit[0]:.1f}/{commit[1]:.1f} GiB"),
+        )
+    )
+
+
+def dir_size_gib(path: str | Path | None) -> float:
+    """Total size of the files under ``path`` in GiB; 0 if it is missing or unset.
+
+    For a directory that another thread may be writing (DuckDB's spill files),
+    so a file that vanishes mid-walk is skipped rather than raised.
+    """
+    if not path:
+        return 0.0
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(path):
+        for filename in filenames:
+            try:
+                total += os.stat(os.path.join(dirpath, filename)).st_size
+            except OSError:
+                continue
+    return total / 1024**3
+
+
 def fmt_duration(seconds: float) -> str:
     """Format a duration in seconds as a human-readable string."""
     seconds = int(seconds)

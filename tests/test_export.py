@@ -343,7 +343,15 @@ def test_writing_progress_line_renders(tmp_path, caplog):
         ex._log_writing_progress(out, time.monotonic() - 5)
 
     line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("writing:"))
-    for fragment in ("GiB across 1 shard(s)", "MiB/s", "elapsed", "RSS"):
+    for fragment in (
+        "GiB across 1 shard(s)",
+        "MiB/s",
+        "elapsed",
+        "RSS",
+        "VSZ",
+        "node commit",
+        "spill",
+    ):
         assert fragment in line, line
 
 
@@ -481,7 +489,15 @@ def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog)
         ex.export_json(loaded_con, tmp_path / "json")
 
     line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("writing:"))
-    for fragment in ("GiB across 1 shard(s)", "MiB/s", "elapsed", "RSS"):
+    for fragment in (
+        "GiB across 1 shard(s)",
+        "MiB/s",
+        "elapsed",
+        "RSS",
+        "VSZ",
+        "node commit",
+        "spill",
+    ):
         assert fragment in line, line
 
 
