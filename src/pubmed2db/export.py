@@ -661,6 +661,45 @@ def _log_while_writing(
             logger.warning("could not log export progress: %s", exc)
 
 
+#: Settings for the export's two corpus-sized statements. Insertion order is
+#: free to drop: the query has no ORDER BY, each writer thread already owns its
+#: own file, and nothing downstream reads the order (see _LATEST_METADATA_SQL).
+#: Keeping it makes DuckDB buffer rows to emit them in scan order, and its own
+#: out-of-memory message suggests turning it off. What it saves at corpus scale
+#: is unmeasured: the 2026-10-22 run that prompted it failed for another reason
+#: (#42), so read the heartbeat of the first run with it before relying on it.
+_UNORDERED = {"preserve_insertion_order": False}
+
+
+def _sql_setting_value(value: bool | int | str) -> str:
+    """Render a setting's value for ``SET``: booleans lower-case, strings quoted."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+@contextlib.contextmanager
+def _duckdb_settings(con: duckdb.DuckDBPyConnection, **values: bool | int | str):
+    """``SET`` each setting for the duration of the block, then restore it.
+
+    Restores on an error too, so a failed export does not leave the connection
+    single-threaded or unordered for whatever the caller runs next.
+    """
+    names = list(values)
+    previous = con.execute(
+        "SELECT " + ", ".join(f"current_setting('{name}')" for name in names)
+    ).fetchone()
+    try:
+        for name, value in values.items():
+            con.execute(f"SET {name} = {_sql_setting_value(value)}")
+        yield
+    finally:
+        for name, value in zip(names, previous, strict=True):
+            con.execute(f"SET {name} = {_sql_setting_value(value)}")
+
+
 @contextlib.contextmanager
 def _logging_out_of_memory(temp_dir: str | None):
     """Log the memory figures when DuckDB runs out, then let the error propagate.
@@ -733,22 +772,16 @@ def export_json(
     # expensive part.
     start = time.monotonic()
 
-    # `shards` is the thread cap for the COPY only: one file per writer thread
-    # is what PER_THREAD_OUTPUT gives us, so asking for N shards is asking N
-    # threads to write. Restore whatever the connection had after.
-    #
     # Read *before* the heartbeat starts: the thread is non-daemon and only
     # stops when `stop` is set in the finally below, so a statement that raises
     # between start() and the try would hang the interpreter instead of
     # reporting the error.
-    previous_threads, temp_dir = con.execute(
-        "SELECT current_setting('threads'), current_setting('temp_directory')"
-    ).fetchone()
+    temp_dir = con.execute("SELECT current_setting('temp_directory')").fetchone()[0]
 
     # Materialize the latest-version snapshot once: `latest_article` is a window
     # function over the full `article` table, and both the count and the export
     # query below would otherwise recompute it.
-    with _logging_out_of_memory(temp_dir):
+    with _logging_out_of_memory(temp_dir), _duckdb_settings(con, **_UNORDERED):
         con.execute("CREATE OR REPLACE TEMP TABLE _latest_snapshot AS SELECT * FROM latest_article")
     total = con.execute("SELECT count(*) FROM _latest_snapshot").fetchone()[0]
     logger.info(
@@ -788,16 +821,18 @@ def export_json(
     stop = threading.Event()
     heartbeat = threading.Thread(target=_log_while_writing, args=(out_dir, stop, start, temp_dir))
     heartbeat.start()
+    # `shards` is the thread cap for the COPY only: one file per writer thread
+    # is what PER_THREAD_OUTPUT gives us, so asking for N shards is asking N
+    # threads to write.
+    copy_settings = dict(_UNORDERED)
+    if shards is not None:
+        copy_settings["threads"] = int(shards)
     try:
-        if shards is not None:
-            con.execute(f"SET threads = {int(shards)}")
-        with _logging_out_of_memory(temp_dir):
+        with _logging_out_of_memory(temp_dir), _duckdb_settings(con, **copy_settings):
             con.execute(copy_sql)
     finally:
         stop.set()
         heartbeat.join()
-        if shards is not None:
-            con.execute(f"SET threads = {int(previous_threads)}")
 
     paths = _shard_paths(out_dir)
     write_export_metadata(con, out_dir, paths, fmt="ndjson", records=total)

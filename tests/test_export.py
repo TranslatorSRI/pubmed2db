@@ -949,3 +949,31 @@ def test_a_memory_limit_error_is_not_blamed_on_overcommit(loaded_con, tmp_path, 
     (line,) = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
     assert "node commit" in line
     assert "overcommit" not in line
+
+
+def test_the_export_drops_insertion_order_for_its_heavy_statements_and_restores_it(
+    loaded_con, tmp_path
+):
+    """Both corpus-sized statements run unordered, as DuckDB's own OOM message
+    suggests and nothing downstream needs; the connection gets its settings back."""
+    from pubmed2db.export import export_json
+
+    def settings():
+        return loaded_con.execute(
+            "SELECT current_setting('preserve_insertion_order'), current_setting('threads')"
+        ).fetchone()
+
+    before = settings()
+    con = _RecordingConnection(loaded_con)
+    export_json(con, tmp_path / "json", shards=1)
+    assert settings() == before
+
+    statements = [" ".join(sql.split()) for sql in con.statements]
+    unordered = "SET preserve_insertion_order = false"
+    for heavy in ("CREATE OR REPLACE TEMP TABLE _latest_snapshot", "COPY"):
+        index = next(i for i, sql in enumerate(statements) if sql.startswith(heavy))
+        last_set = max(
+            i for i, sql in enumerate(statements[:index]) if "preserve_insertion_order =" in sql
+        )
+        assert statements[last_set] == unordered, (heavy, statements[last_set])
+    assert "SET threads = 1" in statements
