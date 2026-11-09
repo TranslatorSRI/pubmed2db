@@ -786,21 +786,30 @@ def run_export(sandbox: Path, **env: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_export_passes_its_jemalloc_options_and_an_empty_one_disables_them(
+def test_export_passes_its_jemalloc_options_and_an_empty_one_passes_none(
     sandbox: Path,
 ) -> None:
     """The export runs with jemalloc's time-based release off (#42), through the
-    variable DuckDB reads, and an empty EXPORT_JE_MALLOC_CONF passes nothing."""
+    variable DuckDB reads, and logs what that variable holds. An empty
+    EXPORT_JE_MALLOC_CONF passes none of ours, and leaves a value the operator
+    exported themselves in place rather than silently clearing it."""
     uv = sandbox / "bin" / "uv"
     uv.write_text('#!/bin/sh\necho "JE_CONF=[$DUCKDB_JE_MALLOC_CONF]"\n')
+    ours = "dirty_decay_ms:-1,muzzy_decay_ms:-1"
 
     result = run_export(sandbox)
     assert result.returncode == 0, result.stderr
-    assert "JE_CONF=[dirty_decay_ms:-1,muzzy_decay_ms:-1]" in result.stdout
+    assert f"JE_CONF=[{ours}]" in result.stdout
+    assert f"  DUCKDB_JE_MALLOC_CONF={ours}" in result.stdout.splitlines()
 
     result = run_export(sandbox, EXPORT_JE_MALLOC_CONF="")
     assert result.returncode == 0, result.stderr
     assert "JE_CONF=[]" in result.stdout
+
+    result = run_export(sandbox, EXPORT_JE_MALLOC_CONF="", DUCKDB_JE_MALLOC_CONF="narenas:4")
+    assert result.returncode == 0, result.stderr
+    assert "JE_CONF=[narenas:4]" in result.stdout
+    assert "  DUCKDB_JE_MALLOC_CONF=narenas:4" in result.stdout.splitlines()
 
 
 def test_export_overwrites_only_when_told(sandbox: Path) -> None:

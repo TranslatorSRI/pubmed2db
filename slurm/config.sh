@@ -88,8 +88,10 @@ unset _export_dir_given _manifest_dir_given
 # The default turns off jemalloc's time-based release of freed memory, the
 # other half of export._HOLD_ALLOCATOR: on ht1's strict-overcommit nodes that
 # release remaps memory PROT_NONE, splitting mappings, and running out of them
-# is the suspect for the two refused exports in #42. Set it empty to pass no
-# options; `=` rather than `:=` for the reason above.
+# is the suspect for the two refused exports in #42. Set it empty to pass none
+# of ours: a DUCKDB_JE_MALLOC_CONF already in the environment then still
+# applies, and every step's log prints it. `=` rather than `:=` for the reason
+# above.
 : "${EXPORT_JE_MALLOC_CONF=dirty_decay_ms:-1,muzzy_decay_ms:-1}"
 
 # Fast local scratch for DuckDB to spill into, e.g. /local/scratch/duckdb_tmp
@@ -126,7 +128,7 @@ log_run_settings() {
     for name in SLURM_JOB_ID SLURM_JOB_NAME SLURMD_NODENAME SLURM_MEM_PER_NODE \
                 SLURM_CPUS_PER_TASK DATA_DIR EXPORT_DIR MANIFEST_DIR SHARDS \
                 VALIDATE_SAMPLE_TOTAL LOAD_MEMORY_LIMIT EXPORT_MEMORY_LIMIT \
-                EXPORT_JE_MALLOC_CONF DUCKDB_TEMP_DIR UV_CACHE_DIR; do
+                EXPORT_JE_MALLOC_CONF DUCKDB_JE_MALLOC_CONF DUCKDB_TEMP_DIR UV_CACHE_DIR; do
         echo "  $name=${!name-}"
     done
     log_memory_limits

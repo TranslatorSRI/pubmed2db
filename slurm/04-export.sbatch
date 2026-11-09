@@ -40,6 +40,13 @@
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 source slurm/config.sh
+# jemalloc reads DUCKDB_JE_MALLOC_CONF. Set before log_run_settings, which
+# prints it, so the log shows what DuckDB actually got. An empty
+# EXPORT_JE_MALLOC_CONF passes none of ours and leaves any value already in
+# the environment alone, rather than silently clearing it.
+if [[ -n "$EXPORT_JE_MALLOC_CONF" ]]; then
+    export DUCKDB_JE_MALLOC_CONF="$EXPORT_JE_MALLOC_CONF"
+fi
 log_run_settings
 
 # `export` refuses to run over a finished export (one with a metadata.json),
@@ -68,7 +75,6 @@ fi
 # 3.2, and both paths that leave it empty (no spill dir configured, or one that
 # could not be created) are exactly the cases that must not die here.
 env PUBMED2DB_DUCKDB_MEMORY_LIMIT="$EXPORT_MEMORY_LIMIT" \
-    DUCKDB_JE_MALLOC_CONF="$EXPORT_JE_MALLOC_CONF" \
   uv run pubmed2db --data-dir "$DATA_DIR" ${temp_args[@]+"${temp_args[@]}"} \
     export --format json --out "$EXPORT_DIR" --shards "$SHARDS" \
     ${overwrite_args[@]+"${overwrite_args[@]}"}
