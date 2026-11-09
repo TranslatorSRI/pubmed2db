@@ -756,6 +756,7 @@ def test_the_heartbeat_survives_a_shard_vanishing(tmp_path):
     disappear between the glob and the stat. Taking the thread down there would
     leave a 20-minute export silent -- the failure it exists to prevent."""
     from pubmed2db import export as ex
+    from pubmed2db.util import size_bytes
 
     out = tmp_path / "json"
     out.mkdir()
@@ -773,7 +774,7 @@ def test_the_heartbeat_survives_a_shard_vanishing(tmp_path):
 
     ex._shard_paths = racing
     try:
-        assert ex._shard_bytes(ex._shard_paths(out)) == 2048
+        assert size_bytes(ex._shard_paths(out)) == 2048
     finally:
         ex._shard_paths = real_glob
 

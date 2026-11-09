@@ -73,9 +73,12 @@ def test_proc_kib_reads_the_named_line_only(tmp_path):
     meminfo.write_text(
         "MemTotal:       263623052 kB\nCommitLimit:    237260744 kB\nCommitted_AS:    9643544 kB\n"
     )
-    assert _proc_kib(str(meminfo), "CommitLimit") == 237260744
-    assert _proc_kib(str(meminfo), "Committed_AS") == 9643544
+    assert _proc_kib(str(meminfo), "CommitLimit") == (237260744,)
+    assert _proc_kib(str(meminfo), "Committed_AS") == (9643544,)
+    # Several keys come back in the order asked, from one read.
+    assert _proc_kib(str(meminfo), "Committed_AS", "CommitLimit") == (9643544, 237260744)
     assert _proc_kib(str(meminfo), "Commit") is None
+    assert _proc_kib(str(meminfo), "CommitLimit", "Commit") is None
     assert _proc_kib(str(tmp_path / "missing"), "MemTotal") is None
 
 
@@ -88,11 +91,15 @@ def test_memory_summary_names_every_figure_on_any_platform():
         assert summary == "RSS n/a · VSZ n/a · node commit n/a · maps n/a"
         assert memory_map_count() is None
     else:
-        committed, limit = commit_charge_gib()
-        assert 0 < committed and 0 < limit
         assert virtual_size_gib() >= current_rss_gib()
-        count, max_count = memory_map_count()
-        assert 0 < count < max_count
+        # Each figure may still be unreadable on Linux, e.g. with /proc/sys
+        # masked in a container; memory_summary prints n/a for it then.
+        commit = commit_charge_gib()
+        if commit is not None:
+            assert 0 < commit[0] and 0 < commit[1]
+        maps = memory_map_count()
+        if maps is not None:
+            assert 0 < maps[0] < maps[1]
 
 
 def test_dir_size_counts_nested_files_and_tolerates_absence(tmp_path):

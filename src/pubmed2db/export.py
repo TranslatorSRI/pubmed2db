@@ -20,7 +20,7 @@ from pathlib import Path
 import duckdb
 
 from . import datamodel
-from .util import dir_size_gib, eta_str, fmt_duration, memory_summary, peak_rss_gib
+from .util import dir_size_gib, eta_str, fmt_duration, memory_summary, peak_rss_gib, size_bytes
 
 #: Shard filename stem; DuckDB appends the writer-thread index and the extension.
 _SHARD_STEM = "pubmed_metadata_"
@@ -597,22 +597,6 @@ def _shard_paths(out_dir: Path) -> list[Path]:
     )
 
 
-def _shard_bytes(paths: list[Path]) -> int:
-    """Total size of the shards that still exist, skipping any that vanish.
-
-    DuckDB is writing this directory while we read it, so a path can disappear
-    between the glob and the stat. That is a missing data point, not a reason to
-    take the heartbeat down.
-    """
-    total = 0
-    for path in paths:
-        try:
-            total += path.stat().st_size
-        except OSError:
-            continue
-    return total
-
-
 def _log_writing_progress(out_dir: Path, start: float, temp_dir: str | None = None) -> None:
     """Log how much shard output exists so far, memory, and DuckDB's spill size.
 
@@ -622,7 +606,7 @@ def _log_writing_progress(out_dir: Path, start: float, temp_dir: str | None = No
     when the buffer pool is full enough to be writing to disk.
     """
     paths = _shard_paths(out_dir)
-    written = _shard_bytes(paths)
+    written = size_bytes(paths)
     elapsed = time.monotonic() - start
     logger.info(
         "writing: %.1f GiB across %d shard(s) · %.0f MiB/s · elapsed %s · %s · spill %.1f GiB",

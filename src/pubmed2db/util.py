@@ -6,7 +6,7 @@ import logging
 import os
 import resource
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import requests
@@ -47,17 +47,24 @@ def current_rss_gib() -> float | None:
     return pages * resource.getpagesize() / 1024**3
 
 
-def _proc_kib(path: str, key: str) -> int | None:
-    """The kB figure on a ``Key:   1234 kB`` line of a ``/proc`` file, or ``None``."""
+def _proc_kib(path: str, *keys: str) -> tuple[int, ...] | None:
+    """The kB figures on the named ``Key:   1234 kB`` lines of a ``/proc`` file.
+
+    One read for all of them, so figures from the same file are from the same
+    instant. ``None`` if the file is unreadable or any key is missing.
+    """
+    found: dict[str, int] = {}
     try:
         with open(path) as handle:
             for line in handle:
                 name, _, rest = line.partition(":")
-                if name == key:
-                    return int(rest.split()[0])
+                if name in keys:
+                    found[name] = int(rest.split()[0])
     except (OSError, IndexError, ValueError):
         return None
-    return None
+    if len(found) < len(keys):
+        return None
+    return tuple(found[key] for key in keys)
 
 
 def virtual_size_gib() -> float | None:
@@ -70,7 +77,7 @@ def virtual_size_gib() -> float | None:
     shared mappings, which are not charged).
     """
     kib = _proc_kib("/proc/self/status", "VmSize")
-    return None if kib is None else kib / 1024**2
+    return None if kib is None else kib[0] / 1024**2
 
 
 def commit_charge_gib() -> tuple[float, float] | None:
@@ -81,11 +88,10 @@ def commit_charge_gib() -> tuple[float, float] | None:
     that would take it past ``CommitLimit`` fails, which DuckDB reports as
     ``(bad allocation)``; in the other modes the limit is not enforced.
     """
-    committed = _proc_kib("/proc/meminfo", "Committed_AS")
-    limit = _proc_kib("/proc/meminfo", "CommitLimit")
-    if committed is None or limit is None:
+    kib = _proc_kib("/proc/meminfo", "Committed_AS", "CommitLimit")
+    if kib is None:
         return None
-    return committed / 1024**2, limit / 1024**2
+    return kib[0] / 1024**2, kib[1] / 1024**2
 
 
 def memory_map_count() -> tuple[int, int] | None:
@@ -131,22 +137,30 @@ def memory_summary() -> str:
     )
 
 
-def dir_size_gib(path: str | Path | None) -> float:
-    """Total size of the files under ``path`` in GiB; 0 if it is missing or unset.
+def size_bytes(paths: Iterable[str | Path]) -> int:
+    """Total size of the files that still exist, skipping any that vanish.
 
-    For a directory that another thread may be writing (DuckDB's spill files),
-    so a file that vanishes mid-walk is skipped rather than raised.
+    For directories DuckDB is writing while we read them (shards, spill
+    files): a path can disappear between listing and ``stat``, which is a
+    missing data point, not a reason to take the heartbeat down.
     """
+    total = 0
+    for path in paths:
+        try:
+            total += os.stat(path).st_size
+        except OSError:
+            continue
+    return total
+
+
+def dir_size_gib(path: str | Path | None) -> float:
+    """Total size of the files under ``path`` in GiB; 0 if it is missing or unset."""
     if not path:
         return 0.0
-    total = 0
-    for dirpath, _dirnames, filenames in os.walk(path):
-        for filename in filenames:
-            try:
-                total += os.stat(os.path.join(dirpath, filename)).st_size
-            except OSError:
-                continue
-    return total / 1024**3
+    files = (
+        os.path.join(dirpath, name) for dirpath, _dirs, names in os.walk(path) for name in names
+    )
+    return size_bytes(files) / 1024**3
 
 
 def fmt_duration(seconds: float) -> str:
