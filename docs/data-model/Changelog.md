@@ -16,7 +16,7 @@ The first versioned data model, first built after `2026sep26`.
 | Output | What a consumer must do |
 | --- | --- |
 | NDJSON | Match PMC IDs in `identifiers` as `PMC:PMC…`, the prefix Babel uses, where earlier builds used `PMCID:`. Every other field is unchanged. `metadata.json` is new beside the shards, and worth checking downloads against. |
-| Parquet | No longer produced. Read the same tables from the database, or write them out with DuckDB's `COPY … TO 'article.parquet' (FORMAT PARQUET)`, under the names below. |
+| Parquet | Not an output of 1.0. Earlier code could write one (`export --format parquet`), though no data build did; it was removed before 1.0.0 was released in `v1.2.0`, and `2026nov08` has none. Read the same tables from the database, or write them out with DuckDB's `COPY … TO 'article.parquet' (FORMAT PARQUET)`, under the names below. |
 | DuckDB | Rebuild: pubmed2db refuses a pre-1.0 database. Update queries as below. |
 
 | Pre-1.0 | 1.0 |

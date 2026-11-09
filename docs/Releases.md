@@ -30,6 +30,8 @@ once the release PR has merged.
 - **major:** anything renamed, removed, or changed in meaning so that an old reading is now wrong, however mildly;
 - **patch:** not used. The version describes how to read the outputs, not what they contain, so a fix that changes values without changing how to read them is a code change, listed in the release notes with whether a database needs a reload.
 
+A version's contract is settled when the release that first ships it is tagged. Before that it can still change without a bump, but only where no data build already tagged under it is affected: 1.0.0 lost the Parquet export before `v1.2.0` because `2026nov08`, the only 1.0.0 build tagged by then, had written no Parquet. Once the release is tagged, every change goes through the rules above.
+
 A major bump is often breaking for one output and harmless for another (1.0.0 renamed and reshaped the database's tables, while the NDJSON changed only its PMC prefix). So rather than a separate level for "breaks some consumers", every bump gets an entry in [the data model changelog](./data-model/Changelog.md) saying, output by output, what a consumer must do. A test fails until the entry exists. A release that changes the data model says so in its release PR and GitHub release notes, and links that entry.
 
 ## Steps

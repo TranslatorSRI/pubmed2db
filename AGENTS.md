@@ -3,8 +3,8 @@
 pubmed2db downloads PubMed abstracts, loads them into a DuckDB database keeping
 **full version history**, and exports the **latest** version of every abstract to
 JSON (DocumentMetadataAPI field names, for Node Annotator / ElasticSearch). There
-is no Parquet export: it was removed before anyone used it, and FUTURE.md says
-how to bring it back.
+is no Parquet export: v1.0 and v1.1.0 had one that no build ran, it was removed
+in v1.2, and FUTURE.md says how to bring it back.
 
 Everything a user needs — commands, options, operational notes, the year-boundary
 rebuild — is in [`README.md`](./README.md); deferred work and known limitations
@@ -63,6 +63,10 @@ explains its part; this table is only a map.
     goes in the code's release notes, with whether it needs a reload
     (`docs/Releases.md`, step 7). Nothing in a database records which code
     loaded which rows: `last_loaded_by` is one key, overwritten by every load.
+  - **A version is settled when its first release is tagged**, not when
+    `DATA_MODEL_VERSION` changes: until then it can change without a bump, but
+    only where no data build already tagged under it is affected
+    (`docs/Releases.md`). That is how 1.0.0 lost the Parquet export unbumped.
 
   Then write `tests/data_model/<MAJOR.MINOR>.json` with
   `python -m pubmed2db.datamodel --golden`; there is one file per
