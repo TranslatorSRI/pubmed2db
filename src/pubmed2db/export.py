@@ -783,12 +783,10 @@ def export_json(
     out_dir.mkdir(parents=True, exist_ok=True)
     _remove_finished_mark(out_dir, overwrite, archivable=True)
 
-    # Clock the whole export, not just the COPY. Materializing the snapshot is a
-    # window function over the entire `article` table -- the reason export memory
-    # scales with the database rather than the input file -- and with the sort
-    # gone it is plausibly the dominant phase. slurm/README.md tells operators to
-    # size --time from the line this feeds, so it must not start after the
-    # expensive part.
+    # Clock the whole export, not just the COPY: slurm/README.md tells operators
+    # to size --time from the line this feeds. The snapshot below is cheap (17s
+    # of a 15m full-corpus run on ht1, 2026-11-09); the COPY's join and
+    # string_agg are the expensive part.
     start = time.monotonic()
 
     # Read *before* the heartbeat starts: the thread is non-daemon and only

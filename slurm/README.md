@@ -311,15 +311,18 @@ noted:**
 | 2026-09-26 | 41,153,516 | 8, gzip | 200GB | 191.9 GiB | 13m 14s, ≈52k documents/s |
 | 2026-10-22, `--mem=192G` | 41,271,245 | 8, gzip | 160GB | failed: 152.2 GiB, then refused at 68.1 GiB | 6m 41s ("A refused allocation" below) |
 | 2026-11-09 | 41,371,020 | 8, gzip | 160GB | failed: 154.3 GiB, then refused at 67.9 GiB | 6m 03s (same) |
+| 2026-11-09, allocator held | 41,371,020 | 8, gzip | 160GB | 205.1 GiB | 15m 00s, ≈46k documents/s |
 
 The first three predate the `COPY`-based writer (see "What changed" below); the
 last two are it. Read the pair together: DuckDB's peak tracks the buffer-pool
 limit it is given, not what the query needs — 40 GB more limit bought 38 GiB
 more peak and a slightly *slower* run — so `config.sh` now sets `160GB`, the
 lower of the two measured values. `--mem=256G` is the allocation both ran
-under, and the one `04-export.sbatch` asks for again. Both v1.2-branch runs
-since then, at 192G and at 256G, failed on a refused allocation that a
-headroom calculation does not cover (see "A refused allocation" below).
+under, and the one `04-export.sbatch` asks for again. The first two v1.2-branch
+runs, at 192G and at 256G, failed on a refused allocation that a headroom
+calculation does not cover. The third held freed memory instead of returning
+it and finished, but its peak sits ~55 GiB above the buffer limit, so it needs
+the 256G (see "A refused allocation" below).
 
 For the record, the 2026-08-05 run on `ht1` was submitted as `srun --mem=256G
 --cpus-per-task=8 --time=02:00:00` (12:14:50 started, 12:32:56 finished) — kept
@@ -328,9 +331,11 @@ here as the provenance of the numbers above, not as a command to copy;
 `./slurm/submit.sh all`, the first with `EXPORT_MEMORY_LIMIT=160GB` set by hand.
 
 Time is the cheap dimension: `04-export.sbatch` asks for an hour against a
-measured 13 minutes. Expect the first ~5 minutes to log `0.0 GiB across 0
-shard(s)` while RSS climbs — that is the `_latest_snapshot` window and the
-`string_agg` materializing before the first shard opens; both runs did it.
+measured 13–15 minutes. Expect the first ~5 minutes to log `0.0 GiB across 0
+shard(s)` while RSS climbs. That is the `COPY`'s join and `string_agg`
+materializing before the first shard opens, not the `_latest_snapshot` window:
+job 155264 built the snapshot and counted it in 17 seconds (the `starting JSON
+export` line's timestamp, against the heartbeat's elapsed time).
 
 ### A refused allocation: `(bad allocation)` on `ht1`
 
@@ -372,29 +377,47 @@ as remapped regions rather than unmapped ones. The heartbeat, the
 failure line and each step's opening block now log the mapping count
 against `vm.max_map_count` (`maps N/M`), which settles it on the next run.
 
-**The next run holds freed memory instead of returning it**, which should
-avoid the failure if the suspect is right. `export._HOLD_ALLOCATOR` raises
-DuckDB's two allocator-flush thresholds out of reach for the snapshot and the
-`COPY`. By default DuckDB flushes after any task that peaked above 128 MiB and
-after any deallocation above 512 MiB. `EXPORT_JE_MALLOC_CONF` in `config.sh`
-turns off jemalloc's own time-based release (`dirty_decay_ms:-1,
-muzzy_decay_ms:-1`, passed as `DUCKDB_JE_MALLOC_CONF`). When written, neither
-had run at corpus scale, since macOS builds of DuckDB have no jemalloc. How to
-read that run's heartbeat:
+**Holding freed memory instead of returning it avoids the failure.**
+`export._HOLD_ALLOCATOR` raises DuckDB's two allocator-flush thresholds out of
+reach for the snapshot and the `COPY`. By default DuckDB flushes after any task
+that peaked above 128 MiB and after any deallocation above 512 MiB.
+`EXPORT_JE_MALLOC_CONF` in `config.sh` turns off jemalloc's own time-based
+release (`dirty_decay_ms:-1, muzzy_decay_ms:-1`, passed as
+`DUCKDB_JE_MALLOC_CONF`). Job 155264 ran with both, on `largemem-6-1`, the
+node that refused job 155199 the same day, and finished in 15m 00s:
 
-- **It finishes, with RSS staying near its peak (~155 GiB) and `maps` low:**
-  the suspect is confirmed and the workaround holds. Add the run to the table
-  above, and ask the cluster admins about raising `vm.max_map_count` on the
-  export's nodes. Elasticsearch's documented minimum, 262,144, is a common
-  setting. Holding memory is a workaround, not a fix.
-- **RSS still falls and `maps` climbs to `max_map_count`:** the suspect is
-  confirmed, but something else still releases memory. Raising
-  `vm.max_map_count` is then the fix.
-- **RSS climbs past its old peak until the job is OOM-killed:** jemalloc could
-  not reuse what it held. Set `EXPORT_JE_MALLOC_CONF=` empty, and take the
-  `maps` figure from the run before it to the admins.
-- **It fails with `maps` far below the limit:** this suspect is wrong too.
-  Record the figures here before guessing again.
+| Elapsed | Shards written | RSS | VSZ | Node commit | `maps` | Spill |
+| --- | --- | --- | --- | --- | --- | --- |
+| 3m 17s | 0.0 GiB | 139.4 GiB | 153.0 GiB | 148.3 GiB | 842 | 0.0 GiB |
+| 5m 19s | 0.0 GiB | 193.5 GiB | 214.1 GiB | 202.1 GiB | 875 | 20.9 GiB |
+| 6m 20s | 0.5 GiB | 204.0 GiB | 221.4 GiB | 213.4 GiB | 881 | 11.5 GiB |
+| 13m 27s | 15.8 GiB | 204.0 GiB | 221.4 GiB | 213.4 GiB | 881 | 11.4 GiB |
+
+Three things follow from it:
+
+- **The held memory is outside DuckDB's `memory_limit`.** RSS plateaued at
+  204 GiB against a 149 GiB limit; the ~55 GiB above it is freed memory
+  jemalloc kept. That makes `--mem=256G` load-bearing while the hold is on:
+  under 192G this run would have been OOM-killed. Lower `EXPORT_MEMORY_LIMIT`
+  before lowering `--mem`, and expect the gap to stay.
+- **The `max_map_count` suspect is still unconfirmed.** `maps` peaked at 881
+  of 65,530, but that is with the hold on; neither failed run logged `maps`,
+  so no run has shown them climbing. The run is equally consistent with any
+  cause that only bites when memory is handed back. Confirming it would take
+  one export with the hold off (`EXPORT_JE_MALLOC_CONF=` empty and
+  `_HOLD_ALLOCATOR` emptied), watching `maps` approach 65,530 before the
+  failure. That evidence is what to take to the cluster admins before asking
+  them to raise `vm.max_map_count` (Elasticsearch's documented minimum,
+  262,144, is a common setting).
+- **Which of the two knobs matters is unknown.** Both changed at once. Nothing
+  needs that answered while the export finishes.
+
+If a later run fails anyway: RSS climbing past ~205 GiB until the job is
+OOM-killed means jemalloc could not reuse what it held, so set
+`EXPORT_JE_MALLOC_CONF=` empty; a `(bad allocation)` with `maps` near the
+limit confirms the suspect and makes raising `vm.max_map_count` the fix; one
+with `maps` far below it rules the suspect out. Record the figures here before
+guessing again.
 
 **The node did not change, so the database or the code did.** `largemem-6-1`
 ran the 2026-08-21 and 2026-09-26 exports that succeeded (jobs 119057 and
