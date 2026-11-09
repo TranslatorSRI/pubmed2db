@@ -120,8 +120,8 @@ def memory_summary() -> str:
     The numbers that, together, say which memory limit a step is near: RSS
     against ``--mem`` (the cgroup), VSZ and the node's commit charge against
     ``CommitLimit`` (strict overcommit), and the mapping count against
-    ``vm.max_map_count``. slurm/README.md, "A refused allocation", says how
-    to read them.
+    ``vm.max_map_count``. docs/Memory.md, "Reading the memory figures", says
+    how to read them.
     """
     rss = current_rss_gib()
     vsz = virtual_size_gib()

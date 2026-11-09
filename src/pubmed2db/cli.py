@@ -137,7 +137,7 @@ def _connect(ctx: click.Context, *, read_only: bool = False):
     Logs what DuckDB actually runs with, which is not always what was asked
     for: with no limit passed, ``memory_limit`` and ``threads`` are what it
     derived from the Slurm cgroup, so every step that sets none (download,
-    journals, validate) records the cgroup probe AGENTS.md asks to re-take.
+    journals, validate) records the cgroup probe docs/Memory.md asks to re-take.
     """
     try:
         con = connect(

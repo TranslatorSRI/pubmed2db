@@ -892,6 +892,27 @@ def test_a_failed_restore_after_a_clean_block_is_raised(loaded_con):
     assert after == threads_before
 
 
+def test_the_out_of_memory_line_names_a_section_that_exists(caplog):
+    """The line names a doc and a section to read on a refused allocation. Moving
+    or renaming that section would leave the one pointer an operator gets at the
+    moment it matters pointing at nothing."""
+    import logging
+    import re
+    from pathlib import Path
+
+    from pubmed2db.export import _logging_out_of_memory
+
+    with caplog.at_level(logging.ERROR, logger="pubmed2db.export"):
+        with pytest.raises(duckdb.OutOfMemoryException):
+            with _logging_out_of_memory(None):
+                raise duckdb.OutOfMemoryException(_REFUSED)
+
+    (line,) = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    path, section = re.search(r"\(([\w/.-]+\.md), '([^']+)'\)", line).groups()
+    doc = (Path(__file__).resolve().parent.parent / path).read_text()
+    assert re.search(rf"^#+ {re.escape(section)}", doc, re.M), (path, section)
+
+
 def test_a_memory_limit_error_is_not_blamed_on_overcommit(loaded_con, tmp_path, caplog):
     """DuckDB's own limit names itself; the overcommit hint is only for a refusal."""
     import logging

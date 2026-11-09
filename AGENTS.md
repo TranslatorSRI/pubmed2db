@@ -10,8 +10,10 @@ Everything a user needs — commands, options, operational notes, the year-bound
 rebuild — is in [`README.md`](./README.md); deferred work and known limitations
 are in [`FUTURE.md`](./FUTURE.md); how a release and its data build are cut is in
 [`docs/Releases.md`](./docs/Releases.md); what the outputs *mean*, for the
-people who consume them, is in [`docs/data-model/`](./docs/data-model/README.md). This
-file is the map plus the handful of decisions you cannot see from the code.
+people who consume them, is in [`docs/data-model/`](./docs/data-model/README.md);
+how memory behaves on the cluster, and what was measured, is in
+[`docs/Memory.md`](./docs/Memory.md). This file is the map plus the handful of
+decisions you cannot see from the code.
 
 ## Layout
 
@@ -357,60 +359,15 @@ explains its part; this table is only a map.
   `test_cli_export_then_validate_needs_no_flags` runs both commands with no
   flags, because a compressed default is only safe while the checker downstream
   stays flag-free.
-- **DuckDB reads the Slurm cgroup. Both of its sized defaults do — we guessed
-  otherwise twice and were wrong twice.** Measured on duckdb 1.5.4:
-  `memory_limit` is ~76% of `--mem` (6.1 GiB under `--mem=8G`, 47.3 GiB under
-  `--mem=62G`; ~80% of physical RAM off a cluster) and `threads` is
-  `--cpus-per-task` (2 under `--cpus-per-task=2` on a 64-core node — and via the
-  cgroup's CPU quota, not an affinity mask, which read the full 64). Re-taken
-  on 1.5.5 on `ht1` (2026-10-21): 6.1 GiB and 2 under `--mem=8G
-  --cpus-per-task=2`, unchanged. **Do not reason from "DuckDB cannot see the
-  allocation"; measure it.** Both claims reached the docs, the `--help` text
-  and an issue before anyone ran the one-line probe in #36/#38 that disproves
-  them. So the buffer pool is not what overruns the allocation; what its limit
-  does not cover is, since the lxml tree, the parsed records and the Arrow
-  batch share the same cgroup and the default already claims three quarters
-  of it.
-
-  These are measurements, so re-take them after a DuckDB upgrade rather than
-  assume they carried over. Every Slurm step's log has a `DuckDB <version>:
-  memory_limit=…, threads=…` line, and the download, journals and validate
-  steps pass no limit, so theirs are the cgroup-derived defaults
-  (`slurm/README.md` → "Monitoring memory and runtime"); compare them with
-  that step's `--mem` and `--cpus-per-task`. Off the pipeline, it is one line
-  inside an allocation, and should print ~76% of `--mem` and
-  `--cpus-per-task`:
-
-  ```bash
-  srun --mem=8G --cpus-per-task=2 uv run python -c "import duckdb; c = duckdb.connect(); print(c.execute(\"SELECT current_setting('memory_limit'), current_setting('threads')\").fetchone())"
-  ```
-
-- **Two memory numbers mislead, and both have bitten.** `util.peak_rss_gib` is
-  `ru_maxrss`, a high-water mark that only ever rises, so a climbing per-file
-  "peak" is not evidence of a leak; `current_rss_gib` is the one that can fall —
-  which is why the load and validate progress lines log both. Those two are
-  all they log: VSZ, the node's commit charge and the mapping count
-  (`util.memory_summary`, the figures that explain a `(bad allocation)`) are
-  only in the export's heartbeat and its out-of-memory line. If load or
-  validate is ever refused an allocation, switch its progress line to
-  `memory_summary` before reading anything into its RSS. Before diagnosing
-  loader memory, read `slurm/README.md` → "Running `load`: how much memory?".
-- **`--mem` is not the only memory limit on `ht1`.** A
-  `Failed to allocate block ... (bad allocation)` from DuckDB means `mmap`
-  itself failed: not a Slurm OOM-kill (SIGKILL, no traceback), and not
-  `memory_limit`, whose error names the limit. Two exports failed that way at
-  ~68 GiB RSS under `--mem=192G` and `256G` (#42). The nodes run strict
-  overcommit (`vm.overcommit_memory=2`), but the node-wide `CommitLimit` was
-  ruled out: the 256G run's node never charged an eighth of it. The suspect
-  is `vm.max_map_count`, which jemalloc's `PROT_NONE` remapping under strict
-  overcommit can exhaust. The export now holds freed memory rather than
-  returning it (`export._HOLD_ALLOCATOR`, `EXPORT_JE_MALLOC_CONF`), and that
-  got the next run through on the same node. It does not confirm the suspect:
-  `maps` stayed at 881 of 65,530 with the hold on, and no failed run logged
-  them. **The held memory is outside `memory_limit`**: that run's RSS
-  plateaued at 204 GiB against a 149 GiB limit, so `--mem=256G` is now
-  needed, not inherited. `slurm/README.md` → "A refused allocation" has the
-  figures and what would confirm the suspect.
+- **Memory: measure it, and read [`docs/Memory.md`](./docs/Memory.md) before
+  reasoning about it.** Two claims about how DuckDB sizes itself under Slurm
+  reached the docs and an issue before a one-line probe disproved both: it
+  reads the cgroup (#36/#38). Re-take that probe after a DuckDB upgrade. Three
+  more things have misled: peak RSS (`ru_maxrss`) only ever rises;
+  `memory_limit` covers only DuckDB's buffer pool, not the loader's own memory
+  or the ~55 GiB the export now holds instead of returning (#42); and a
+  `(bad allocation)` is `mmap` refused, which is neither `--mem` nor
+  `memory_limit`. Don't size `--mem` against that last one.
 - **An efetch mismatch is not evidence about what we parsed.** `validate`
   compares the export against Entrez `efetch`, but efetch output is a
   *rendering*, not the archival XML: it serves PMID 152567 as
