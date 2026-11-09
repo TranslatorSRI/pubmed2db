@@ -372,23 +372,44 @@ as remapped regions rather than unmapped ones. The heartbeat, the
 failure line and each step's opening block now log the mapping count
 against `vm.max_map_count` (`maps N/M`), which settles it on the next run.
 
-What to do with that run's figures:
+**The next run holds freed memory instead of returning it**, which should
+avoid the failure if the suspect is right. `export._HOLD_ALLOCATOR` raises
+DuckDB's two allocator-flush thresholds out of reach for the snapshot and the
+`COPY`. By default DuckDB flushes after any task that peaked above 128 MiB and
+after any deallocation above 512 MiB. `EXPORT_JE_MALLOC_CONF` in `config.sh`
+turns off jemalloc's own time-based release (`dirty_decay_ms:-1,
+muzzy_decay_ms:-1`, passed as `DUCKDB_JE_MALLOC_CONF`). When written, neither
+had run at corpus scale, since macOS builds of DuckDB have no jemalloc. How to
+read that run's heartbeat:
 
-- **`maps` reaches `max_map_count`:** the limit is the node's sysctl.
-  Ask the cluster admins to raise `vm.max_map_count` on the export's nodes
-  (Elasticsearch's documented minimum, 262,144, is a common setting), or
-  for nodes without strict overcommit. Without an admin, the remaining lever
-  is to stop jemalloc returning memory mid-export, through DuckDB's
-  `DUCKDB_JE_MALLOC_CONF` and allocator settings. That is untested here, and
-  it should be measured on a run before relying on it.
-- **`maps` stays far below it:** this suspect is wrong too. Record the
-  figures here before guessing again.
+- **It finishes, with RSS staying near its peak (~155 GiB) and `maps` low:**
+  the suspect is confirmed and the workaround holds. Add the run to the table
+  above, and ask the cluster admins about raising `vm.max_map_count` on the
+  export's nodes. Elasticsearch's documented minimum, 262,144, is a common
+  setting. Holding memory is a workaround, not a fix.
+- **RSS still falls and `maps` climbs to `max_map_count`:** the suspect is
+  confirmed, but something else still releases memory. Raising
+  `vm.max_map_count` is then the fix.
+- **RSS climbs past its old peak until the job is OOM-killed:** jemalloc could
+  not reuse what it held. Set `EXPORT_JE_MALLOC_CONF=` empty, and take the
+  `maps` figure from the run before it to the admins.
+- **It fails with `maps` far below the limit:** this suspect is wrong too.
+  Record the figures here before guessing again.
 
-Why the 2026-08-21 and 2026-09-26 runs succeeded under the same DuckDB is not
-known: nothing logged their nodes' settings. `04-export.sbatch` stays at 256G
-because those runs used it, not because `--mem` is shown to matter here.
-`sacct` records no memory figures on this cluster (see "Monitoring memory and
-runtime"), so the step log is the only record.
+**The node did not change, so the database or the code did.** `largemem-6-1`
+ran the 2026-08-21 and 2026-09-26 exports that succeeded (jobs 119057 and
+138349, 256G, DuckDB 1.5.5). It has been up since 2026-05-21, on the same
+kernel, and `vm.overcommit_memory = 2` has been in its `/etc/sysctl.conf`
+since that day. So strict overcommit and `max_map_count` were the same for the
+runs that succeeded. The 2026-09-26 run's RSS was still 144 GiB 9½ minutes in
+(the excerpt under "Running `export`" above), while both failed runs had
+fallen to ~68 GiB by minute 6. Candidates for the difference: v1.2 builds a
+fresh database rather than continuing one, and data model 1.0 reshaped the
+tables, though the export query's structure is unchanged. Both successful
+runs' logs are gone. `04-export.sbatch` stays at 256G because those runs used
+it, not because `--mem` is shown to matter here. `sacct` records no memory
+figures on this cluster (see "Monitoring memory and runtime"), so the step log
+is the only record.
 
 Job 155199 also ran the snapshot and the `COPY` with `preserve_insertion_order`
 off, as DuckDB's error message suggests (`export._UNORDERED` says why that is

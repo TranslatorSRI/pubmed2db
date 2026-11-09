@@ -392,9 +392,12 @@ explains its part; this table is only a map.
   overcommit (`vm.overcommit_memory=2`), but the node-wide `CommitLimit` was
   ruled out: the 256G run's node never charged an eighth of it. The suspect
   is `vm.max_map_count`, which jemalloc's `PROT_NONE` remapping under strict
-  overcommit can exhaust. The heartbeat logs `maps N/M` to settle it;
-  `slurm/README.md` → "A refused allocation" has the evidence. Don't size
-  `--mem` against this failure.
+  overcommit can exhaust. The heartbeat logs `maps N/M` to settle it, and
+  the export now holds freed memory rather than returning it
+  (`export._HOLD_ALLOCATOR`, `EXPORT_JE_MALLOC_CONF`); `slurm/README.md` →
+  "A refused allocation" has the evidence and how to read the next run. The
+  node's settings have not changed since the exports that succeeded on it.
+  Don't size `--mem` against this failure.
 - **An efetch mismatch is not evidence about what we parsed.** `validate`
   compares the export against Entrez `efetch`, but efetch output is a
   *rendering*, not the archival XML: it serves PMID 152567 as
