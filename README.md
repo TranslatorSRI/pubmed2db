@@ -85,7 +85,7 @@ uv run pubmed2db --data-dir data journals
 uv run pubmed2db --data-dir data load
 
 # Export the latest abstract of every PMID as sharded NDJSON (DocumentMetadataAPI fields).
-uv run pubmed2db --data-dir data export --format json --out data/json --shards 16
+uv run pubmed2db --data-dir data export --out data/json --shards 16
 
 # Download + journals + load in one step (for scheduled runs).
 uv run pubmed2db --data-dir data update
@@ -599,7 +599,7 @@ dimension reads from two NLM sources rather than one.
   file into a separate DuckDB file, then use a query that spans multiple files to either load everything into one
   file or to simply export it from the multiple files (using PMIDs to group related queries might not take very long?).
   Running it with 64G of memory seems sufficient.
-- `uv run pubmed2db export --format json` is fast but memory-hungry: 41,153,516 documents in 13m 14s
+- `uv run pubmed2db export` is fast but memory-hungry: 41,153,516 documents in 13m 14s
   (≈52k documents/s) at a peak RSS of 191.9 GiB, run with `--mem 256G` and a 200GB DuckDB memory limit
   (153.3 GiB and 12m 03s under a 160GB limit — the peak follows the limit, not the query).
   Unlike `load`, its memory scales with the whole database rather than the largest input file — see

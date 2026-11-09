@@ -213,18 +213,19 @@ def load(ctx: click.Context, force: bool) -> None:
         _load_local(con, force=force, require_files=True)
 
 
-@main.command()
-@click.option(
-    "--format",
-    "fmt",
-    type=click.Choice(["json"]),
-    default="json",
-    show_default=True,
-    # The only format since the Parquet export was removed (FUTURE.md says
-    # how to restore it); kept so existing command lines, the Slurm script's among
-    # them, still run.
-    help="Export format.",
+_PARQUET_REMOVED = (
+    "The Parquet export was removed in v1.2 (FUTURE.md says how to restore it). "
+    "DuckDB writes any table out directly: "
+    "COPY latest_article TO 'article.parquet' (FORMAT PARQUET)."
 )
+
+
+@main.command()
+# Hidden, and accepted only to be refused with _PARQUET_REMOVED: JSON is the
+# only format now, so `--format json` (the Slurm script's) still runs, and the
+# Parquet export's command lines fail naming the removal rather than an option.
+@click.option("--format", "fmt", type=click.Choice(["json", "parquet"]), hidden=True)
+@click.option("--latest", "--all", "parquet_flag", is_flag=True, hidden=True)
 @click.option("--out", required=True, type=click.Path(file_okay=False), help="Output directory.")
 @click.option(
     "--shards",
@@ -257,13 +258,16 @@ def load(ctx: click.Context, force: bool) -> None:
 @click.pass_context
 def export(
     ctx: click.Context,
-    fmt: str,
+    fmt: str | None,
+    parquet_flag: bool,
     out: str,
     shards: int | None,
     gzip_output: bool,
     overwrite: bool,
 ) -> None:
     """Export the latest version of every abstract to sharded NDJSON."""
+    if fmt == "parquet" or parquet_flag:
+        raise click.UsageError(_PARQUET_REMOVED)
     from .export import export_json
     from .status import export_readiness
     from .util import peak_rss_gib
@@ -280,7 +284,7 @@ def export(
             # giving feedback even within a single large table's export.
             con.execute("PRAGMA enable_progress_bar")
 
-        click.echo(f"Starting {fmt} export to {out}...")
+        click.echo(f"Starting JSON export to {out}...")
         try:
             paths = export_json(
                 con, out, shards=shards, gzip_output=gzip_output, overwrite=overwrite
