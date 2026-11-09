@@ -384,14 +384,17 @@ explains its part; this table is only a map.
   "peak" is not evidence of a leak; `current_rss_gib` is the one that can fall —
   which is why the load and validate progress lines log both. Before diagnosing loader memory, read `slurm/README.md` → "Running
   `load`: how much memory?".
-- **`--mem` is not the only memory limit on `ht1`: its nodes run strict
-  overcommit** (`vm.overcommit_memory=2`). A node-wide `CommitLimit` (~226 GiB
-  of 251) is charged with every job's *reserved* memory, so a job can be
-  refused well under its own `--mem` and RSS. DuckDB reports that as
-  `Failed to allocate block ... (bad allocation)`, not as a Slurm OOM-kill;
-  `memory_limit`'s own error names the limit instead. The 192G export failed
-  this way at 68 GiB RSS (#42). The export heartbeat logs `VSZ` and the node's
-  commit charge for this reason; `slurm/README.md` → "A refused allocation".
+- **`--mem` is not the only memory limit on `ht1`.** A
+  `Failed to allocate block ... (bad allocation)` from DuckDB means `mmap`
+  itself failed: not a Slurm OOM-kill (SIGKILL, no traceback), and not
+  `memory_limit`, whose error names the limit. Two exports failed that way at
+  ~68 GiB RSS under `--mem=192G` and `256G` (#42). The nodes run strict
+  overcommit (`vm.overcommit_memory=2`), but the node-wide `CommitLimit` was
+  ruled out: the 256G run's node never charged an eighth of it. The suspect
+  is `vm.max_map_count`, which jemalloc's `PROT_NONE` remapping under strict
+  overcommit can exhaust. The heartbeat logs `maps N/M` to settle it;
+  `slurm/README.md` → "A refused allocation" has the evidence. Don't size
+  `--mem` against this failure.
 - **An efetch mismatch is not evidence about what we parsed.** `validate`
   compares the export against Entrez `efetch`, but efetch output is a
   *rendering*, not the archival XML: it serves PMID 152567 as
