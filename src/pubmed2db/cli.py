@@ -9,7 +9,6 @@ from pathlib import Path
 
 import click
 import duckdb
-from click.core import ParameterSource
 
 from . import __version__
 from .datamodel import IncompatibleDatabase
@@ -218,8 +217,12 @@ def load(ctx: click.Context, force: bool) -> None:
 @click.option(
     "--format",
     "fmt",
-    type=click.Choice(["json", "parquet"]),
-    required=True,
+    type=click.Choice(["json"]),
+    default="json",
+    show_default=True,
+    # The only format since the Parquet export was removed (FUTURE.md says
+    # how to restore it); kept so existing command lines, the Slurm script's among
+    # them, still run.
     help="Export format.",
 )
 @click.option("--out", required=True, type=click.Path(file_okay=False), help="Output directory.")
@@ -228,7 +231,7 @@ def load(ctx: click.Context, force: bool) -> None:
     type=click.IntRange(min=1),
     default=None,
     help=(
-        "JSON: maximum number of NDJSON shards (default: one per DuckDB "
+        "Maximum number of NDJSON shards (default: one per DuckDB "
         "thread). DuckDB writes one file per writer thread, so this also caps "
         "the export's write parallelism; a small dataset may use fewer."
     ),
@@ -239,14 +242,9 @@ def load(ctx: click.Context, force: bool) -> None:
     default=True,
     show_default=True,
     help=(
-        "JSON: gzip each shard as it's written. NDJSON compresses ~4-5x, and "
+        "Gzip each shard as it's written. NDJSON compresses ~4-5x, and "
         "`validate` reads either form without being told which."
     ),
-)
-@click.option(
-    "--latest/--all",
-    default=True,
-    help="Parquet: export only the latest version (default) or full history.",
 )
 @click.option(
     "--overwrite",
@@ -263,26 +261,12 @@ def export(
     out: str,
     shards: int | None,
     gzip_output: bool,
-    latest: bool,
     overwrite: bool,
 ) -> None:
-    """Export the latest abstracts to JSON, or the database to Parquet."""
-    from .export import export_json, export_parquet
+    """Export the latest version of every abstract to sharded NDJSON."""
+    from .export import export_json
     from .status import export_readiness
     from .util import peak_rss_gib
-
-    # Flags that only apply to the other format are silently inert otherwise,
-    # which is an expensive thing to discover after a 20-minute export.
-    for flag, option, applies_to in (
-        ("--shards", "shards", "json"),
-        ("--gzip", "gzip_output", "json"),
-        ("--latest", "latest", "parquet"),
-    ):
-        if fmt != applies_to and ctx.get_parameter_source(option) == ParameterSource.COMMANDLINE:
-            click.echo(
-                f"Warning: {flag} only applies to --format {applies_to}; ignoring it.",
-                err=True,
-            )
 
     with closing(_connect(ctx)) as con:
         error, warnings = export_readiness(con)
@@ -298,12 +282,9 @@ def export(
 
         click.echo(f"Starting {fmt} export to {out}...")
         try:
-            if fmt == "json":
-                paths = export_json(
-                    con, out, shards=shards, gzip_output=gzip_output, overwrite=overwrite
-                )
-            else:
-                paths = export_parquet(con, out, latest=latest, overwrite=overwrite)
+            paths = export_json(
+                con, out, shards=shards, gzip_output=gzip_output, overwrite=overwrite
+            )
         except FileExistsError as exc:
             raise click.ClickException(str(exc)) from exc
         click.echo(f"Wrote {len(paths)} file(s) to {out} (peak RSS {peak_rss_gib():.1f} GiB).")

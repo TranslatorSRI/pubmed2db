@@ -4,10 +4,9 @@ pubmed2db turns PubMed's XML distribution into a local copy of PubMed that can b
 queried and redistributed:
 
 - a DuckDB database that keeps every version of every record;
-- a Parquet export of the same tables;
 - an NDJSON export with one flat record per current article.
 
-This document is the contract for all three: what each table and field means,
+This document is the contract for both: what each table and field means,
 where it comes from in PubMed's XML, what was left out and why, and how the
 design was decided.
 
@@ -48,13 +47,12 @@ current code refuses their databases, and their tables differ in the ways
 | Output | What it holds | Use it when |
 | --- | --- | --- |
 | `pubmed.duckdb` | Every table, with **every version** of every article, plus `latest_*` views of the current versions | You want history, joins across everything, or to run pubmed2db's own steps |
-| Parquet export (`<table>.parquet`) | The same tables and columns as files. By default only the current versions (`export --format parquet`); `--all` for history | You want all of PubMed in a portable columnar form, readable by DuckDB, Polars, Spark or pandas |
 | NDJSON export (`pubmed_metadata_*.ndjson.gz`) | One JSON object per current PMID, with the [DocumentMetadataAPI](https://github.com/NCATSTranslator/DocumentMetadataAPI) field names | You need citation metadata, identifiers and abstracts, and nothing else (Babel, Node Annotator) |
 
 Every export directory also holds `metadata.json`. It records:
 
 - the data model version and the export format;
-- the record count (`records`: current articles, the same in every format; an `--all` Parquet export adds `article_versions`, every version in its article file);
+- the record count (`records`: current articles);
 - the code and database it came from;
 - the corpus cutoff;
 - a SHA-256 for every file, repeated in `SHA256SUMS` for `sha256sum -c`.
@@ -197,7 +195,6 @@ the most recent file, and says nothing about the rows loaded before.
 | Output | Where the version is |
 | --- | --- |
 | DuckDB | `SELECT value FROM pubmed2db_metadata WHERE key = 'data_model_version'` |
-| Parquet | `pubmed2db_metadata.parquet`, the same key, or `metadata.json` |
 | NDJSON | `metadata.json`'s `data_model_version`, also in `validation_report.json` |
 
 Each table and view belongs to one of three **stability tiers**. A table's
@@ -538,12 +535,12 @@ FROM latest_article la LEFT JOIN journal j USING (nlm_catalog_id)
 WHERE la.pmid = 30690000;
 ```
 
-Reviews by publication year, from the Parquet export:
+Reviews by publication year:
 
 ```sql
 SELECT a.pub_year, count(*)
-FROM 'parquet/article.parquet' a
-JOIN 'parquet/publication_type.parquet' pt USING (pmid, source_file)
+FROM latest_article a
+JOIN latest_publication_type pt USING (pmid, source_file)
 WHERE pt.type_name = 'Review'
 GROUP BY ALL ORDER BY 1;
 ```
@@ -632,5 +629,3 @@ CREATE TEMP TABLE current AS SELECT * FROM latest_article;
   export follows that decision
   ([#33](https://github.com/TranslatorSRI/pubmed2db/issues/33)), as a major
   version. It affects only the NDJSON; the database stores PubMed's value.
-- **The Parquet export has not yet been run on the full corpus**
-  ([#29](https://github.com/TranslatorSRI/pubmed2db/issues/29)).

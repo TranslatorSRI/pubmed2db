@@ -1,10 +1,10 @@
 """The pubmed2db data model's version, and the metadata every database carries.
 
-One version number covers every output — the DuckDB database, the Parquet export
-(the same tables as files) and the NDJSON export (a projection of them) — so a
-consumer of any of them pins one thing. It is **not** the code version: the
-code version says how the *code* changed, this one how consumers' code is
-affected, and `docs/data-model/README.md` says what each bump means. It is standard
+One version number covers both outputs — the DuckDB database and the NDJSON
+export (a projection of it) — so a consumer of either pins one thing. It is
+**not** the code version: the code version says how the *code* changed, this
+one how consumers' code is affected, and `docs/data-model/README.md` says what
+each bump means. It is standard
 semantic versioning over the contract, not the contents: a minor bump only
 *adds* (a table, a column, a view, an NDJSON field, or a guarantee that leaves
 every old reading correct), a major bump renames, removes or changes the

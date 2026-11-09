@@ -255,11 +255,9 @@ def test_timestamps_are_instants_not_wall_clock_times(con, gz_fixture):
 
 
 def test_each_child_table_has_a_latest_view_matching_the_export(edge_con):
-    """The views are the consumer's version of the exports' snapshot filter, so
-    they must select exactly the rows the Parquet export ships."""
-    from pubmed2db.export import _VERSIONED_CHILDREN
-
-    for table in _VERSIONED_CHILDREN:
+    """The views are the consumer's version of the export's snapshot filter, so
+    each must select exactly its table's rows for the latest versions."""
+    for table in _children(edge_con):
         assert (
             _rows(
                 edge_con,
@@ -364,11 +362,10 @@ def test_every_relation_declares_its_tier_and_every_contract_column_its_meaning(
 
 
 def test_every_latest_view_names_the_table_it_filters(con):
-    from pubmed2db.export import _VERSIONED_CHILDREN
-
+    children = _children(con)
     views = {r["name"]: r for r in datamodel.describe(con) if r["kind"] == "view"}
-    assert set(views) == {"latest_article"} | {f"latest_{t}" for t in _VERSIONED_CHILDREN}
-    for table in _VERSIONED_CHILDREN:
+    assert set(views) == {"latest_article"} | {f"latest_{t}" for t in children}
+    for table in children:
         assert f"Columns as {table}." in views[f"latest_{table}"]["comment"]
 
 
@@ -381,6 +378,11 @@ _CHILDREN_SQL = (
 )
 
 
+def _children(con) -> list[str]:
+    """The tables whose rows belong to one article version, from the schema."""
+    return sorted(r[0] for r in _rows(con, _CHILDREN_SQL))
+
+
 def test_pmid_and_source_file_identify_an_article_version(edge_con):
     assert (
         _rows(edge_con, "SELECT pmid, source_file FROM article GROUP BY ALL HAVING count(*) > 1")
@@ -389,7 +391,7 @@ def test_pmid_and_source_file_identify_an_article_version(edge_con):
 
 
 def test_every_child_row_belongs_to_a_stored_article_version(edge_con):
-    children = [r[0] for r in _rows(edge_con, _CHILDREN_SQL)]
+    children = _children(edge_con)
     assert len(children) == 9
     for table in children:
         assert _rows(
@@ -504,13 +506,9 @@ def test_the_doc_describes_every_ndjson_field_in_order():
 
 def test_every_recipe_in_the_doc_runs(edge_con, tmp_path, monkeypatch):
     """The recipes are written for someone holding only a build's files, so run
-    them that way: attach the database read-only, with the Parquet export beside
-    it, from an empty session."""
+    them that way: attach the database read-only, from an empty session."""
     import re
 
-    from pubmed2db.export import export_parquet
-
-    export_parquet(edge_con, tmp_path / "parquet")
     db_path = Path(
         edge_con.execute("SELECT path FROM duckdb_databases() WHERE NOT internal").fetchone()[0]
     )

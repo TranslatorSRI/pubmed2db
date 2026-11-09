@@ -256,7 +256,7 @@ COMMENT ON COLUMN publication_type.type_name IS 'Its name, e.g. Review. An empty
 
 -- Grants listed on the article (<GrantList>). Named `article_grant`, not
 -- `grant`: GRANT is reserved in standard SQL and in Postgres, where anyone
--- loading the Parquet export would otherwise have to quote it.
+-- copying these tables elsewhere would otherwise have to quote it.
 CREATE TABLE IF NOT EXISTS article_grant (
     pmid        BIGINT NOT NULL,
     source_file TEXT   NOT NULL,
