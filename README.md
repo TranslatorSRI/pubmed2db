@@ -2,8 +2,7 @@
 
 Download PubMed abstracts, load them into a [DuckDB](https://duckdb.org/) database
 (keeping full version history), and export the latest version of every abstract to
-JSON (for ingest into Node Annotator / ElasticSearch) and to Parquet (for downloadable
-queries).
+JSON (for ingest into Node Annotator / ElasticSearch).
 
 The JSON export follows the field names of the NCATS Translator
 [DocumentMetadataAPI](https://github.com/NCATSTranslator/DocumentMetadataAPI),
@@ -12,8 +11,8 @@ plus four fields of our own: `id`, [`identifiers`](#identifiers-in-the-json-expo
 [`publication_types`](#publication-types-in-the-json-export). The database itself
 uses PubMed's own field names.
 
-All three outputs — the database, the Parquet export and the NDJSON export —
-follow one versioned **data model**, currently 1.0.0, documented for consumers in
+Both outputs — the database and the NDJSON export — follow one versioned
+**data model**, currently 1.0.0, documented for consumers in
 [`docs/data-model/`](./docs/data-model/README.md): what every table and field means,
 what PubMed data is left out, and how the design was decided. Each output carries
 its version, and the database documents its own columns
@@ -36,7 +35,7 @@ which times out a stalled connection. On top of it, pubmed2db adds:
 - **Faithful publication dates** — raw `PubDate` components (`Year`/`Month`/`Season`/
   `Day`/`MedlineDate`) are preserved rather than collapsed to a single date.
   `<Season>` shares the `pub_month` column with `<Month>` — the DTD makes the two
-  mutually exclusive — so a Parquet consumer reading `article.pub_month` sees
+  mutually exclusive — so a consumer reading `article.pub_month` sees
   `Winter` or `Sep-Dec` as readily as `Mar`.
 - **Journal names** — the journal title and abbreviations come from NLM's
   `J_Entrez.txt` (`uv run pubmed2db journals`) and are joined on `nlm_catalog_id`;
@@ -88,10 +87,6 @@ uv run pubmed2db --data-dir data load
 # Export the latest abstract of every PMID as sharded NDJSON (DocumentMetadataAPI fields).
 uv run pubmed2db --data-dir data export --format json --out data/json --shards 16
 
-# Export the database to Parquet (latest version per table, or --all for full history).
-# Note: unlike the JSON export, this has not yet been run against the full corpus.
-uv run pubmed2db --data-dir data export --format parquet --out data/parquet
-
 # Download + journals + load in one step (for scheduled runs).
 uv run pubmed2db --data-dir data update
 
@@ -106,7 +101,7 @@ uv run pubmed2db --data-dir data validate data/json --email you@example.com
 `--data-dir data` is the default, so omitting it gives the same result.
 The DuckDB database is stored as `<data-dir>/pubmed.duckdb`; override with `--db`.
 
-Both exports finish by writing `metadata.json` into the output directory: the
+The export finishes by writing `metadata.json` into the output directory: the
 data model version, the record count, the corpus cutoff (the last file loaded,
 and when NCBI posted it), and a SHA-256 per file. The same hashes go into
 `SHA256SUMS`, so `sha256sum -c SHA256SUMS` checks a download with no JSON parser.
@@ -243,7 +238,7 @@ its own `["PMID:<id>"]`; the array is never empty and never null.
 
 Only DOIs and PMCIDs are promoted into this field. Any other `ArticleId` type
 PubMed supplies (`pii`, `mid`, …) is still loaded and is available in the
-`article_id` table and the Parquet export.
+`article_id` table.
 
 Three more group-level options tune DuckDB itself, which matters on a cluster:
 
@@ -609,17 +604,11 @@ dimension reads from two NLM sources rather than one.
   (153.3 GiB and 12m 03s under a 160GB limit — the peak follows the limit, not the query).
   Unlike `load`, its memory scales with the whole database rather than the largest input file — see
   [`slurm/README.md`](./slurm/README.md#running-export) for why, and for what to request on a cluster.
-- **`export` publishes in place, not atomically.** Both formats write straight into `--out`:
-  the JSON export deletes the shards of the previous run before DuckDB writes the new ones,
-  and the Parquet export replaces one table file at a time (sweeping any left by a table that
-  has since left the schema). A run that dies
+- **`export` publishes in place, not atomically.** It writes straight into `--out`,
+  deleting the shards of the previous run before DuckDB writes the new ones. A run that dies
   partway — OOM, full disk — therefore leaves a half-written dataset that looks complete to
   anything globbing the directory. Export into a fresh directory and swap it into place
   yourself if consumers read the output while exports run.
-- **`export --format parquet` is untested at full scale.** Only the JSON export has been run against the
-  whole corpus. Parquet should be the lighter of the two (each table is written by a DuckDB `COPY ... TO`
-  rather than pulled through Python), but that is reasoning, not a measurement: request the same 256 GB
-  the first time and check the logged peak RSS.
 
 ## Development
 

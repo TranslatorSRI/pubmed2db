@@ -2,8 +2,9 @@
 
 pubmed2db downloads PubMed abstracts, loads them into a DuckDB database keeping
 **full version history**, and exports the **latest** version of every abstract to
-JSON (DocumentMetadataAPI field names, for Node Annotator / ElasticSearch) and to
-Parquet (PubMed field names, for downloadable queries).
+JSON (DocumentMetadataAPI field names, for Node Annotator / ElasticSearch). There
+is no Parquet export: it was removed before anyone used it, and FUTURE.md says
+how to bring it back.
 
 Everything a user needs — commands, options, operational notes, the year-boundary
 rebuild — is in [`README.md`](./README.md); deferred work and known limitations
@@ -25,7 +26,7 @@ explains its part; this table is only a map.
 | `src/pubmed2db/download.py` | Fetches baseline/update files; adds `.md5` sidecar tracking. |
 | `src/pubmed2db/parse.py` | Self-driven XML iteration over each file. |
 | `src/pubmed2db/load.py` | Loads parsed files (full history, provenance-tagged), delete logic, journal dimension. |
-| `src/pubmed2db/export.py` | JSON (one DuckDB `COPY`, gzipped by default) + Parquet export. |
+| `src/pubmed2db/export.py` | The NDJSON export: one DuckDB `COPY`, gzipped by default. |
 | `src/pubmed2db/validate.py` | Post-export checks over a directory of NDJSON shards; emits a gated JSON report. |
 | `src/pubmed2db/status.py` | Pipeline-readiness checks derived from DB state. |
 | `src/pubmed2db/util.py` | Shared helpers for the long steps: progress/ETA, durations, peak RSS. |
@@ -38,8 +39,8 @@ explains its part; this table is only a map.
 - **The outputs follow a versioned data model, separate from the code
   version.** The code version (`v1.2`) says how the code changed;
   `datamodel.DATA_MODEL_VERSION` (1.0.0, standard semver) says how consumers
-  are affected, and `docs/Releases.md` defines both. It covers the database,
-  the Parquet export and the NDJSON record together. One number, because the
+  are affected, and `docs/Releases.md` defines both. It covers the database
+  and the NDJSON record together. One number, because the
   NDJSON fields are SQL over the tables, so documenting one documents the other.
   Changing the shape fails `tests/test_data_model.py` until you bump it:
   - **minor** only appends (a column at a table's end, a table, a view, an

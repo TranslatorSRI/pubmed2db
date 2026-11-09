@@ -394,12 +394,6 @@ Notes on the knobs:
   and did not need to: DuckDB reads the cgroup, so the pool was already the 8
   CPUs asked for. Treat `--threads` as a way to run below your allocation on a
   busy node, not as something the export needs.
-- **Parquet should be the lighter of the two — but is unmeasured.**
-  `export_parquet` builds the same `_latest_snapshot`, then writes each table
-  with a DuckDB `COPY ... TO`, so no full result set is pulled through Python.
-  It has never been run against the full corpus, so that is reasoning rather
-  than a number: give it the same allocation as the JSON export the first time
-  and read the logged peak RSS.
 - **Run `export` in a separate `srun` from `load`.** `update` deliberately does
   not chain into it, and sizing one job for both means paying the export's memory
   for the load's several hours.
