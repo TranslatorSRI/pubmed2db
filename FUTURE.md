@@ -13,16 +13,17 @@ on, and a copy left here rots into a contradiction of the code.
   one Parquet file per table, current versions by default or the whole history
   with `--all`, with `metadata.json` beside it. It was removed before any
   release shipped it: it had no consumers and had never been run at corpus
-  scale ([#29](https://github.com/TranslatorSRI/pubmed2db/issues/29)). To bring
-  it back, revert the commit "Remove the Parquet export" (`git log -S
-  export_parquet` finds it), which restores the code, its tests and its place
-  in the data model docs, and then:
+  scale. To bring it back, revert the commit "Remove the Parquet export"
+  (`git log -S export_parquet` finds it), which restores the code, its tests
+  and its place in the data model docs, and then:
   - restoring an output is a **minor** data model bump, with a changelog entry
     and a golden file (AGENTS.md);
   - give its snapshot the same DuckDB settings as the JSON export's before
     running it on ht1, whose exports were refused allocations without them
     (#42);
-  - measure it at corpus scale before relying on it, which is what #29 asked.
+  - measure it at corpus scale before relying on it. #29 asked for that
+    measurement and was closed with the removal; it is background, not this
+    entry's issue, so its closing is no reason to delete the entry.
   Until then, DuckDB writes any table out directly:
   `COPY latest_article TO 'article.parquet' (FORMAT PARQUET)` against the
   database.
