@@ -88,22 +88,45 @@ def commit_charge_gib() -> tuple[float, float] | None:
     return committed / 1024**2, limit / 1024**2
 
 
-def memory_summary() -> str:
-    """``RSS … · VSZ … · node commit …/… GiB``, with ``n/a`` for what is unavailable.
+def memory_map_count() -> tuple[int, int] | None:
+    """This process's memory mappings and ``vm.max_map_count``, or ``None`` off Linux.
 
-    The three numbers that, together, say which memory limit a step is near:
-    RSS against ``--mem`` (the cgroup), VSZ and the node's commit charge
-    against ``CommitLimit`` (strict overcommit). slurm/README.md, "A refused
-    allocation", says how to read them.
+    Past ``max_map_count`` mappings, ``mmap`` fails with ENOMEM however much
+    memory is free, which DuckDB reports as ``(bad allocation)``. The suspect
+    for the 2026-11-09 export failure (#42): under ``vm.overcommit_memory=2``
+    jemalloc hands memory back by remapping it ``PROT_NONE``, and each remap in
+    the middle of a mapping splits it. Counting ``/proc/self/maps`` takes the
+    kernel's mapping lock briefly; once a minute it is negligible.
+    """
+    try:
+        with open("/proc/sys/vm/max_map_count") as handle:
+            limit = int(handle.read())
+        with open("/proc/self/maps", "rb") as handle:
+            count = sum(1 for _ in handle)
+    except (OSError, ValueError):
+        return None
+    return count, limit
+
+
+def memory_summary() -> str:
+    """``RSS … · VSZ … · node commit …/… GiB · maps …/…``, ``n/a`` where unavailable.
+
+    The numbers that, together, say which memory limit a step is near: RSS
+    against ``--mem`` (the cgroup), VSZ and the node's commit charge against
+    ``CommitLimit`` (strict overcommit), and the mapping count against
+    ``vm.max_map_count``. slurm/README.md, "A refused allocation", says how
+    to read them.
     """
     rss = current_rss_gib()
     vsz = virtual_size_gib()
     commit = commit_charge_gib()
+    maps = memory_map_count()
     return " · ".join(
         (
             f"RSS {'n/a' if rss is None else f'{rss:.1f} GiB'}",
             f"VSZ {'n/a' if vsz is None else f'{vsz:.1f} GiB'}",
             "node commit " + ("n/a" if commit is None else f"{commit[0]:.1f}/{commit[1]:.1f} GiB"),
+            "maps " + ("n/a" if maps is None else f"{maps[0]}/{maps[1]}"),
         )
     )
 

@@ -350,6 +350,7 @@ def test_writing_progress_line_renders(tmp_path, caplog):
         "RSS",
         "VSZ",
         "node commit",
+        "maps",
         "spill",
     ):
         assert fragment in line, line
@@ -496,6 +497,7 @@ def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog)
         "RSS",
         "VSZ",
         "node commit",
+        "maps",
         "spill",
     ):
         assert fragment in line, line
@@ -924,7 +926,7 @@ def test_an_out_of_memory_error_logs_the_memory_figures_and_propagates(
             export_json(con, tmp_path / "json", shards=1)
 
     (line,) = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
-    for fragment in ("RSS", "VSZ", "node commit", "spill", "A refused allocation"):
+    for fragment in ("RSS", "VSZ", "node commit", "maps", "spill", "A refused allocation"):
         assert fragment in line, line
     after = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
     assert after == threads_before

@@ -122,17 +122,18 @@ log_run_settings() {
     log_memory_limits
 }
 
-# The memory limits that are not --mem. ht1's nodes run strict overcommit
-# (vm.overcommit_memory=2): the kernel refuses any reservation past a node-wide
-# CommitLimit, charged with every job's reserved memory, so a job can fail well
-# under its own --mem -- DuckDB says "(bad allocation)" rather than being
-# OOM-killed. The 192G export did (#42). Committed_AS here is the node's charge
-# at job start, i.e. mostly the neighbours'. Off Linux the /proc reads fail and
-# print empty, like an unset setting above.
+# The memory limits that are not --mem, any of which makes mmap fail with the
+# job well under its own --mem: DuckDB then says "(bad allocation)" rather than
+# being OOM-killed, as both #42 exports did. ht1's nodes run strict overcommit
+# (vm.overcommit_memory=2), which refuses reservations past a node-wide
+# CommitLimit and changes how jemalloc returns memory; max_map_count caps a
+# process's mappings. Committed_AS here is the node's charge at job start,
+# i.e. mostly the neighbours'. Off Linux the /proc reads fail and print empty,
+# like an unset setting above.
 log_memory_limits() {
     local name
     echo "  ulimit_v=$(ulimit -v)"
-    for name in overcommit_memory overcommit_ratio; do
+    for name in overcommit_memory overcommit_ratio max_map_count; do
         echo "  vm.$name=$(cat "/proc/sys/vm/$name" 2>/dev/null)"
     done
     for name in MemTotal CommitLimit Committed_AS; do

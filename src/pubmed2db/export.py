@@ -705,11 +705,10 @@ def _logging_out_of_memory(temp_dir: str | None):
     """Log the memory figures when DuckDB runs out, then let the error propagate.
 
     The heartbeat samples once a minute, so without this the last figures
-    before a failure can be a minute stale: the 192G run's last line said RSS
-    68 GiB, and nothing said what the node's commit charge was (#42). These are
-    read after DuckDB has unwound the statement, so its spill files may already
-    be gone and RSS may have fallen; the node's commit charge and VSZ fall less
-    readily, and are the figures that explain a ``(bad allocation)``.
+    before a failure can be a minute stale (#42). These are read after DuckDB
+    has unwound the statement, so its spill files may already be gone and RSS
+    may have fallen; VSZ, the node's commit charge and the mapping count fall
+    less readily, and are the figures that explain a ``(bad allocation)``.
     """
     try:
         yield
@@ -721,9 +720,9 @@ def _logging_out_of_memory(temp_dir: str | None):
             dir_size_gib(temp_dir),
             peak_rss_gib(),
             (
-                ". '(bad allocation)' is the kernel refusing a reservation, not "
-                "DuckDB's memory_limit: under vm.overcommit_memory=2 compare the "
-                "node commit with its limit (slurm/README.md, 'A refused allocation')"
+                ". '(bad allocation)' is mmap failing, not DuckDB's memory_limit: "
+                "compare the node commit with its limit and the maps with "
+                "vm.max_map_count (slurm/README.md, 'A refused allocation')"
             )
             if refused
             else "",

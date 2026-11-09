@@ -665,7 +665,13 @@ def test_every_step_logs_the_settings_it_runs_with(sandbox: Path, script: Path) 
     assert "  DUCKDB_TEMP_DIR=" in lines
     # The limits that are not --mem (#42): present on every platform, filled in
     # from /proc on Linux and empty elsewhere.
-    for key in ("ulimit_v", "vm.overcommit_memory", "vm.overcommit_ratio", "MemTotal"):
+    for key in (
+        "ulimit_v",
+        "vm.overcommit_memory",
+        "vm.overcommit_ratio",
+        "vm.max_map_count",
+        "MemTotal",
+    ):
         assert any(line.startswith(f"  {key}=") for line in lines), key
     assert any(line.startswith("  CommitLimit=") for line in lines)
     assert any(line.startswith("  Committed_AS=") for line in lines)

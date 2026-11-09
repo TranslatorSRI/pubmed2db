@@ -14,6 +14,7 @@ from pubmed2db.util import (
     dir_size_gib,
     eta_str,
     fmt_duration,
+    memory_map_count,
     memory_summary,
     peak_rss_gib,
     virtual_size_gib,
@@ -81,14 +82,17 @@ def test_proc_kib_reads_the_named_line_only(tmp_path):
 def test_memory_summary_names_every_figure_on_any_platform():
     """The heartbeat's memory block: n/a off Linux rather than a crash or a gap."""
     summary = memory_summary()
-    for fragment in ("RSS ", "VSZ ", "node commit "):
+    for fragment in ("RSS ", "VSZ ", "node commit ", "maps "):
         assert fragment in summary, summary
     if virtual_size_gib() is None:
-        assert summary == "RSS n/a · VSZ n/a · node commit n/a"
+        assert summary == "RSS n/a · VSZ n/a · node commit n/a · maps n/a"
+        assert memory_map_count() is None
     else:
         committed, limit = commit_charge_gib()
         assert 0 < committed and 0 < limit
         assert virtual_size_gib() >= current_rss_gib()
+        count, max_count = memory_map_count()
+        assert 0 < count < max_count
 
 
 def test_dir_size_counts_nested_files_and_tolerates_absence(tmp_path):
