@@ -535,16 +535,6 @@ FROM latest_article la LEFT JOIN journal j USING (nlm_catalog_id)
 WHERE la.pmid = 30690000;
 ```
 
-Reviews by publication year:
-
-```sql
-SELECT a.pub_year, count(*)
-FROM latest_article a
-JOIN latest_publication_type pt USING (pmid, source_file)
-WHERE pt.type_name = 'Review'
-GROUP BY ALL ORDER BY 1;
-```
-
 The authors of an article, with each one's affiliations:
 
 ```sql
@@ -602,6 +592,18 @@ version. For many queries against a large database, materialize it once:
 
 ```sql
 CREATE TEMP TABLE current AS SELECT * FROM latest_article;
+```
+
+Then join the plain tables to it: their `(pmid, source_file)` key keeps only
+the current versions' rows, without re-running the window as joining a second
+`latest_*` view would. Reviews by publication year:
+
+```sql
+SELECT a.pub_year, count(*)
+FROM current a
+JOIN publication_type pt USING (pmid, source_file)
+WHERE pt.type_name = 'Review'
+GROUP BY ALL ORDER BY 1;
 ```
 
 ## Known limitations
