@@ -666,8 +666,8 @@ def _log_while_writing(
 #: own file, and nothing downstream reads the order (see _LATEST_METADATA_SQL).
 #: Keeping it makes DuckDB buffer rows to emit them in scan order, and its own
 #: out-of-memory message suggests turning it off. What it saves at corpus scale
-#: is unmeasured: the 2026-10-22 run that prompted it failed for another reason
-#: (#42), so read the heartbeat of the first run with it before relying on it.
+#: is unmeasured: it was on in both the export refused on 2026-11-09 and the
+#: one that finished, which differed only in the hold below (#42).
 _UNORDERED = {"preserve_insertion_order": False}
 
 #: Stop DuckDB telling jemalloc to hand memory back to the kernel mid-export
@@ -677,11 +677,12 @@ _UNORDERED = {"preserve_insertion_order": False}
 #: jemalloc returns memory by remapping it PROT_NONE, which splits mappings,
 #: and the suspect for two exports refused by mmap at ~68 GiB RSS is the
 #: process running out of them (vm.max_map_count). Held instead, the freed
-#: memory stays mapped for jemalloc to reuse, so RSS should stay near the
-#: buffer limit rather than fall. 04-export.sbatch turns off jemalloc's own
-#: time-based release to match (EXPORT_JE_MALLOC_CONF). Untested at corpus
-#: scale when written: read `maps` and RSS in the run's heartbeat, and see
-#: slurm/README.md, "A refused allocation".
+#: memory stays mapped for jemalloc to reuse. 04-export.sbatch turns off
+#: jemalloc's own time-based release to match (EXPORT_JE_MALLOC_CONF). With
+#: both, the 2026-11-09 export finished, but RSS plateaued ~55 GiB above
+#: memory_limit, which does not count held memory: --mem has to cover it. The
+#: suspect is still unconfirmed, and #80 plans the runs that would settle it;
+#: slurm/README.md, "A refused allocation", has the figures.
 _HOLD_ALLOCATOR = {
     "allocator_flush_threshold": "1TB",
     "allocator_bulk_deallocation_flush_threshold": "1TB",
@@ -705,19 +706,32 @@ def _duckdb_settings(con: duckdb.DuckDBPyConnection, **values: bool | int | str)
     """``SET`` each setting for the duration of the block, then restore it.
 
     Restores on an error too, so a failed export does not leave the connection
-    single-threaded or unordered for whatever the caller runs next.
+    single-threaded or unordered for whatever the caller runs next. Every
+    setting is attempted even if one fails to restore, which after a refused
+    allocation it can. A failed restore is logged and, when the block itself
+    raised, does not replace that error: the caller is owed the out-of-memory
+    error, not whichever ``SET`` tripped over it.
     """
     names = list(values)
     previous = con.execute(
         "SELECT " + ", ".join(f"current_setting('{name}')" for name in names)
     ).fetchone()
+    succeeded = False
     try:
         for name, value in values.items():
             con.execute(f"SET {name} = {_sql_setting_value(value)}")
         yield
+        succeeded = True
     finally:
+        failed = None
         for name, value in zip(names, previous, strict=True):
-            con.execute(f"SET {name} = {_sql_setting_value(value)}")
+            try:
+                con.execute(f"SET {name} = {_sql_setting_value(value)}")
+            except duckdb.Error as exc:
+                logger.warning("could not restore %s to %r: %s", name, value, exc)
+                failed = failed or exc
+        if succeeded and failed is not None:
+            raise failed
 
 
 @contextlib.contextmanager
@@ -725,7 +739,9 @@ def _logging_out_of_memory(temp_dir: str | None):
     """Log the memory figures when DuckDB runs out, then let the error propagate.
 
     The heartbeat samples once a minute, so without this the last figures
-    before a failure can be a minute stale (#42). These are read after DuckDB
+    before a failure can be a minute stale (#42). Nest it *inside*
+    ``_duckdb_settings``, so it logs before the settings are restored rather
+    than after. These are read after DuckDB
     has unwound the statement, so its spill files may already be gone and RSS
     may have fallen; VSZ, the node's commit charge and the mapping count fall
     less readily, and are the figures that explain a ``(bad allocation)``.
@@ -798,7 +814,7 @@ def export_json(
     # Materialize the latest-version snapshot once: `latest_article` is a window
     # function over the full `article` table, and both the count and the export
     # query below would otherwise recompute it.
-    with _logging_out_of_memory(temp_dir), _duckdb_settings(con, **_HEAVY_STATEMENT_SETTINGS):
+    with _duckdb_settings(con, **_HEAVY_STATEMENT_SETTINGS), _logging_out_of_memory(temp_dir):
         con.execute("CREATE OR REPLACE TEMP TABLE _latest_snapshot AS SELECT * FROM latest_article")
     total = con.execute("SELECT count(*) FROM _latest_snapshot").fetchone()[0]
     logger.info(
@@ -845,7 +861,7 @@ def export_json(
     if shards is not None:
         copy_settings["threads"] = int(shards)
     try:
-        with _logging_out_of_memory(temp_dir), _duckdb_settings(con, **copy_settings):
+        with _duckdb_settings(con, **copy_settings), _logging_out_of_memory(temp_dir):
             con.execute(copy_sql)
     finally:
         stop.set()

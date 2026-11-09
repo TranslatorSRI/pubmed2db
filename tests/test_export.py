@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import json
 
+import duckdb
 import pytest
 
 
@@ -928,6 +929,61 @@ def test_an_out_of_memory_error_logs_the_memory_figures_and_propagates(
     (line,) = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
     for fragment in ("RSS", "VSZ", "node commit", "maps", "spill", "A refused allocation"):
         assert fragment in line, line
+    after = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    assert after == threads_before
+
+
+class _FailingRestore(_RecordingConnection):
+    """Also fails to put insertion order back, as a connection DuckDB has
+    invalidated after a refused allocation would."""
+
+    broken = False
+
+    def execute(self, sql, *args, **kwargs):
+        if self.broken and sql.startswith("SET preserve_insertion_order = true"):
+            self.statements.append(sql)
+            raise duckdb.ConnectionException("connection invalidated")
+        try:
+            return super().execute(sql, *args, **kwargs)
+        except duckdb.OutOfMemoryException:
+            self.broken = True
+            raise
+
+
+def test_a_failed_restore_neither_hides_the_out_of_memory_error_nor_skips_the_rest(
+    loaded_con, tmp_path, caplog
+):
+    """The figures are logged before the settings are restored, the caller still
+    gets the out-of-memory error, and the settings after the one that failed
+    (threads, pinned to --shards) are restored anyway."""
+    import logging
+
+    from pubmed2db.export import export_json
+
+    threads_before = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    con = _FailingRestore(loaded_con, "COPY", duckdb.OutOfMemoryException(_REFUSED))
+    with caplog.at_level(logging.WARNING, logger="pubmed2db.export"):
+        with pytest.raises(duckdb.OutOfMemoryException):
+            export_json(con, tmp_path / "json", shards=1)
+
+    messages = [r.getMessage() for r in caplog.records]
+    logged = next(i for i, m in enumerate(messages) if m.startswith("DuckDB ran out of memory"))
+    warned = next(i for i, m in enumerate(messages) if m.startswith("could not restore"))
+    assert logged < warned
+    after = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    assert after == threads_before
+
+
+def test_a_failed_restore_after_a_clean_block_is_raised(loaded_con):
+    """With nothing else to report, a setting that cannot be restored is the error."""
+    from pubmed2db.export import _duckdb_settings
+
+    threads_before = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    con = _FailingRestore(loaded_con)
+    con.broken = True
+    with pytest.raises(duckdb.ConnectionException):
+        with _duckdb_settings(con, preserve_insertion_order=False, threads=1):
+            pass
     after = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
     assert after == threads_before
 
