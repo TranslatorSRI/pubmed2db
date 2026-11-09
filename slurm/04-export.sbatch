@@ -67,6 +67,7 @@ fi
 # 3.2, and both paths that leave it empty (no spill dir configured, or one that
 # could not be created) are exactly the cases that must not die here.
 env PUBMED2DB_DUCKDB_MEMORY_LIMIT="$EXPORT_MEMORY_LIMIT" \
+    DUCKDB_JE_MALLOC_CONF="$EXPORT_JE_MALLOC_CONF" \
   uv run pubmed2db --data-dir "$DATA_DIR" ${temp_args[@]+"${temp_args[@]}"} \
     export --format json --out "$EXPORT_DIR" --shards "$SHARDS" \
     ${overwrite_args[@]+"${overwrite_args[@]}"}

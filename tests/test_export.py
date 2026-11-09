@@ -962,7 +962,9 @@ def test_the_export_drops_insertion_order_for_its_heavy_statements_and_restores_
 
     def settings():
         return loaded_con.execute(
-            "SELECT current_setting('preserve_insertion_order'), current_setting('threads')"
+            "SELECT current_setting('preserve_insertion_order'), current_setting('threads'), "
+            "current_setting('allocator_flush_threshold'), "
+            "current_setting('allocator_bulk_deallocation_flush_threshold')"
         ).fetchone()
 
     before = settings()
@@ -979,3 +981,30 @@ def test_the_export_drops_insertion_order_for_its_heavy_statements_and_restores_
         )
         assert statements[last_set] == unordered, (heavy, statements[last_set])
     assert "SET threads = 1" in statements
+
+
+def test_the_export_holds_allocator_memory_for_its_heavy_statements(loaded_con, tmp_path):
+    """Both corpus-sized statements run with DuckDB's allocator flushes raised
+    out of reach (#42), and the connection's own thresholds come back after."""
+    from pubmed2db.export import export_json
+
+    before = loaded_con.execute(
+        "SELECT current_setting('allocator_flush_threshold'), "
+        "current_setting('allocator_bulk_deallocation_flush_threshold')"
+    ).fetchone()
+    con = _RecordingConnection(loaded_con)
+    export_json(con, tmp_path / "json", shards=1)
+
+    statements = [" ".join(sql.split()) for sql in con.statements]
+    for setting in ("allocator_flush_threshold", "allocator_bulk_deallocation_flush_threshold"):
+        for heavy in ("CREATE OR REPLACE TEMP TABLE _latest_snapshot", "COPY"):
+            index = next(i for i, sql in enumerate(statements) if sql.startswith(heavy))
+            last_set = max(
+                i for i, sql in enumerate(statements[:index]) if sql.startswith(f"SET {setting} =")
+            )
+            assert statements[last_set] == f"SET {setting} = '1TB'", (heavy, statements[last_set])
+    after = loaded_con.execute(
+        "SELECT current_setting('allocator_flush_threshold'), "
+        "current_setting('allocator_bulk_deallocation_flush_threshold')"
+    ).fetchone()
+    assert after == before

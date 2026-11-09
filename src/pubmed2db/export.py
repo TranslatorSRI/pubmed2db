@@ -670,6 +670,26 @@ def _log_while_writing(
 #: (#42), so read the heartbeat of the first run with it before relying on it.
 _UNORDERED = {"preserve_insertion_order": False}
 
+#: Stop DuckDB telling jemalloc to hand memory back to the kernel mid-export
+#: (#42). By default it flushes after any task that peaked above 128 MiB and
+#: after any single deallocation above 512 MiB, both of which the snapshot's
+#: hash tables and a spill trigger. On ht1's nodes (vm.overcommit_memory=2)
+#: jemalloc returns memory by remapping it PROT_NONE, which splits mappings,
+#: and the suspect for two exports refused by mmap at ~68 GiB RSS is the
+#: process running out of them (vm.max_map_count). Held instead, the freed
+#: memory stays mapped for jemalloc to reuse, so RSS should stay near the
+#: buffer limit rather than fall. 04-export.sbatch turns off jemalloc's own
+#: time-based release to match (EXPORT_JE_MALLOC_CONF). Untested at corpus
+#: scale when written: read `maps` and RSS in the run's heartbeat, and see
+#: slurm/README.md, "A refused allocation".
+_HOLD_ALLOCATOR = {
+    "allocator_flush_threshold": "1TB",
+    "allocator_bulk_deallocation_flush_threshold": "1TB",
+}
+
+#: Everything the snapshot and the COPY run under.
+_HEAVY_STATEMENT_SETTINGS = {**_UNORDERED, **_HOLD_ALLOCATOR}
+
 
 def _sql_setting_value(value: bool | int | str) -> str:
     """Render a setting's value for ``SET``: booleans lower-case, strings quoted."""
@@ -780,7 +800,7 @@ def export_json(
     # Materialize the latest-version snapshot once: `latest_article` is a window
     # function over the full `article` table, and both the count and the export
     # query below would otherwise recompute it.
-    with _logging_out_of_memory(temp_dir), _duckdb_settings(con, **_UNORDERED):
+    with _logging_out_of_memory(temp_dir), _duckdb_settings(con, **_HEAVY_STATEMENT_SETTINGS):
         con.execute("CREATE OR REPLACE TEMP TABLE _latest_snapshot AS SELECT * FROM latest_article")
     total = con.execute("SELECT count(*) FROM _latest_snapshot").fetchone()[0]
     logger.info(
@@ -823,7 +843,7 @@ def export_json(
     # `shards` is the thread cap for the COPY only: one file per writer thread
     # is what PER_THREAD_OUTPUT gives us, so asking for N shards is asking N
     # threads to write.
-    copy_settings = dict(_UNORDERED)
+    copy_settings = dict(_HEAVY_STATEMENT_SETTINGS)
     if shards is not None:
         copy_settings["threads"] = int(shards)
     try:

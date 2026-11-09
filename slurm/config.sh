@@ -83,11 +83,21 @@ unset _export_dir_given _manifest_dir_given
 : "${LOAD_MEMORY_LIMIT=48GB}"
 : "${EXPORT_MEMORY_LIMIT=160GB}"
 
+# jemalloc options for the export only, passed as DUCKDB_JE_MALLOC_CONF (the
+# name DuckDB's Linux builds read; macOS and Windows builds have no jemalloc).
+# The default turns off jemalloc's time-based release of freed memory, the
+# other half of export._HOLD_ALLOCATOR: on ht1's strict-overcommit nodes that
+# release remaps memory PROT_NONE, splitting mappings, and running out of them
+# is the suspect for the two refused exports in #42. Set it empty to pass no
+# options; `=` rather than `:=` for the reason above.
+: "${EXPORT_JE_MALLOC_CONF=dirty_decay_ms:-1,muzzy_decay_ms:-1}"
+
 # Fast local scratch for DuckDB to spill into, e.g. /local/scratch/duckdb_tmp
 # on a node that has one. Empty leaves DuckDB's default (next to the database
 # file), which is what every ht1 run has actually used: the old default path
-# does not exist there, so 04-export.sbatch warned and fell back on every run,
-# and neither export spilled anyway -- RSS stayed under the buffer-pool limit.
+# does not exist there, so 04-export.sbatch warned and fell back on every run.
+# The exports before v1.2 were not seen to spill; the 2026-11-09 one spilled
+# 9 GiB there before it failed (#42).
 : "${DUCKDB_TEMP_DIR=}"
 
 # uv's package cache. ~/.cache/uv is not always writable on the cluster.
@@ -116,7 +126,7 @@ log_run_settings() {
     for name in SLURM_JOB_ID SLURM_JOB_NAME SLURMD_NODENAME SLURM_MEM_PER_NODE \
                 SLURM_CPUS_PER_TASK DATA_DIR EXPORT_DIR MANIFEST_DIR SHARDS \
                 VALIDATE_SAMPLE_TOTAL LOAD_MEMORY_LIMIT EXPORT_MEMORY_LIMIT \
-                DUCKDB_TEMP_DIR UV_CACHE_DIR; do
+                EXPORT_JE_MALLOC_CONF DUCKDB_TEMP_DIR UV_CACHE_DIR; do
         echo "  $name=${!name-}"
     done
     log_memory_limits

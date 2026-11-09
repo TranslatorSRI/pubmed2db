@@ -662,6 +662,7 @@ def test_every_step_logs_the_settings_it_runs_with(sandbox: Path, script: Path) 
     assert "  LOAD_MEMORY_LIMIT=32GB" in lines
     # Defaults print as the value used; an empty spill dir prints empty.
     assert "  EXPORT_MEMORY_LIMIT=160GB" in lines
+    assert "  EXPORT_JE_MALLOC_CONF=dirty_decay_ms:-1,muzzy_decay_ms:-1" in lines
     assert "  DUCKDB_TEMP_DIR=" in lines
     # The limits that are not --mem (#42): present on every platform, filled in
     # from /proc on Linux and empty elsewhere.
@@ -783,6 +784,23 @@ def run_export(sandbox: Path, **env: str) -> subprocess.CompletedProcess[str]:
             **env,
         },
     )
+
+
+def test_export_passes_its_jemalloc_options_and_an_empty_one_disables_them(
+    sandbox: Path,
+) -> None:
+    """The export runs with jemalloc's time-based release off (#42), through the
+    variable DuckDB reads, and an empty EXPORT_JE_MALLOC_CONF passes nothing."""
+    uv = sandbox / "bin" / "uv"
+    uv.write_text('#!/bin/sh\necho "JE_CONF=[$DUCKDB_JE_MALLOC_CONF]"\n')
+
+    result = run_export(sandbox)
+    assert result.returncode == 0, result.stderr
+    assert "JE_CONF=[dirty_decay_ms:-1,muzzy_decay_ms:-1]" in result.stdout
+
+    result = run_export(sandbox, EXPORT_JE_MALLOC_CONF="")
+    assert result.returncode == 0, result.stderr
+    assert "JE_CONF=[]" in result.stdout
 
 
 def test_export_overwrites_only_when_told(sandbox: Path) -> None:
