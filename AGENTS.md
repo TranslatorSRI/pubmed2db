@@ -95,10 +95,11 @@ explains its part; this table is only a map.
     pre-1.0 naive `TIMESTAMP`s stored the loading machine's local wall-clock
     time: `now()` and a bound UTC datetime are both cast through the session's
     time zone.
-  - **The exports don't read the `latest_*` views.** Each view re-evaluates
-    `latest_article`, a window over every version, so the exports materialize
-    one snapshot and filter against it. A test holds the views to exactly the
-    exports' rows.
+  - **The export doesn't read the `latest_*` views.** Each view re-evaluates
+    `latest_article`, a window over every version, so the export materializes
+    one snapshot and filters against it.
+    `test_the_latest_views_hold_the_rows_the_export_ships` rebuilds the
+    export's child-table fields from the views, so the two filters can't drift.
   - **`metadata.json` is written last**, after every file it checksums, and
     `validate` fails on any shard that differs from it. **The SHA-256s are for
     identity, not damage**, so don't justify them, or drop them, on integrity

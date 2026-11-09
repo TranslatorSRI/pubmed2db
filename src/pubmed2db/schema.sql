@@ -341,7 +341,7 @@ COMMENT ON VIEW latest_article IS 'Stable. The current version of every PMID: it
 -- latest_article by hand, and get wrong by joining on pmid alone (which mixes
 -- every version's rows). Each is a semi-join, so it costs a scan of
 -- latest_article; for many queries, materialize latest_article first, as the
--- exports do.
+-- export does.
 CREATE OR REPLACE VIEW latest_abstract_text AS
 SELECT c.* FROM abstract_text c
 SEMI JOIN latest_article la ON la.pmid = c.pmid AND la.source_file = c.source_file;
