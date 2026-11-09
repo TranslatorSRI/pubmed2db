@@ -382,8 +382,13 @@ explains its part; this table is only a map.
 - **Two memory numbers mislead, and both have bitten.** `util.peak_rss_gib` is
   `ru_maxrss`, a high-water mark that only ever rises, so a climbing per-file
   "peak" is not evidence of a leak; `current_rss_gib` is the one that can fall —
-  which is why the load and validate progress lines log both. Before diagnosing loader memory, read `slurm/README.md` → "Running
-  `load`: how much memory?".
+  which is why the load and validate progress lines log both. Those two are
+  all they log: VSZ, the node's commit charge and the mapping count
+  (`util.memory_summary`, the figures that explain a `(bad allocation)`) are
+  only in the export's heartbeat and its out-of-memory line. If load or
+  validate is ever refused an allocation, switch its progress line to
+  `memory_summary` before reading anything into its RSS. Before diagnosing
+  loader memory, read `slurm/README.md` → "Running `load`: how much memory?".
 - **`--mem` is not the only memory limit on `ht1`.** A
   `Failed to allocate block ... (bad allocation)` from DuckDB means `mmap`
   itself failed: not a Slurm OOM-kill (SIGKILL, no traceback), and not
