@@ -256,7 +256,7 @@ COMMENT ON COLUMN publication_type.type_name IS 'Its name, e.g. Review. An empty
 
 -- Grants listed on the article (<GrantList>). Named `article_grant`, not
 -- `grant`: GRANT is reserved in standard SQL and in Postgres, where anyone
--- loading the Parquet export would otherwise have to quote it.
+-- copying these tables elsewhere would otherwise have to quote it.
 CREATE TABLE IF NOT EXISTS article_grant (
     pmid        BIGINT NOT NULL,
     source_file TEXT   NOT NULL,
@@ -341,7 +341,7 @@ COMMENT ON VIEW latest_article IS 'Stable. The current version of every PMID: it
 -- latest_article by hand, and get wrong by joining on pmid alone (which mixes
 -- every version's rows). Each is a semi-join, so it costs a scan of
 -- latest_article; for many queries, materialize latest_article first, as the
--- exports do.
+-- export does.
 CREATE OR REPLACE VIEW latest_abstract_text AS
 SELECT c.* FROM abstract_text c
 SEMI JOIN latest_article la ON la.pmid = c.pmid AND la.source_file = c.source_file;

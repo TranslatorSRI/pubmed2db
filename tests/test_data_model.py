@@ -254,24 +254,51 @@ def test_timestamps_are_instants_not_wall_clock_times(con, gz_fixture):
         assert abs(now - value) < timedelta(minutes=5)
 
 
-def test_each_child_table_has_a_latest_view_matching_the_export(edge_con):
-    """The views are the consumer's version of the exports' snapshot filter, so
-    they must select exactly the rows the Parquet export ships."""
-    from pubmed2db.export import _VERSIONED_CHILDREN
+def test_the_latest_views_hold_the_rows_the_export_ships(edge_con, tmp_path):
+    """The views are the consumer's version of the export's snapshot filter, so
+    what the export builds from a child table, the table's view must rebuild.
+    Compared against the export itself, not a restatement of the views' join,
+    so a change to either filter (`export._LATEST_METADATA_SQL`'s CTEs or
+    `schema.sql`'s views) fails here."""
+    from pubmed2db.export import ID_PREFIXES, MESH_PREFIX, export_json
 
-    for table in _VERSIONED_CHILDREN:
-        assert (
-            _rows(
-                edge_con,
-                f"(SELECT * FROM latest_{table} EXCEPT ALL SELECT c.* FROM {table} c "
-                "WHERE EXISTS (SELECT 1 FROM latest_article la "
-                "WHERE la.pmid = c.pmid AND la.source_file = c.source_file)) "
-                f"UNION ALL (SELECT c.* FROM {table} c WHERE EXISTS (SELECT 1 FROM latest_article la "
-                "WHERE la.pmid = c.pmid AND la.source_file = c.source_file) "
-                f"EXCEPT ALL SELECT * FROM latest_{table})",
-            )
-            == []
-        ), table
+    paths = export_json(edge_con, tmp_path / "json", gzip_output=False)
+    docs = {}
+    for path in paths:
+        if path.name.startswith("pubmed_metadata_"):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                doc = json.loads(line)
+                docs[int(doc["id"].removeprefix("PMID:"))] = doc
+
+    expected = {
+        pmid: {"abstract": "", "identifiers": [], "publication_types": []}
+        for (pmid,) in _rows(edge_con, "SELECT pmid FROM latest_article")
+    }
+    for pmid, text in _rows(
+        edge_con,
+        "SELECT pmid, string_agg(text, ' ' ORDER BY position) "
+        "FROM latest_abstract_text GROUP BY pmid",
+    ):
+        expected[pmid]["abstract"] = text
+    for pmid, id_type, id_value in _rows(
+        edge_con, "SELECT pmid, id_type, id_value FROM latest_article_id"
+    ):
+        if id_type in ID_PREFIXES:
+            expected[pmid]["identifiers"].append(f"{ID_PREFIXES[id_type]}:{id_value}")
+    for pmid, ui, name in _rows(
+        edge_con, "SELECT pmid, type_ui, type_name FROM latest_publication_type ORDER BY position"
+    ):
+        expected[pmid]["publication_types"].append(
+            {"id": f"{MESH_PREFIX}:{ui}", "name": name or ""}
+        )
+
+    for pmid, fields in expected.items():
+        fields["identifiers"] = [f"PMID:{pmid}", *sorted(set(fields["identifiers"]))]
+    assert {pmid: {k: doc[k] for k in expected[pmid]} for pmid, doc in docs.items()} == expected
+    # Not vacuous: each child table supplies a value somewhere in the fixture.
+    assert any(f["abstract"] for f in expected.values())
+    assert any(len(f["identifiers"]) > 1 for f in expected.values())
+    assert any(f["publication_types"] for f in expected.values())
     # PMID 1001's superseded baseline authors are excluded; its update's kept.
     assert _rows(edge_con, "SELECT name FROM latest_author WHERE pmid = 1001") == [("Jane Smith",)]
     assert _rows(edge_con, "SELECT count(*) FROM latest_author WHERE pmid = 2002") == [(0,)]
@@ -364,11 +391,10 @@ def test_every_relation_declares_its_tier_and_every_contract_column_its_meaning(
 
 
 def test_every_latest_view_names_the_table_it_filters(con):
-    from pubmed2db.export import _VERSIONED_CHILDREN
-
+    children = _children(con)
     views = {r["name"]: r for r in datamodel.describe(con) if r["kind"] == "view"}
-    assert set(views) == {"latest_article"} | {f"latest_{t}" for t in _VERSIONED_CHILDREN}
-    for table in _VERSIONED_CHILDREN:
+    assert set(views) == {"latest_article"} | {f"latest_{t}" for t in children}
+    for table in children:
         assert f"Columns as {table}." in views[f"latest_{table}"]["comment"]
 
 
@@ -381,6 +407,11 @@ _CHILDREN_SQL = (
 )
 
 
+def _children(con) -> list[str]:
+    """The tables whose rows belong to one article version, from the schema."""
+    return sorted(r[0] for r in _rows(con, _CHILDREN_SQL))
+
+
 def test_pmid_and_source_file_identify_an_article_version(edge_con):
     assert (
         _rows(edge_con, "SELECT pmid, source_file FROM article GROUP BY ALL HAVING count(*) > 1")
@@ -389,7 +420,7 @@ def test_pmid_and_source_file_identify_an_article_version(edge_con):
 
 
 def test_every_child_row_belongs_to_a_stored_article_version(edge_con):
-    children = [r[0] for r in _rows(edge_con, _CHILDREN_SQL)]
+    children = _children(edge_con)
     assert len(children) == 9
     for table in children:
         assert _rows(
@@ -504,13 +535,9 @@ def test_the_doc_describes_every_ndjson_field_in_order():
 
 def test_every_recipe_in_the_doc_runs(edge_con, tmp_path, monkeypatch):
     """The recipes are written for someone holding only a build's files, so run
-    them that way: attach the database read-only, with the Parquet export beside
-    it, from an empty session."""
+    them that way: attach the database read-only, from an empty session."""
     import re
 
-    from pubmed2db.export import export_parquet
-
-    export_parquet(edge_con, tmp_path / "parquet")
     db_path = Path(
         edge_con.execute("SELECT path FROM duckdb_databases() WHERE NOT internal").fetchone()[0]
     )

@@ -49,39 +49,23 @@ def test_cli_export_json(tmp_path, loaded_db):
     assert docs["PMID:1001"]["pub_month"] == "Mar"
 
 
-def test_cli_export_warns_on_wrong_format_flag(tmp_path, loaded_db):
-    db_path = loaded_db
-
-    result = CliRunner().invoke(
-        main,
-        [
-            "--db",
-            str(db_path),
-            "export",
-            "--format",
-            "parquet",
-            "--out",
-            str(tmp_path / "out"),
-            "--shards",
-            "4",
-        ],
-    )
+def test_cli_export_defaults_to_json_and_refuses_parquet(tmp_path, loaded_db):
+    """--format stays, so existing command lines run, but JSON is all it takes.
+    The Parquet export's command lines, --all and --latest among them, fail
+    naming the removal rather than an unknown option."""
+    out_dir = tmp_path / "json"
+    result = CliRunner().invoke(main, ["--db", str(loaded_db), "export", "--out", str(out_dir)])
     assert result.exit_code == 0, result.output
-    assert "--shards only applies to --format json" in result.output
-    # An unmentioned flag left at its default stays silent.
-    assert "--latest" not in result.output
+    assert (out_dir / "metadata.json").exists()
 
-
-def test_cli_export_parquet(tmp_path, loaded_db):
-    db_path = loaded_db
-
-    out_dir = tmp_path / "pq"
-    result = CliRunner().invoke(
-        main,
-        ["--db", str(db_path), "export", "--format", "parquet", "--out", str(out_dir), "--all"],
-    )
-    assert result.exit_code == 0, result.output
-    assert (out_dir / "article.parquet").exists()
+    for args in (["--format", "parquet", "--all"], ["--format", "parquet"], ["--latest"]):
+        result = CliRunner().invoke(
+            main, ["--db", str(loaded_db), "export", *args, "--out", str(tmp_path / "pq")]
+        )
+        assert result.exit_code == 2, args
+        assert "Parquet export was removed" in result.output, args
+        assert "FORMAT PARQUET" in result.output, args
+    assert not (tmp_path / "pq").exists()
 
 
 def test_cli_load_without_download_errors(tmp_path):
