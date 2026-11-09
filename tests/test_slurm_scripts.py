@@ -663,6 +663,12 @@ def test_every_step_logs_the_settings_it_runs_with(sandbox: Path, script: Path) 
     # Defaults print as the value used; an empty spill dir prints empty.
     assert "  EXPORT_MEMORY_LIMIT=160GB" in lines
     assert "  DUCKDB_TEMP_DIR=" in lines
+    # The limits that are not --mem (#42): present on every platform, filled in
+    # from /proc on Linux and empty elsewhere.
+    for key in ("ulimit_v", "vm.overcommit_memory", "vm.overcommit_ratio", "MemTotal"):
+        assert any(line.startswith(f"  {key}=") for line in lines), key
+    assert any(line.startswith("  CommitLimit=") for line in lines)
+    assert any(line.startswith("  Committed_AS=") for line in lines)
     output = result.stdout + result.stderr
     assert "not-a-real-key" not in output
     assert "someone@example.org" not in output.split("UV_ARGS")[0]

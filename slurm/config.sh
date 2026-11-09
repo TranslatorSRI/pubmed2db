@@ -119,4 +119,24 @@ log_run_settings() {
                 DUCKDB_TEMP_DIR UV_CACHE_DIR; do
         echo "  $name=${!name-}"
     done
+    log_memory_limits
+}
+
+# The memory limits that are not --mem. ht1's nodes run strict overcommit
+# (vm.overcommit_memory=2): the kernel refuses any reservation past a node-wide
+# CommitLimit, charged with every job's reserved memory, so a job can fail well
+# under its own --mem -- DuckDB says "(bad allocation)" rather than being
+# OOM-killed. The 192G export did (#42). Committed_AS here is the node's charge
+# at job start, i.e. mostly the neighbours'. Off Linux the /proc reads fail and
+# print empty, like an unset setting above.
+log_memory_limits() {
+    local name
+    echo "  ulimit_v=$(ulimit -v)"
+    for name in overcommit_memory overcommit_ratio; do
+        echo "  vm.$name=$(cat "/proc/sys/vm/$name" 2>/dev/null)"
+    done
+    for name in MemTotal CommitLimit Committed_AS; do
+        echo "  $name=$(awk -v key="$name:" '$1 == key { printf "%.1f GiB", $2 / 1048576 }' \
+            /proc/meminfo 2>/dev/null)"
+    done
 }
