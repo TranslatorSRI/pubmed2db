@@ -1,4 +1,4 @@
-"""Tests for JSON and Parquet export."""
+"""Tests for the NDJSON export."""
 
 from __future__ import annotations
 
@@ -293,41 +293,6 @@ def test_reexport_removes_stale_shards(loaded_con, tmp_path):
     assert survivors[0].endswith(".ndjson.gz")
 
 
-def test_parquet_latest_filters_versions(loaded_con, tmp_path):
-    from pubmed2db.export import export_parquet
-
-    out = tmp_path / "pq"
-    export_parquet(loaded_con, out, latest=True)
-
-    n_article = loaded_con.execute(
-        f"SELECT count(*) FROM read_parquet('{(out / 'article.parquet').as_posix()}')"
-    ).fetchone()[0]
-    n_abstract = loaded_con.execute(
-        f"SELECT count(*) FROM read_parquet('{(out / 'abstract_text.parquet').as_posix()}')"
-    ).fetchone()[0]
-    # Latest set: articles 1001 (v2) and 1003; only 1001 v2's single abstract section.
-    assert n_article == 2
-    assert n_abstract == 1
-
-    # The Parquet table carries names and PubMed's order too, not just UIs.
-    assert loaded_con.execute(
-        "SELECT type_name FROM read_parquet"
-        f"('{(out / 'publication_type.parquet').as_posix()}') ORDER BY position"
-    ).fetchall() == [("Letter",), ("Research Support, Non-U.S. Gov't",), ("Comment",)]
-
-
-def test_parquet_all_keeps_history(loaded_con, tmp_path):
-    from pubmed2db.export import export_parquet
-
-    out = tmp_path / "pq_all"
-    export_parquet(loaded_con, out, latest=False)
-    n_article = loaded_con.execute(
-        f"SELECT count(*) FROM read_parquet('{(out / 'article.parquet').as_posix()}')"
-    ).fetchone()[0]
-    # All versions: 1001 (x2), 1002, 1003.
-    assert n_article == 4
-
-
 def test_writing_progress_line_renders(tmp_path, caplog):
     """The heartbeat only fires a minute into a real export, so it never runs in
     the suite -- and a mismatched %-format arg there would first surface partway
@@ -375,81 +340,28 @@ def test_placeholder_looking_fields_survive_to_the_export(con, gz_fixture, tmp_p
     assert docs["PMID:28972331"]["article_title"] == "[Not Available]."
 
 
-def test_parquet_export_removes_a_dropped_table_s_file(loaded_con, tmp_path):
-    """A re-export overwrites its own file names, so a table removed from the
-    schema would otherwise leave its Parquet behind for consumers to glob."""
-    from pubmed2db.export import export_parquet
-
-    out = tmp_path / "parquet"
-    out.mkdir()
-    orphan = out / "reference_citation.parquet"  # dropped from schema.sql
-    orphan.write_bytes(b"stale")
-
-    written = export_parquet(loaded_con, out)
-
-    assert not orphan.exists()
-    assert set(out.glob("*.parquet")) == set(written)
-
-
-def test_parquet_exports_every_table(loaded_con, tmp_path):
-    """One file per table, `pipeline_run` included -- it carries the journal
-    refresh provenance, which nothing else in the export records."""
-    from pubmed2db.export import export_parquet
-
-    out = tmp_path / "parquet"
-    written = export_parquet(loaded_con, out)
-
-    tables = {
-        row[0]
-        for row in loaded_con.execute(
-            "SELECT table_name FROM duckdb_tables() WHERE schema_name = 'main' AND NOT temporary"
-        ).fetchall()
-    }
-    assert {path.stem for path in written} == tables
-
-    # Parquet is the same data model as the database, column for column: a
-    # consumer can switch between the two without rewriting a query.
-    for path in written:
-        exported = loaded_con.execute(
-            f"SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM '{path.as_posix()}')"
-        ).fetchall()
-        assert (
-            exported
-            == loaded_con.execute(
-                f"SELECT column_name, column_type FROM (DESCRIBE {path.stem})"
-            ).fetchall()
-        ), path.stem
-
-
 def test_exports_describe_themselves_in_metadata_json(loaded_con, tmp_path):
     """An export travels without its database: metadata.json carries the data
     model version, the corpus cutoff, the record count and a checksum per file."""
     from pubmed2db.datamodel import DATA_MODEL_VERSION
-    from pubmed2db.export import export_json, export_parquet, file_sha256
+    from pubmed2db.export import export_json, file_sha256
 
-    for fmt, export in (
-        ("ndjson", lambda out: export_json(loaded_con, out)),
-        ("parquet-latest", lambda out: export_parquet(loaded_con, out)),
-        ("parquet-all", lambda out: export_parquet(loaded_con, out, latest=False)),
-    ):
-        out = tmp_path / fmt
-        files = export(out)
-        meta = json.loads((out / "metadata.json").read_text())
-        assert meta["data_model_version"] == DATA_MODEL_VERSION
-        assert meta["format"] == fmt
-        # PMIDs 1001 and 1003; 1002 was deleted. The same in every format, so
-        # the history export counts its versions separately.
-        assert meta["records"] == 2
-        assert meta.get("article_versions") == (4 if fmt == "parquet-all" else None)
-        assert meta["corpus"]["cutoff_file"] == "pubmed25n0002.xml.gz"
-        assert meta["database"]["data_model_version"] == DATA_MODEL_VERSION
-        assert [(f["name"], f["sha256"]) for f in meta["files"]] == [
-            (path.name, file_sha256(path)) for path in sorted(files)
-        ]
-        # The same hashes, as `sha256sum -c` reads them: "<hex>  <name>".
-        assert (out / "SHA256SUMS").read_text().splitlines() == [
-            f"{f['sha256']}  {f['name']}" for f in meta["files"]
-        ]
+    out = tmp_path / "json"
+    files = export_json(loaded_con, out)
+    meta = json.loads((out / "metadata.json").read_text())
+    assert meta["data_model_version"] == DATA_MODEL_VERSION
+    assert meta["format"] == "ndjson"
+    # PMIDs 1001 and 1003; 1002 was deleted.
+    assert meta["records"] == 2
+    assert meta["corpus"]["cutoff_file"] == "pubmed25n0002.xml.gz"
+    assert meta["database"]["data_model_version"] == DATA_MODEL_VERSION
+    assert [(f["name"], f["sha256"]) for f in meta["files"]] == [
+        (path.name, file_sha256(path)) for path in sorted(files)
+    ]
+    # The same hashes, as `sha256sum -c` reads them: "<hex>  <name>".
+    assert (out / "SHA256SUMS").read_text().splitlines() == [
+        f"{f['sha256']}  {f['name']}" for f in meta["files"]
+    ]
 
 
 def test_a_failed_re_export_does_not_look_finished(loaded_con, tmp_path, monkeypatch):
@@ -457,18 +369,13 @@ def test_a_failed_re_export_does_not_look_finished(loaded_con, tmp_path, monkeyp
     before it writes anything: dying partway must not leave the mark behind."""
     from pubmed2db import export
 
-    for run in (
-        lambda **kw: export.export_json(loaded_con, tmp_path / "json", **kw),
-        lambda **kw: export.export_parquet(loaded_con, tmp_path / "parquet", **kw),
-    ):
-        run()
-        with monkeypatch.context() as patch:
-            patch.setattr(export, "write_export_metadata", lambda *a, **k: 1 / 0)
-            with pytest.raises(ZeroDivisionError):
-                run(overwrite=True)
-    for out in (tmp_path / "json", tmp_path / "parquet"):
-        assert not (out / "metadata.json").exists()
-        assert not (out / "SHA256SUMS").exists()
+    out = tmp_path / "json"
+    export.export_json(loaded_con, out)
+    monkeypatch.setattr(export, "write_export_metadata", lambda *a, **k: 1 / 0)
+    with pytest.raises(ZeroDivisionError):
+        export.export_json(loaded_con, out, overwrite=True)
+    assert not (out / "metadata.json").exists()
+    assert not (out / "SHA256SUMS").exists()
 
 
 def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog):
@@ -864,22 +771,18 @@ def test_a_finished_export_is_refused_without_overwrite(loaded_con, tmp_path):
     The guard lives in the export itself, not only in 04-export.sbatch, so
     `pubmed2db export` run by hand cannot delete it either (#24).
     """
-    from pubmed2db.export import export_json, export_parquet
+    from pubmed2db.export import export_json
 
-    # archive_build.py takes only the validated JSON build, so only JSON names it.
-    for exporter, out, advice in (
-        (export_json, tmp_path / "json", "archive_build"),
-        (export_parquet, tmp_path / "parquet", "Move it aside"),
-    ):
-        exporter(loaded_con, out)
-        before = sorted(p.name for p in out.iterdir())
-        with pytest.raises(FileExistsError, match=advice):
-            exporter(loaded_con, out)
-        assert sorted(p.name for p in out.iterdir()) == before
-        exporter(loaded_con, out, overwrite=True)
-        # A partial export (no metadata.json: a run that died) is swept unasked.
-        (out / "metadata.json").unlink()
-        exporter(loaded_con, out)
+    out = tmp_path / "json"
+    export_json(loaded_con, out)
+    before = sorted(p.name for p in out.iterdir())
+    with pytest.raises(FileExistsError, match="archive_build"):
+        export_json(loaded_con, out)
+    assert sorted(p.name for p in out.iterdir()) == before
+    export_json(loaded_con, out, overwrite=True)
+    # A partial export (no metadata.json: a run that died) is swept unasked.
+    (out / "metadata.json").unlink()
+    export_json(loaded_con, out)
 
 
 class _RecordingConnection:

@@ -9,6 +9,25 @@ on, and a copy left here rots into a contradiction of the code.
 
 ## Integrations / goals
 
+- **A Parquet export, if someone needs one.** `export --format parquet` wrote
+  one Parquet file per table, current versions by default or the whole history
+  with `--all`, with `metadata.json` beside it. It shipped in `v1.0` and
+  `v1.1.0`, but no data build ran it (each ran `--format json`), it had no
+  consumers and had never been run at corpus scale, so it was removed in
+  `v1.2.0` (#81). To bring it back, revert #81's two commits: the code and
+  tests (e5a9a32, the newest hit of `git log -S export_parquet -- src`), then
+  the docs (2db5199, the commit after it). Then:
+  - restoring an output is a **minor** data model bump, with a changelog entry
+    and a golden file (AGENTS.md);
+  - give its snapshot the same DuckDB settings as the JSON export's before
+    running it on ht1, whose exports were refused allocations without them
+    (#42);
+  - measure it at corpus scale before relying on it. #29 asked for that
+    measurement and was closed with the removal; it is background, not this
+    entry's issue, so its closing is no reason to delete the entry.
+  Until then, DuckDB writes any table out directly:
+  `COPY latest_article TO 'article.parquet' (FORMAT PARQUET)` against the
+  database.
 - **Replace Babel's PubMed downloader.** Wire this tool into
   `NCATSTranslator/Babel` `src/createcompendia/publications.py` so Babel reuses
   these downloads/exports instead of its own wget+TSV pipeline. Sharing the

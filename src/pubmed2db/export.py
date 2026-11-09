@@ -1,8 +1,8 @@
-"""Export the latest version of every abstract to JSON or Parquet.
+"""Export the latest version of every abstract to sharded NDJSON.
 
-JSON export follows the NCATS Translator DocumentMetadataAPI field names (which
+The export follows the NCATS Translator DocumentMetadataAPI field names (which
 differ from the PubMed names used in the database) and emits empty strings, not
-nulls, for absent values. Parquet export keeps PubMed's own field names.
+nulls, for absent values.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from pathlib import Path
 import duckdb
 
 from . import datamodel
-from .util import dir_size_gib, eta_str, fmt_duration, memory_summary, peak_rss_gib, size_bytes
+from .util import dir_size_gib, fmt_duration, memory_summary, peak_rss_gib, size_bytes
 
 #: Shard filename stem; DuckDB appends the writer-thread index and the extension.
 _SHARD_STEM = "pubmed_metadata_"
@@ -39,30 +39,6 @@ logger = logging.getLogger(__name__)
 #: A full corpus export runs ~15 min, so a minute between lines still gives a
 #: dozen-odd data points to watch RSS and the rate on.
 _PROGRESS_INTERVAL_S = 60.0
-
-#: Child tables whose rows belong to a specific article version (pmid, source_file).
-_VERSIONED_CHILDREN = (
-    "abstract_text",
-    "author",
-    "author_affiliation",
-    "mesh_heading",
-    "mesh_qualifier",
-    "publication_type",
-    "article_grant",
-    "article_id",
-    "history",
-)
-
-#: Dimension/bookkeeping tables exported as-is. ``pubmed2db_metadata`` goes with
-#: them so a Parquet export carries its data model version, like the database.
-_OTHER_TABLES = (
-    "journal",
-    "journal_issn",
-    "source_file",
-    "deleted_pmid",
-    "pipeline_run",
-    "pubmed2db_metadata",
-)
 
 #: PubMed ``ArticleId/@IdType`` -> CURIE prefix for the JSON ``identifiers``
 #: field. ``doi`` is lowercase to match Babel's ``src/prefixes.py``, so those
@@ -561,7 +537,7 @@ LEFT JOIN pts ON pts.pmid = la.pmid AND pts.source_file = la.source_file
 )
 
 
-def _remove_finished_mark(out_dir: Path, overwrite: bool, *, archivable: bool) -> None:
+def _remove_finished_mark(out_dir: Path, overwrite: bool) -> None:
     """Delete a previous export's ``metadata.json`` and ``SHA256SUMS`` before writing.
 
     ``metadata.json`` is the "export finished" mark. Left in place, an export
@@ -573,17 +549,12 @@ def _remove_finished_mark(out_dir: Path, overwrite: bool, *, archivable: bool) -
     export is about to delete that one's files, the only local copy of its
     build until ``scripts/archive_build.py`` has moved it (#24). A partial
     export, with no mark, is swept without asking. The check is here rather
-    than in ``04-export.sbatch`` so every caller gets it. ``archivable`` is
-    whether that script can take the export: it archives the validated JSON
-    build, and ``validate`` reads no Parquet, so a Parquet export is only ever
-    moved aside or overwritten.
+    than in ``04-export.sbatch`` so every caller gets it.
     """
     if not overwrite and (out_dir / METADATA_FILE).exists():
-        first = (
-            "Archive it first (scripts/archive_build.py)" if archivable else "Move it aside first"
-        )
         raise FileExistsError(
-            f"{out_dir} holds a finished export ({METADATA_FILE} exists). {first}, "
+            f"{out_dir} holds a finished export ({METADATA_FILE} exists). "
+            "Archive it first (scripts/archive_build.py), "
             "or pass --overwrite (EXPORT_OVERWRITE=1 under Slurm) to replace it."
         )
     for name in (METADATA_FILE, CHECKSUMS_FILE):
@@ -781,7 +752,7 @@ def export_json(
         raise ValueError("shards must be >= 1")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    _remove_finished_mark(out_dir, overwrite, archivable=True)
+    _remove_finished_mark(out_dir, overwrite)
 
     # Clock the whole export, not just the COPY: slurm/README.md tells operators
     # to size --time from the line this feeds. The snapshot below is cheap (17s
@@ -830,8 +801,8 @@ def export_json(
     ]
     if gzip_output:
         options.append("COMPRESSION 'gzip'")
-    # Escape single quotes so a path containing one doesn't break out of the
-    # quoted string literal (same reason as _copy_parquet).
+    # Escape single quotes so a path containing one (an apostrophe in a
+    # directory name) doesn't break out of the quoted string literal.
     escaped_dir = out_dir.as_posix().replace("'", "''")
     copy_sql = f"COPY ({_LATEST_METADATA_SQL}) TO '{escaped_dir}' ({', '.join(options)})"
 
@@ -852,7 +823,7 @@ def export_json(
         heartbeat.join()
 
     paths = _shard_paths(out_dir)
-    write_export_metadata(con, out_dir, paths, fmt="ndjson", records=total)
+    write_export_metadata(con, out_dir, paths, records=total)
     logger.info(
         "exported %d documents to %d shard(s) in %s in %s (peak RSS %.1f GiB)",
         total,
@@ -875,18 +846,15 @@ def write_export_metadata(
     out_dir: Path,
     files: list[Path],
     *,
-    fmt: str,
     records: int,
-    article_versions: int | None = None,
 ) -> Path:
     """Write ``metadata.json`` and ``SHA256SUMS``: the export's version, provenance and checksums.
 
     An export travels without its database, so this is where a consumer learns
     which data model it follows (``data_model_version``; check the major), what
     corpus it holds (``corpus``: the cutoff file and when NCBI posted it, #57),
-    how many current articles it holds (``records``, the same in every format;
-    a history export adds ``article_versions``, every row of
-    ``article.parquet``), and each file's size and SHA-256. ``validate``
+    how many current articles it holds (``records``), and each file's size and
+    SHA-256. ``validate``
     checks the directory against it. ``SHA256SUMS`` repeats the hashes for
     ``sha256sum -c``. Both are written last, after every file they describe,
     and ``metadata.json`` after ``SHA256SUMS``, so its presence means the export
@@ -908,9 +876,8 @@ def write_export_metadata(
     )
     content = {
         "data_model_version": datamodel.DATA_MODEL_VERSION,
-        "format": fmt,
+        "format": "ndjson",
         "records": records,
-        **({} if article_versions is None else {"article_versions": article_versions}),
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "generated_by": datamodel.code_version(),
         "database": datamodel.metadata(con),
@@ -923,115 +890,3 @@ def write_export_metadata(
     path = out_dir / METADATA_FILE
     path.write_text(json.dumps(content, indent=2) + "\n")
     return path
-
-
-def _copy_parquet(con: duckdb.DuckDBPyConnection, query: str, path: Path) -> None:
-    # Escape single quotes so a path containing one (e.g. an apostrophe in a
-    # directory name) doesn't break out of the quoted string literal.
-    escaped_path = path.as_posix().replace("'", "''")
-    con.execute(f"COPY ({query}) TO '{escaped_path}' (FORMAT PARQUET)")
-
-
-def export_parquet(
-    con: duckdb.DuckDBPyConnection,
-    out_dir: str | Path,
-    *,
-    latest: bool = True,
-    overwrite: bool = False,
-) -> list[Path]:
-    """Export the database to one Parquet file per table.
-
-    With ``latest=True`` (default) only the latest non-deleted version of each
-    article and its children are exported; with ``latest=False`` the full
-    version history is exported. Returns the list of files written.
-    """
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    _remove_finished_mark(out_dir, overwrite, archivable=False)
-    written: list[Path] = []
-
-    tables = 1 + len(_VERSIONED_CHILDREN) + len(_OTHER_TABLES)
-    logger.info(
-        "starting Parquet export: %d table(s) (%s) to %s",
-        tables,
-        "latest version" if latest else "full history",
-        out_dir,
-    )
-    run_start = time.monotonic()
-
-    # A re-export overwrites its own fixed set of file names, so the only file
-    # that can survive is one whose table left the schema — `reference_citation`
-    # is exactly that case. Left in place it reads as part of this export to
-    # anything globbing the directory. Same sweep the JSON export does.
-    keep = {f"{t}.parquet" for t in ("article", *_VERSIONED_CHILDREN, *_OTHER_TABLES)}
-    stale = [path for path in out_dir.glob("*.parquet") if path.name not in keep]
-    for path in stale:
-        path.unlink()
-    if stale:
-        logger.info(
-            "removed %d Parquet file(s) for table(s) no longer in the schema: %s",
-            len(stale),
-            ", ".join(sorted(path.stem for path in stale)),
-        )
-
-    def _progress(done: int) -> None:
-        remaining = tables - done
-        elapsed = time.monotonic() - run_start
-        eta = eta_str(elapsed, done, remaining)
-        logger.info("progress: %d/%d tables, ~%s remaining", done, tables, eta)
-
-    if latest:
-        # Materialize once: `latest_article` is a window function over the full
-        # `article` table, and it would otherwise be recomputed for the article
-        # export itself plus once per child table's EXISTS below.
-        con.execute("CREATE OR REPLACE TEMP TABLE _latest_snapshot AS SELECT * FROM latest_article")
-        article_query = "SELECT * FROM _latest_snapshot"
-    else:
-        article_query = "SELECT * FROM article"
-    article_path = out_dir / "article.parquet"
-    _copy_parquet(con, article_query, article_path)
-    written.append(article_path)
-    _progress(len(written))
-
-    for table in _VERSIONED_CHILDREN:
-        if latest:
-            query = (
-                f"SELECT c.* FROM {table} c "
-                "WHERE EXISTS (SELECT 1 FROM _latest_snapshot la "
-                "WHERE la.pmid = c.pmid AND la.source_file = c.source_file)"
-            )
-        else:
-            query = f"SELECT * FROM {table}"
-        path = out_dir / f"{table}.parquet"
-        _copy_parquet(con, query, path)
-        written.append(path)
-        _progress(len(written))
-
-    # Dimension / bookkeeping tables are exported in full regardless of `latest`.
-    for table in _OTHER_TABLES:
-        path = out_dir / f"{table}.parquet"
-        _copy_parquet(con, f"SELECT * FROM {table}", path)
-        written.append(path)
-        _progress(len(written))
-
-    # `records` counts current articles in every format, so two exports of one
-    # build agree on it; the history export adds its version count separately.
-    records = con.execute(
-        "SELECT count(*) FROM _latest_snapshot" if latest else "SELECT count(*) FROM latest_article"
-    ).fetchone()[0]
-    article_versions = None if latest else con.execute("SELECT count(*) FROM article").fetchone()[0]
-    write_export_metadata(
-        con,
-        out_dir,
-        written,
-        fmt="parquet-latest" if latest else "parquet-all",
-        records=records,
-        article_versions=article_versions,
-    )
-    logger.info(
-        "exported %d Parquet file(s) to %s (peak RSS %.1f GiB)",
-        len(written),
-        out_dir,
-        peak_rss_gib(),
-    )
-    return written
