@@ -63,8 +63,9 @@ the export, to buy back headroom rather than to rescue DuckDB from itself.
   `ulimit -v`, `vm.overcommit_memory` and its ratio, `vm.max_map_count`, and
   the node's `CommitLimit` and `Committed_AS` at job start (`config.sh`'s
   `log_memory_limits`).
-- **`sacct` records no memory figures on `ht1`**, and `seff` is not installed,
-  so the step log is the only record of a run's memory.
+- **The step log is the only record of a run's memory on `ht1`**: `sacct`
+  gathers none there
+  ([`slurm/README.md` → "Monitoring memory and runtime"](../slurm/README.md#monitoring-memory-and-runtime)).
 
 ## Three kinds of memory failure
 
