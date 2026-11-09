@@ -876,3 +876,76 @@ def test_a_finished_export_is_refused_without_overwrite(loaded_con, tmp_path):
         # A partial export (no metadata.json: a run that died) is swept unasked.
         (out / "metadata.json").unlink()
         exporter(loaded_con, out)
+
+
+class _RecordingConnection:
+    """A DuckDB connection that records each statement and can fail one.
+
+    DuckDB's connection attributes are read-only, so a failure in the middle of
+    `export_json` is injected by wrapping the connection rather than patching it.
+    """
+
+    def __init__(self, con, fail_on: str | None = None, error: Exception | None = None):
+        self._con = con
+        self._fail_on = fail_on
+        self._error = error
+        self.statements: list[str] = []
+
+    def execute(self, sql, *args, **kwargs):
+        self.statements.append(sql)
+        if self._fail_on is not None and sql.lstrip().startswith(self._fail_on):
+            raise self._error
+        return self._con.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._con, name)
+
+
+_REFUSED = "Out of Memory Error: Failed to allocate block of 263176 bytes (bad allocation)"
+
+
+@pytest.mark.parametrize("fail_on", ["CREATE OR REPLACE TEMP TABLE _latest_snapshot", "COPY"])
+def test_an_out_of_memory_error_logs_the_memory_figures_and_propagates(
+    loaded_con, tmp_path, caplog, fail_on
+):
+    """The 192G run died a minute after its last heartbeat line, with nothing
+    to say what the node's commit charge was (#42). Either memory-heavy
+    statement failing now logs the figures, and the error still ends the run."""
+    import logging
+
+    import duckdb
+
+    from pubmed2db.export import export_json
+
+    con = _RecordingConnection(loaded_con, fail_on, duckdb.OutOfMemoryException(_REFUSED))
+    threads_before = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    with caplog.at_level(logging.ERROR, logger="pubmed2db.export"):
+        with pytest.raises(duckdb.OutOfMemoryException):
+            export_json(con, tmp_path / "json", shards=1)
+
+    (line,) = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    for fragment in ("RSS", "VSZ", "node commit", "spill", "A refused allocation"):
+        assert fragment in line, line
+    after = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    assert after == threads_before
+
+
+def test_a_memory_limit_error_is_not_blamed_on_overcommit(loaded_con, tmp_path, caplog):
+    """DuckDB's own limit names itself; the overcommit hint is only for a refusal."""
+    import logging
+
+    import duckdb
+
+    from pubmed2db.export import export_json
+
+    error = duckdb.OutOfMemoryException(
+        "Out of Memory Error: could not allocate block of size 256.0 KiB (1.0 GiB/1.0 GiB used)"
+    )
+    con = _RecordingConnection(loaded_con, "COPY", error)
+    with caplog.at_level(logging.ERROR, logger="pubmed2db.export"):
+        with pytest.raises(duckdb.OutOfMemoryException):
+            export_json(con, tmp_path / "json", shards=1)
+
+    (line,) = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert "node commit" in line
+    assert "overcommit" not in line

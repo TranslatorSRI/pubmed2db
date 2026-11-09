@@ -7,6 +7,7 @@ nulls, for absent values. Parquet export keeps PubMed's own field names.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -660,6 +661,37 @@ def _log_while_writing(
             logger.warning("could not log export progress: %s", exc)
 
 
+@contextlib.contextmanager
+def _logging_out_of_memory(temp_dir: str | None):
+    """Log the memory figures when DuckDB runs out, then let the error propagate.
+
+    The heartbeat samples once a minute, so without this the last figures
+    before a failure can be a minute stale: the 192G run's last line said RSS
+    68 GiB, and nothing said what the node's commit charge was (#42). These are
+    read after DuckDB has unwound the statement, so its spill files may already
+    be gone and RSS may have fallen; the node's commit charge and VSZ fall less
+    readily, and are the figures that explain a ``(bad allocation)``.
+    """
+    try:
+        yield
+    except duckdb.OutOfMemoryException as exc:
+        refused = "bad allocation" in str(exc)
+        logger.error(
+            "DuckDB ran out of memory: %s · spill %.1f GiB · peak RSS %.1f GiB%s",
+            memory_summary(),
+            dir_size_gib(temp_dir),
+            peak_rss_gib(),
+            (
+                ". '(bad allocation)' is the kernel refusing a reservation, not "
+                "DuckDB's memory_limit: under vm.overcommit_memory=2 compare the "
+                "node commit with its limit (slurm/README.md, 'A refused allocation')"
+            )
+            if refused
+            else "",
+        )
+        raise
+
+
 def export_json(
     con: duckdb.DuckDBPyConnection,
     out_dir: str | Path,
@@ -701,10 +733,23 @@ def export_json(
     # expensive part.
     start = time.monotonic()
 
+    # `shards` is the thread cap for the COPY only: one file per writer thread
+    # is what PER_THREAD_OUTPUT gives us, so asking for N shards is asking N
+    # threads to write. Restore whatever the connection had after.
+    #
+    # Read *before* the heartbeat starts: the thread is non-daemon and only
+    # stops when `stop` is set in the finally below, so a statement that raises
+    # between start() and the try would hang the interpreter instead of
+    # reporting the error.
+    previous_threads, temp_dir = con.execute(
+        "SELECT current_setting('threads'), current_setting('temp_directory')"
+    ).fetchone()
+
     # Materialize the latest-version snapshot once: `latest_article` is a window
     # function over the full `article` table, and both the count and the export
     # query below would otherwise recompute it.
-    con.execute("CREATE OR REPLACE TEMP TABLE _latest_snapshot AS SELECT * FROM latest_article")
+    with _logging_out_of_memory(temp_dir):
+        con.execute("CREATE OR REPLACE TEMP TABLE _latest_snapshot AS SELECT * FROM latest_article")
     total = con.execute("SELECT count(*) FROM _latest_snapshot").fetchone()[0]
     logger.info(
         "starting JSON export: %d document(s) to %s in %s%s",
@@ -740,25 +785,14 @@ def export_json(
     escaped_dir = out_dir.as_posix().replace("'", "''")
     copy_sql = f"COPY ({_LATEST_METADATA_SQL}) TO '{escaped_dir}' ({', '.join(options)})"
 
-    # `shards` is the thread cap for this statement only: one file per writer
-    # thread is what PER_THREAD_OUTPUT gives us, so asking for N shards is
-    # asking N threads to write. Restore whatever the connection had after.
-    #
-    # Read *before* the heartbeat starts: the thread is non-daemon and only
-    # stops when `stop` is set in the finally below, so a statement that raises
-    # between start() and the try would hang the interpreter instead of
-    # reporting the error.
-    previous_threads, temp_dir = con.execute(
-        "SELECT current_setting('threads'), current_setting('temp_directory')"
-    ).fetchone()
-
     stop = threading.Event()
     heartbeat = threading.Thread(target=_log_while_writing, args=(out_dir, stop, start, temp_dir))
     heartbeat.start()
     try:
         if shards is not None:
             con.execute(f"SET threads = {int(shards)}")
-        con.execute(copy_sql)
+        with _logging_out_of_memory(temp_dir):
+            con.execute(copy_sql)
     finally:
         stop.set()
         heartbeat.join()
