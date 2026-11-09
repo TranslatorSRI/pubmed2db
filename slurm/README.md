@@ -138,14 +138,11 @@ bought 15 GiB of extra peak, so the growing half is DuckDB's pool and it is
 bounded by the limit; ours is the ~5–6 GiB on top. The rate did not move
 between the two (46.4 vs 47.3 s/file), so neither limit was low enough to spill.
 
-**DuckDB does see the Slurm cgroup**, so its default is not the node-sized
-disaster it looks like: measured on duckdb 1.5.4, it takes ~76% of `--mem`
-(6.1 GiB under `--mem=8G`, again on 1.5.5; 47.3 GiB under `--mem=62G`; off a cluster it is ~80%
-of physical RAM). The problem with the default is subtler — **its limit governs
-only its own buffer pool**, while the lxml tree, the parsed records and the
-Arrow batch live in the same cgroup and count against the same `--mem`. A
-default that claims three quarters of the allocation leaves the rest of the
-process a quarter, and the loader's own footprint is not small.
+**DuckDB's default limit is ~76% of `--mem`, and it governs only its own
+buffer pool** ([`docs/Memory.md`](../docs/Memory.md#what-duckdb-takes-from-the-allocation)
+has the measurements). The lxml tree, the parsed records and the Arrow batch
+count against the same `--mem`, so the default leaves the loader a quarter of
+the allocation, and the loader's own footprint is not small.
 
 So cap it to buy that headroom back, not to rescue DuckDB from itself. That is
 what `LOAD_MEMORY_LIMIT` in `slurm/config.sh` does.
@@ -258,7 +255,8 @@ Three independent ways, in rough order of convenience:
    `DuckDB <version>: memory_limit=…, threads=…, temp_directory=…` line, giving
    the values DuckDB actually uses. The download, journals and validate steps
    pass no limit, so their lines are the cgroup-derived defaults. That is the
-   probe AGENTS.md asks to re-take, taken on every run. `submit.sh` appends
+   probe [`docs/Memory.md`](../docs/Memory.md#what-duckdb-takes-from-the-allocation)
+   asks to re-take, taken on every run. `submit.sh` appends
    one line per job it submits to `data/logs/submit.log`: the time, the
    commit, the command as typed and the job id. That is the one thing no step
    log sees.
@@ -309,7 +307,7 @@ noted:**
 | 2026-08-05 | 40,923,261 | 16 | default | 201.0 GiB | 18m 06s, ≈38k documents/s |
 | 2026-08-21 | 40,990,218 | 8, gzip | 160GB | **153.3 GiB** | **12m 03s**, ≈57k documents/s |
 | 2026-09-26 | 41,153,516 | 8, gzip | 200GB | 191.9 GiB | 13m 14s, ≈52k documents/s |
-| 2026-10-22, `--mem=192G` | 41,271,245 | 8, gzip | 160GB | failed: 152.2 GiB, then refused at 68.1 GiB | 6m 41s ("A refused allocation" below) |
+| 2026-10-22, `--mem=192G` | 41,271,245 | 8, gzip | 160GB | failed: 152.2 GiB, then refused at 68.1 GiB | 6m 41s (refused; see below) |
 | 2026-11-09 | 41,371,020 | 8, gzip | 160GB | failed: 154.3 GiB, then refused at 67.9 GiB | 6m 03s (same) |
 | 2026-11-09, allocator held | 41,371,020 | 8, gzip | 160GB | 205.1 GiB | 15m 00s, ≈46k documents/s |
 
@@ -322,7 +320,15 @@ under, and the one `04-export.sbatch` asks for again. The first two v1.2-branch
 runs, at 192G and at 256G, failed on a refused allocation that a headroom
 calculation does not cover. The third held freed memory instead of returning
 it and finished, but its peak sits ~55 GiB above the buffer limit, so it needs
-the 256G (see "A refused allocation" below).
+the 256G.
+
+**Why the export holds freed memory.** Without it, the export's allocations
+were refused about 6 minutes in (`(bad allocation)`, not an OOM-kill and not
+DuckDB's limit; #42). `export._HOLD_ALLOCATOR` and `EXPORT_JE_MALLOC_CONF`
+keep what DuckDB frees, which got job 155264 through, and that held memory
+sits outside `memory_limit`: lower `EXPORT_MEMORY_LIMIT` before lowering
+`--mem`. The failures, the evidence and what would let the hold go (#80) are
+in [`docs/Memory.md` → "A refused allocation"](../docs/Memory.md#a-refused-allocation-bad-allocation-on-ht1).
 
 For the record, the 2026-08-05 run on `ht1` was submitted as `srun --mem=256G
 --cpus-per-task=8 --time=02:00:00` (12:14:50 started, 12:32:56 finished) — kept
@@ -336,108 +342,6 @@ shard(s)` while RSS climbs. That is the `COPY`'s join and `string_agg`
 materializing before the first shard opens, not the `_latest_snapshot` window:
 job 155264 built the snapshot and counted it in 17 seconds (the `starting JSON
 export` line's timestamp, against the heartbeat's elapsed time).
-
-### A refused allocation: `(bad allocation)` on `ht1`
-
-Two exports from the v1.2 branch failed the same way, and neither was
-OOM-killed. DuckDB raised `Out of Memory Error: Failed to allocate block of
-… bytes (bad allocation)`. The three kinds of memory failure look different:
-
-- **DuckDB's own `memory_limit`** names the limit:
-  `could not allocate block of size 256.0 KiB (149.0 GiB/149.0 GiB used)`.
-- **The Slurm cgroup** (`--mem`) does not refuse anything; the kernel kills the
-  process with SIGKILL, the job ends `OUT_OF_MEMORY`, and the log has no
-  traceback.
-- **`(bad allocation)`** means `malloc`/`mmap` itself returned nothing: the
-  kernel refused the request, whatever DuckDB's limit and the cgroup allowed.
-
-| Job | Node | `--mem` | Peak RSS | At failure | Node commit, peak |
-| --- | --- | --- | --- | --- | --- |
-| 145739, 2026-10-22 | `compute-13-3` | 192G | 152.2 GiB | RSS 68.1 GiB, 6m 41s | not logged |
-| 155199, 2026-11-09 | `largemem-6-1` | 256G | 154.3 GiB | RSS 67.9 GiB, VSZ 209.2 GiB, 6m 03s | 161.2 of 1,359.2 GiB |
-
-Both ran with `EXPORT_MEMORY_LIMIT=160GB` and 8 threads, on nodes with
-`vm.overcommit_memory=2` (ratio 90) and `ulimit -v` unlimited. Both failed
-at the same point: RSS climbed to the buffer limit, DuckDB began to spill,
-RSS fell by ~85 GiB, and the next allocation was refused. A failure that
-repeats this exactly, on different nodes with different allocations, is
-coming from inside the process, not from the neighbours. That rules out
-the explanation this section first gave (a node-wide `CommitLimit` shared
-with other jobs): job 155199's node never charged more than an eighth of
-it.
-
-**The suspect, not yet confirmed: the process runs out of memory mappings.**
-Past `vm.max_map_count` mappings (65,530 by default), `mmap` fails with
-ENOMEM however much memory is free. When the OS does not overcommit, jemalloc
-(which DuckDB uses on Linux) hands memory back by remapping it `PROT_NONE`
-rather than leaving it mapped, and each remap inside a mapping splits it.
-Job 155199's figures fit this. As RSS fell by 85 GiB, VSZ stayed at 209 GiB
-and the node's commit charge fell by only 16 GiB, so the memory went back
-as remapped regions rather than unmapped ones. The heartbeat, the
-failure line and each step's opening block now log the mapping count
-against `vm.max_map_count` (`maps N/M`), which settles it on the next run.
-
-**Holding freed memory instead of returning it avoids the failure.**
-`export._HOLD_ALLOCATOR` raises DuckDB's two allocator-flush thresholds out of
-reach for the snapshot and the `COPY`. By default DuckDB flushes after any task
-that peaked above 128 MiB and after any deallocation above 512 MiB.
-`EXPORT_JE_MALLOC_CONF` in `config.sh` turns off jemalloc's own time-based
-release (`dirty_decay_ms:-1, muzzy_decay_ms:-1`, passed as
-`DUCKDB_JE_MALLOC_CONF`). Job 155264 ran with both, on `largemem-6-1`, the
-node that refused job 155199 the same day, and finished in 15m 00s:
-
-| Elapsed | Shards written | RSS | VSZ | Node commit | `maps` | Spill |
-| --- | --- | --- | --- | --- | --- | --- |
-| 3m 17s | 0.0 GiB | 139.4 GiB | 153.0 GiB | 148.3 GiB | 842 | 0.0 GiB |
-| 5m 19s | 0.0 GiB | 193.5 GiB | 214.1 GiB | 202.1 GiB | 875 | 20.9 GiB |
-| 6m 20s | 0.5 GiB | 204.0 GiB | 221.4 GiB | 213.4 GiB | 881 | 11.5 GiB |
-| 13m 27s | 15.8 GiB | 204.0 GiB | 221.4 GiB | 213.4 GiB | 881 | 11.4 GiB |
-
-Three things follow from it:
-
-- **The held memory is outside DuckDB's `memory_limit`.** RSS plateaued at
-  204 GiB against a 149 GiB limit; the ~55 GiB above it is freed memory
-  jemalloc kept. That makes `--mem=256G` load-bearing while the hold is on:
-  under 192G this run would have been OOM-killed. Lower `EXPORT_MEMORY_LIMIT`
-  before lowering `--mem`, and expect the gap to stay.
-- **The `max_map_count` suspect is still unconfirmed.** `maps` peaked at 881
-  of 65,530, but that is with the hold on; neither failed run logged `maps`,
-  so no run has shown them climbing. The run is equally consistent with any
-  cause that only bites when memory is handed back. Confirming it would take
-  one export with the hold off (`EXPORT_JE_MALLOC_CONF=` empty and
-  `_HOLD_ALLOCATOR` emptied), watching `maps` approach 65,530 before the
-  failure. That evidence is what to take to the cluster admins before asking
-  them to raise `vm.max_map_count` (Elasticsearch's documented minimum,
-  262,144, is a common setting).
-- **Which of the two knobs matters is unknown.** Both changed at once. Nothing
-  needs that answered while the export finishes.
-
-If a later run fails anyway: RSS climbing past ~205 GiB until the job is
-OOM-killed means jemalloc could not reuse what it held, so set
-`EXPORT_JE_MALLOC_CONF=` empty; a `(bad allocation)` with `maps` near the
-limit confirms the suspect and makes raising `vm.max_map_count` the fix; one
-with `maps` far below it rules the suspect out. Record the figures here before
-guessing again.
-
-**The node did not change, so the database or the code did.** `largemem-6-1`
-ran the 2026-08-21 and 2026-09-26 exports that succeeded (jobs 119057 and
-138349, 256G, DuckDB 1.5.5). It has been up since 2026-05-21, on the same
-kernel, and `vm.overcommit_memory = 2` has been in its `/etc/sysctl.conf`
-since that day. So strict overcommit and `max_map_count` were the same for the
-runs that succeeded. The 2026-09-26 run's RSS was still 144 GiB 9½ minutes in
-(the excerpt under "Running `export`" above), while both failed runs had
-fallen to ~68 GiB by minute 6. Candidates for the difference: v1.2 builds a
-fresh database rather than continuing one, and data model 1.0 reshaped the
-tables, though the export query's structure is unchanged. Both successful
-runs' logs are gone. `04-export.sbatch` stays at 256G because those runs used
-it, not because `--mem` is shown to matter here. `sacct` records no memory
-figures on this cluster (see "Monitoring memory and runtime"), so the step log
-is the only record.
-
-Job 155199 also ran the snapshot and the `COPY` with `preserve_insertion_order`
-off, as DuckDB's error message suggests (`export._UNORDERED` says why that is
-free). It failed at the same point anyway, so that setting does not fix this.
-What it saves on a run that finishes is still unmeasured.
 
 ### What changed (and what to record next run)
 

@@ -20,7 +20,7 @@
 # memory (config.sh's EXPORT_JE_MALLOC_CONF, export._HOLD_ALLOCATOR) got the
 # next run through, in 15m 00s, but at 205.1 GiB peak: the held memory sits
 # ~55 GiB above the 160GB buffer limit, so 256G is now needed, not just
-# inherited. slurm/README.md -> "A refused allocation" has the evidence. Do NOT
+# inherited. docs/Memory.md -> "A refused allocation" has the evidence. Do NOT
 # copy the loader's 64G here. One hour is 4x the measured wall time.
 #
 # Slurm will not grow --mem mid-job, so an under-requested export is OOM-killed
