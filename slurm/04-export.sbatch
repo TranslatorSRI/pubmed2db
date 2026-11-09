@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=pubmed2db-export
 #SBATCH --output=data/logs/%x-%j.out
-#SBATCH --mem=192G
+#SBATCH --mem=256G
 #SBATCH --cpus-per-task=8
 #SBATCH --time=01:00:00
 #
@@ -12,11 +12,17 @@
 # the database rather than the largest input file. Measured on the COPY-based
 # writer: 41.2M documents in 13m 14s at 191.9 GiB peak under a 200GB buffer
 # limit, and 41.0M in 12m 03s at 153.3 GiB under 160GB -- DuckDB fills whatever
-# it is given, so config.sh now sets 160GB. Both ran under 256G; 192G leaves
-# ~38 GiB over the 160GB run's peak and is being tried (#42), not yet measured.
-# If it is OOM-killed, put 256G back here and record the failure in
-# slurm/README.md. Do NOT copy the loader's 64G here. One hour is 4x the
-# measured wall time.
+# it is given, so config.sh now sets 160GB. Both ran under 256G.
+#
+# 192G failed (2026-10-22, #42), and not for lack of cgroup headroom: DuckDB
+# raised "Failed to allocate block ... (bad allocation)" at 68 GiB RSS, which is
+# the kernel refusing an allocation. ht1's nodes run vm.overcommit_memory=2, so
+# what binds is the node-wide CommitLimit (~226 GiB on a 251 GiB node), charged
+# with the memory every job on the node has *reserved*, not this job's RSS or
+# its --mem. A smaller --mem leaves room for neighbours to reserve from the
+# same pool. slurm/README.md -> "A refused allocation" has the details and what
+# to measure before trying a smaller allocation again. Do NOT copy the loader's
+# 64G here. One hour is 4x the measured wall time.
 #
 # Slurm will not grow --mem mid-job, so an under-requested export is OOM-killed
 # partway through with nothing to show for it. Grab the memory up front.

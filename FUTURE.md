@@ -147,7 +147,8 @@ Still open:
   sets. Closes issue #8. At corpus scale: 12–13 minutes against 18–23 before,
   and the peak now follows the DuckDB memory limit (153.3 GiB at 160GB, 191.9
   at 200GB) rather than sitting at ~201 GiB; whether `--mem=256G` itself can
-  come down is #42.
+  come down is #42, where a 192G try met the nodes' strict overcommit
+  (`slurm/README.md`, "A refused allocation").
 - **No indexes** are created on the big per-version tables yet (kept lean for bulk
   load). Add them if interactive querying of the DB becomes a use case.
 

@@ -278,9 +278,11 @@ Three independent ways, in rough order of convenience:
    srun --mem=... /usr/bin/time -v uv run pubmed2db load
    ```
 
-> **Note:** `seff` is **not installed on `ht1.renci.org`** — use `sacct` or the
-> logged peak RSS instead. Long interactive runs are easiest inside `screen`
-> with a log: `screen -L -Logfile data/logs/$(date +%Y%b%d).log`.
+> **Note:** `seff` is **not installed on `ht1.renci.org`**, and `sacct`'s
+> `MaxRSS`/`MaxVMSize` came back empty for the export job 145739: the cluster
+> does not appear to gather per-job memory figures, so use the logged numbers.
+> Long interactive runs are easiest inside `screen` with a log:
+> `screen -L -Logfile data/logs/$(date +%Y%b%d).log`.
 
 ## Running `export`
 
@@ -297,7 +299,8 @@ the size of the database rather than with the largest input file:
 Neither step can be done a file at a time, which is why the numbers are an order
 of magnitude above the loader's.
 
-**Observed on full JSON exports of the whole corpus, all under `--mem=256G`:**
+**Observed on full JSON exports of the whole corpus, under `--mem=256G` unless
+noted:**
 
 | Run | Documents | Shards | `EXPORT_MEMORY_LIMIT` | Peak RSS | Wall time |
 | --- | --- | --- | --- | --- | --- |
@@ -306,15 +309,16 @@ of magnitude above the loader's.
 | 2026-08-05 | 40,923,261 | 16 | default | 201.0 GiB | 18m 06s, ≈38k documents/s |
 | 2026-08-21 | 40,990,218 | 8, gzip | 160GB | **153.3 GiB** | **12m 03s**, ≈57k documents/s |
 | 2026-09-26 | 41,153,516 | 8, gzip | 200GB | 191.9 GiB | 13m 14s, ≈52k documents/s |
+| 2026-10-22, `--mem=192G` | 41,271,245 | 8, gzip | 160GB | failed: 152.2 GiB, then refused at 68.1 GiB | 6m 41s ("A refused allocation" below) |
 
 The first three predate the `COPY`-based writer (see "What changed" below); the
 last two are it. Read the pair together: DuckDB's peak tracks the buffer-pool
 limit it is given, not what the query needs — 40 GB more limit bought 38 GiB
 more peak and a slightly *slower* run — so `config.sh` now sets `160GB`, the
 lower of the two measured values. `--mem=256G` is the allocation both ran
-under. 192G would leave ~38 GiB over the 160GB run's peak, so
-`04-export.sbatch` now tries that; until a run under it is in the table, it is
-a guess, not a measurement.
+under, and the one `04-export.sbatch` asks for again: 192G, which would have
+left ~38 GiB over the 160GB run's peak, failed for a reason that headroom
+calculation never considered.
 
 For the record, the 2026-08-05 run on `ht1` was submitted as `srun --mem=256G
 --cpus-per-task=8 --time=02:00:00` (12:14:50 started, 12:32:56 finished) — kept
@@ -326,6 +330,59 @@ Time is the cheap dimension: `04-export.sbatch` asks for an hour against a
 measured 13 minutes. Expect the first ~5 minutes to log `0.0 GiB across 0
 shard(s)` while RSS climbs — that is the `_latest_snapshot` window and the
 `string_agg` materializing before the first shard opens; both runs did it.
+
+### A refused allocation: strict overcommit on `ht1`
+
+The 192G run (job 145739, `compute-13-3`) was not OOM-killed. DuckDB raised
+`Out of Memory Error: Failed to allocate block of 263176 bytes (bad
+allocation)`, and the three kinds of memory failure look different:
+
+- **DuckDB's own `memory_limit`** names the limit:
+  `could not allocate block of size 256.0 KiB (149.0 GiB/149.0 GiB used)`.
+- **The Slurm cgroup** (`--mem`) does not refuse anything; the kernel kills the
+  process with SIGKILL, the job ends `OUT_OF_MEMORY`, and the log has no
+  traceback.
+- **`(bad allocation)`** means `malloc`/`mmap` itself returned nothing: the
+  kernel declined to *reserve* the memory at all.
+
+The last is what strict overcommit does. On `ht1`'s nodes (checked on
+`compute-13-3`, 2026-11-07):
+
+```text
+ulimit -v                  unlimited     (no address-space cap; VSizeFactor = 0)
+vm.overcommit_memory       2             (strict: never promise more than CommitLimit)
+vm.overcommit_ratio        90
+MemTotal                   251.4 GiB
+CommitLimit                226.3 GiB     (swap + 90% of RAM)
+Committed_AS               9.2 GiB       (the idle node, at the time of the check)
+```
+
+`CommitLimit` is **node-wide** and counts what every process on the node has
+*reserved* (`Committed_AS`), whether or not it is resident. So the job's RSS
+and its `--mem` are the wrong numbers to size against. The run's RSS was 68
+GiB when it failed. What mattered was its own reservations plus every
+neighbour's, against 226 GiB. A 192G job leaves room on the node for other
+jobs' reservations. A 256G job probably leaves none, which is the likeliest
+reason both earlier runs never met the limit. Which half of the
+`Committed_AS` was ours is not known: nothing logged it, and `sacct` records
+no memory figures on this cluster (see "Monitoring memory and runtime").
+
+The export now logs what decides this. Every step's opening block includes
+`ulimit -v`, the overcommit mode and ratio, and the node's `CommitLimit` and
+`Committed_AS` at job start. The once-a-minute heartbeat adds the process's
+virtual size (`VSZ`), the node's commit charge and the size of DuckDB's spill
+directory beside RSS. A failed allocation logs the same figures at the moment
+of the error. Before trying a smaller `--mem` again, read a successful 256G
+run's heartbeat. If `VSZ` stays well under `CommitLimit` minus what the node
+started with, a smaller allocation is worth trying together with `#SBATCH
+--exclusive`, which keeps neighbours off the node, though that wastes its
+spare cores. If `VSZ` comes near `CommitLimit` without any neighbours, lower
+`EXPORT_MEMORY_LIMIT` instead.
+
+The next run also changes one thing besides the logging: the snapshot and the
+`COPY` now run with `preserve_insertion_order` off, as DuckDB's error message
+suggested (`export._UNORDERED` says why that is free). Compare that run's peak
+with the 160GB run above to see what it saved.
 
 ### What changed (and what to record next run)
 
