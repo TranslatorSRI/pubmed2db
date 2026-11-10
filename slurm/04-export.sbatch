@@ -12,9 +12,16 @@
 # the database rather than the largest input file. Measured on the COPY-based
 # writer: 41.2M documents in 13m 14s at 191.9 GiB peak under a 200GB buffer
 # limit, and 41.0M in 12m 03s at 153.3 GiB under 160GB -- DuckDB fills whatever
-# it is given, so config.sh now sets 160GB. 256G is the allocation that has
-# been run; 192G is the next thing to try, not a number to assume. Do NOT copy
-# the loader's 64G here. One hour is 4x the measured wall time.
+# it is given, so config.sh now sets 160GB. Both ran under 256G.
+#
+# The v1.2 branch's exports failed at 192G (2026-10-22) and at 256G
+# (2026-11-09) with DuckDB's "(bad allocation)", at ~68 GiB RSS both times: mmap
+# refused, not an OOM-kill and not DuckDB's memory_limit (#42). Holding freed
+# memory (config.sh's EXPORT_JE_MALLOC_CONF, export._HOLD_ALLOCATOR) got the
+# next run through, in 15m 00s, but at 205.1 GiB peak: the held memory sits
+# ~55 GiB above the 160GB buffer limit, so 256G is now needed, not just
+# inherited. slurm/README.md -> "A refused allocation" has the evidence. Do NOT
+# copy the loader's 64G here. One hour is 4x the measured wall time.
 #
 # Slurm will not grow --mem mid-job, so an under-requested export is OOM-killed
 # partway through with nothing to show for it. Grab the memory up front.
@@ -33,6 +40,13 @@
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 source slurm/config.sh
+# jemalloc reads DUCKDB_JE_MALLOC_CONF. Set before log_run_settings, which
+# prints it, so the log shows what DuckDB actually got. An empty
+# EXPORT_JE_MALLOC_CONF passes none of ours and leaves any value already in
+# the environment alone, rather than silently clearing it.
+if [[ -n "$EXPORT_JE_MALLOC_CONF" ]]; then
+    export DUCKDB_JE_MALLOC_CONF="$EXPORT_JE_MALLOC_CONF"
+fi
 log_run_settings
 
 # `export` refuses to run over a finished export (one with a metadata.json),

@@ -20,7 +20,7 @@ on, and a copy left here rots into a contradiction of the code.
   - restoring an output is a **minor** data model bump, with a changelog entry
     and a golden file (AGENTS.md);
   - give its snapshot the same DuckDB settings as the JSON export's before
-    running it on ht1, whose exports were refused allocations without them
+    running it on the cluster, whose exports were refused allocations without them
     (#42);
   - measure it at corpus scale before relying on it. #29 asked for that
     measurement and was closed with the removal; it is background, not this
@@ -166,7 +166,8 @@ Still open:
   sets. Closes issue #8. At corpus scale: 12–13 minutes against 18–23 before,
   and the peak now follows the DuckDB memory limit (153.3 GiB at 160GB, 191.9
   at 200GB) rather than sitting at ~201 GiB; whether `--mem=256G` itself can
-  come down is #42.
+  come down is #42, where exports at both 192G and 256G have since failed on
+  a refused `mmap` (`slurm/README.md`, "A refused allocation").
 - **No indexes** are created on the big per-version tables yet (kept lean for bulk
   load). Add them if interactive querying of the DB becomes a use case.
 

@@ -147,7 +147,7 @@ def test_a_step_named_twice_is_submitted_once() -> None:
 def test_a_federated_job_id_is_stripped_before_it_reaches_a_dependency() -> None:
     """`sbatch --parsable` prints "jobid;clustername" on a multi-cluster site.
 
-    Interpolated whole, the suffix lands inside --dependency=afterok:12345;ht1,
+    Interpolated whole, the suffix lands inside --dependency=afterok:12345;mycluster,
     which sbatch rejects -- so the chain breaks at submit time on exactly the
     sites hardest to debug from here. This is the one test that runs the real
     submit path rather than --dry-run, against a stub sbatch.
@@ -155,7 +155,7 @@ def test_a_federated_job_id_is_stripped_before_it_reaches_a_dependency() -> None
     with tempfile.TemporaryDirectory() as tmp:
         stub_dir = Path(tmp)
         sbatch = stub_dir / "sbatch"
-        sbatch.write_text('#!/bin/sh\necho "12345;ht1"\n')
+        sbatch.write_text('#!/bin/sh\necho "12345;mycluster"\n')
         sbatch.chmod(0o755)
 
         result = subprocess.run(
@@ -176,7 +176,7 @@ def test_a_federated_job_id_is_stripped_before_it_reaches_a_dependency() -> None
         )
     assert result.returncode == 0, result.stderr
     assert "job 12345 " in result.stdout or result.stdout.rstrip().endswith("job 12345")
-    assert "ht1" not in result.stdout
+    assert "mycluster" not in result.stdout
 
 
 def test_single_step_has_no_dependency() -> None:
@@ -538,7 +538,7 @@ def test_spill_dir_is_opt_in() -> None:
     """DUCKDB_TEMP_DIR defaults to empty -- DuckDB's own spill location.
 
     It used to default to /local/scratch/duckdb_tmp, which does not exist on
-    ht1, so every export there warned and fell back to the default anyway. A
+    the cluster, so every export there warned and fell back to the default anyway. A
     path here is for a node that has local scratch, and is passed explicitly.
     """
     result = subprocess.run(
@@ -662,7 +662,20 @@ def test_every_step_logs_the_settings_it_runs_with(sandbox: Path, script: Path) 
     assert "  LOAD_MEMORY_LIMIT=32GB" in lines
     # Defaults print as the value used; an empty spill dir prints empty.
     assert "  EXPORT_MEMORY_LIMIT=160GB" in lines
+    assert "  EXPORT_JE_MALLOC_CONF=dirty_decay_ms:-1,muzzy_decay_ms:-1" in lines
     assert "  DUCKDB_TEMP_DIR=" in lines
+    # The limits that are not --mem (#42): present on every platform, filled in
+    # from /proc on Linux and empty elsewhere.
+    for key in (
+        "ulimit_v",
+        "vm.overcommit_memory",
+        "vm.overcommit_ratio",
+        "vm.max_map_count",
+        "MemTotal",
+    ):
+        assert any(line.startswith(f"  {key}=") for line in lines), key
+    assert any(line.startswith("  CommitLimit=") for line in lines)
+    assert any(line.startswith("  Committed_AS=") for line in lines)
     output = result.stdout + result.stderr
     assert "not-a-real-key" not in output
     assert "someone@example.org" not in output.split("UV_ARGS")[0]
@@ -670,7 +683,7 @@ def test_every_step_logs_the_settings_it_runs_with(sandbox: Path, script: Path) 
 
 def _submit_with_stub_sbatch(tmp: Path, *args: str) -> subprocess.CompletedProcess[str]:
     sbatch = tmp / "sbatch"
-    sbatch.write_text('#!/bin/sh\necho "12345;ht1"\n')
+    sbatch.write_text('#!/bin/sh\necho "12345;mycluster"\n')
     sbatch.chmod(0o755)
     return subprocess.run(
         ["bash", str(SUBMIT), *args],
@@ -771,6 +784,32 @@ def run_export(sandbox: Path, **env: str) -> subprocess.CompletedProcess[str]:
             **env,
         },
     )
+
+
+def test_export_passes_its_jemalloc_options_and_an_empty_one_passes_none(
+    sandbox: Path,
+) -> None:
+    """The export runs with jemalloc's time-based release off (#42), through the
+    variable DuckDB reads, and logs what that variable holds. An empty
+    EXPORT_JE_MALLOC_CONF passes none of ours, and leaves a value the operator
+    exported themselves in place rather than silently clearing it."""
+    uv = sandbox / "bin" / "uv"
+    uv.write_text('#!/bin/sh\necho "JE_CONF=[$DUCKDB_JE_MALLOC_CONF]"\n')
+    ours = "dirty_decay_ms:-1,muzzy_decay_ms:-1"
+
+    result = run_export(sandbox)
+    assert result.returncode == 0, result.stderr
+    assert f"JE_CONF=[{ours}]" in result.stdout
+    assert f"  DUCKDB_JE_MALLOC_CONF={ours}" in result.stdout.splitlines()
+
+    result = run_export(sandbox, EXPORT_JE_MALLOC_CONF="")
+    assert result.returncode == 0, result.stderr
+    assert "JE_CONF=[]" in result.stdout
+
+    result = run_export(sandbox, EXPORT_JE_MALLOC_CONF="", DUCKDB_JE_MALLOC_CONF="narenas:4")
+    assert result.returncode == 0, result.stderr
+    assert "JE_CONF=[narenas:4]" in result.stdout
+    assert "  DUCKDB_JE_MALLOC_CONF=narenas:4" in result.stdout.splitlines()
 
 
 def test_export_overwrites_only_when_told(sandbox: Path) -> None:

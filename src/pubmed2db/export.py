@@ -7,6 +7,7 @@ nulls, for absent values.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -19,7 +20,7 @@ from pathlib import Path
 import duckdb
 
 from . import datamodel
-from .util import current_rss_gib, fmt_duration, peak_rss_gib
+from .util import dir_size_gib, fmt_duration, memory_summary, peak_rss_gib, size_bytes
 
 #: Shard filename stem; DuckDB appends the writer-thread index and the extension.
 _SHARD_STEM = "pubmed_metadata_"
@@ -567,39 +568,31 @@ def _shard_paths(out_dir: Path) -> list[Path]:
     )
 
 
-def _shard_bytes(paths: list[Path]) -> int:
-    """Total size of the shards that still exist, skipping any that vanish.
+def _log_writing_progress(out_dir: Path, start: float, temp_dir: str | None = None) -> None:
+    """Log how much shard output exists so far, memory, and DuckDB's spill size.
 
-    DuckDB is writing this directory while we read it, so a path can disappear
-    between the glob and the stat. That is a missing data point, not a reason to
-    take the heartbeat down.
+    RSS alone looked healthy on the run that failed (#42): the node refused a
+    reservation at 68 GiB RSS under strict overcommit, so VSZ and the node's
+    commit charge are logged beside it, and the spill directory's size shows
+    when the buffer pool is full enough to be writing to disk.
     """
-    total = 0
-    for path in paths:
-        try:
-            total += path.stat().st_size
-        except OSError:
-            continue
-    return total
-
-
-def _log_writing_progress(out_dir: Path, start: float) -> None:
-    """Log how much shard output exists so far, and current RSS."""
     paths = _shard_paths(out_dir)
-    written = _shard_bytes(paths)
+    written = size_bytes(paths)
     elapsed = time.monotonic() - start
-    current = current_rss_gib()
     logger.info(
-        "writing: %.1f GiB across %d shard(s) · %.0f MiB/s · elapsed %s · RSS %s",
+        "writing: %.1f GiB across %d shard(s) · %.0f MiB/s · elapsed %s · %s · spill %.1f GiB",
         written / 1024**3,
         len(paths),
         written / 1024**2 / elapsed if elapsed else 0.0,
         fmt_duration(elapsed),
-        "n/a" if current is None else f"{current:.1f} GiB",
+        memory_summary(),
+        dir_size_gib(temp_dir),
     )
 
 
-def _log_while_writing(out_dir: Path, stop: threading.Event, start: float) -> None:
+def _log_while_writing(
+    out_dir: Path, stop: threading.Event, start: float, temp_dir: str | None = None
+) -> None:
     """Log progress every ``_PROGRESS_INTERVAL_S`` until ``stop`` is set.
 
     The whole export is now a single ``COPY``, so there are no batches to log
@@ -607,7 +600,7 @@ def _log_while_writing(out_dir: Path, stop: threading.Event, start: float) -> No
     exactly what left the last run's ``--mem`` a guess. DuckDB releases the GIL
     while the statement runs, so this thread does get scheduled.
 
-    Bytes and RSS, no ETA — the total output size is not known until it has been
+    Bytes and memory, no ETA — the total output size is not known until it has been
     written. If a run ever needs one, split the COPY into PMID ranges and count
     rows per range.
 
@@ -618,9 +611,114 @@ def _log_while_writing(out_dir: Path, stop: threading.Event, start: float) -> No
     """
     while not stop.wait(_PROGRESS_INTERVAL_S):
         try:
-            _log_writing_progress(out_dir, start)
+            _log_writing_progress(out_dir, start, temp_dir)
         except Exception as exc:  # noqa: BLE001 - see the docstring
             logger.warning("could not log export progress: %s", exc)
+
+
+#: Settings for the export's two corpus-sized statements. Insertion order is
+#: free to drop: the query has no ORDER BY, each writer thread already owns its
+#: own file, and nothing downstream reads the order (see _LATEST_METADATA_SQL).
+#: Keeping it makes DuckDB buffer rows to emit them in scan order, and its own
+#: out-of-memory message suggests turning it off. What it saves at corpus scale
+#: is unmeasured: it was on in both the export refused on 2026-11-09 and the
+#: one that finished, which differed only in the hold below (#42).
+_UNORDERED = {"preserve_insertion_order": False}
+
+#: Stop DuckDB telling jemalloc to hand memory back to the kernel mid-export
+#: (#42). By default it flushes after any task that peaked above 128 MiB and
+#: after any single deallocation above 512 MiB, both of which the snapshot's
+#: hash tables and a spill trigger. On the cluster's nodes (vm.overcommit_memory=2)
+#: jemalloc returns memory by remapping it PROT_NONE, which splits mappings,
+#: and the suspect for two exports refused by mmap at ~68 GiB RSS is the
+#: process running out of them (vm.max_map_count). Held instead, the freed
+#: memory stays mapped for jemalloc to reuse. 04-export.sbatch turns off
+#: jemalloc's own time-based release to match (EXPORT_JE_MALLOC_CONF). With
+#: both, the 2026-11-09 export finished, but RSS plateaued ~55 GiB above
+#: memory_limit, which does not count held memory: --mem has to cover it. The
+#: suspect is still unconfirmed, and #80 plans the runs that would settle it;
+#: slurm/README.md, "A refused allocation", has the figures.
+_HOLD_ALLOCATOR = {
+    "allocator_flush_threshold": "1TB",
+    "allocator_bulk_deallocation_flush_threshold": "1TB",
+}
+
+#: Everything the snapshot and the COPY run under.
+_HEAVY_STATEMENT_SETTINGS = {**_UNORDERED, **_HOLD_ALLOCATOR}
+
+
+def _sql_setting_value(value: bool | int | str) -> str:
+    """Render a setting's value for ``SET``: booleans lower-case, strings quoted."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+@contextlib.contextmanager
+def _duckdb_settings(con: duckdb.DuckDBPyConnection, **values: bool | int | str):
+    """``SET`` each setting for the duration of the block, then restore it.
+
+    Restores on an error too, so a failed export does not leave the connection
+    single-threaded or unordered for whatever the caller runs next. Every
+    setting is attempted even if one fails to restore, which after a refused
+    allocation it can. A failed restore is logged and, when the block itself
+    raised, does not replace that error: the caller is owed the out-of-memory
+    error, not whichever ``SET`` tripped over it.
+    """
+    names = list(values)
+    previous = con.execute(
+        "SELECT " + ", ".join(f"current_setting('{name}')" for name in names)
+    ).fetchone()
+    succeeded = False
+    try:
+        for name, value in values.items():
+            con.execute(f"SET {name} = {_sql_setting_value(value)}")
+        yield
+        succeeded = True
+    finally:
+        failed = None
+        for name, value in zip(names, previous, strict=True):
+            try:
+                con.execute(f"SET {name} = {_sql_setting_value(value)}")
+            except duckdb.Error as exc:
+                logger.warning("could not restore %s to %r: %s", name, value, exc)
+                failed = failed or exc
+        if succeeded and failed is not None:
+            raise failed
+
+
+@contextlib.contextmanager
+def _logging_out_of_memory(temp_dir: str | None):
+    """Log the memory figures when DuckDB runs out, then let the error propagate.
+
+    The heartbeat samples once a minute, so without this the last figures
+    before a failure can be a minute stale (#42). Nest it *inside*
+    ``_duckdb_settings``, so it logs before the settings are restored rather
+    than after. These are read after DuckDB
+    has unwound the statement, so its spill files may already be gone and RSS
+    may have fallen; VSZ, the node's commit charge and the mapping count fall
+    less readily, and are the figures that explain a ``(bad allocation)``.
+    """
+    try:
+        yield
+    except duckdb.OutOfMemoryException as exc:
+        refused = "bad allocation" in str(exc)
+        logger.error(
+            "DuckDB ran out of memory: %s · spill %.1f GiB · peak RSS %.1f GiB%s",
+            memory_summary(),
+            dir_size_gib(temp_dir),
+            peak_rss_gib(),
+            (
+                ". '(bad allocation)' is mmap failing, not DuckDB's memory_limit: "
+                "compare the node commit with its limit and the maps with "
+                "vm.max_map_count (slurm/README.md, 'A refused allocation')"
+            )
+            if refused
+            else "",
+        )
+        raise
 
 
 def export_json(
@@ -656,18 +754,23 @@ def export_json(
     out_dir.mkdir(parents=True, exist_ok=True)
     _remove_finished_mark(out_dir, overwrite)
 
-    # Clock the whole export, not just the COPY. Materializing the snapshot is a
-    # window function over the entire `article` table -- the reason export memory
-    # scales with the database rather than the input file -- and with the sort
-    # gone it is plausibly the dominant phase. slurm/README.md tells operators to
-    # size --time from the line this feeds, so it must not start after the
-    # expensive part.
+    # Clock the whole export, not just the COPY: slurm/README.md tells operators
+    # to size --time from the line this feeds. The snapshot below is cheap (17s
+    # of a 15m full-corpus run on the cluster, 2026-11-09); the COPY's join and
+    # string_agg are the expensive part.
     start = time.monotonic()
+
+    # Read *before* the heartbeat starts: the thread is non-daemon and only
+    # stops when `stop` is set in the finally below, so a statement that raises
+    # between start() and the try would hang the interpreter instead of
+    # reporting the error.
+    temp_dir = con.execute("SELECT current_setting('temp_directory')").fetchone()[0]
 
     # Materialize the latest-version snapshot once: `latest_article` is a window
     # function over the full `article` table, and both the count and the export
     # query below would otherwise recompute it.
-    con.execute("CREATE OR REPLACE TEMP TABLE _latest_snapshot AS SELECT * FROM latest_article")
+    with _duckdb_settings(con, **_HEAVY_STATEMENT_SETTINGS), _logging_out_of_memory(temp_dir):
+        con.execute("CREATE OR REPLACE TEMP TABLE _latest_snapshot AS SELECT * FROM latest_article")
     total = con.execute("SELECT count(*) FROM _latest_snapshot").fetchone()[0]
     logger.info(
         "starting JSON export: %d document(s) to %s in %s%s",
@@ -703,28 +806,21 @@ def export_json(
     escaped_dir = out_dir.as_posix().replace("'", "''")
     copy_sql = f"COPY ({_LATEST_METADATA_SQL}) TO '{escaped_dir}' ({', '.join(options)})"
 
-    # `shards` is the thread cap for this statement only: one file per writer
-    # thread is what PER_THREAD_OUTPUT gives us, so asking for N shards is
-    # asking N threads to write. Restore whatever the connection had after.
-    #
-    # Read *before* the heartbeat starts: the thread is non-daemon and only
-    # stops when `stop` is set in the finally below, so a statement that raises
-    # between start() and the try would hang the interpreter instead of
-    # reporting the error.
-    previous_threads = con.execute("SELECT current_setting('threads')").fetchone()[0]
-
     stop = threading.Event()
-    heartbeat = threading.Thread(target=_log_while_writing, args=(out_dir, stop, start))
+    heartbeat = threading.Thread(target=_log_while_writing, args=(out_dir, stop, start, temp_dir))
     heartbeat.start()
+    # `shards` is the thread cap for the COPY only: one file per writer thread
+    # is what PER_THREAD_OUTPUT gives us, so asking for N shards is asking N
+    # threads to write.
+    copy_settings = dict(_HEAVY_STATEMENT_SETTINGS)
+    if shards is not None:
+        copy_settings["threads"] = int(shards)
     try:
-        if shards is not None:
-            con.execute(f"SET threads = {int(shards)}")
-        con.execute(copy_sql)
+        with _duckdb_settings(con, **copy_settings), _logging_out_of_memory(temp_dir):
+            con.execute(copy_sql)
     finally:
         stop.set()
         heartbeat.join()
-        if shards is not None:
-            con.execute(f"SET threads = {int(previous_threads)}")
 
     paths = _shard_paths(out_dir)
     write_export_metadata(con, out_dir, paths, records=total)

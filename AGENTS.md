@@ -357,29 +357,60 @@ explains its part; this table is only a map.
   `test_cli_export_then_validate_needs_no_flags` runs both commands with no
   flags, because a compressed default is only safe while the checker downstream
   stays flag-free.
-- **The cgroup measurements below were taken on duckdb 1.5.4 and have not been
-  re-taken.** The dependency floor is now 1.5.5, and nothing about the readings
-  is version-fragile in principle — but they are measurements, and the rule that
-  produced them is *measure it, don't reason about it*. Re-run the one-line
-  probe on the first cluster job rather than assuming they carried over (#42 is
-  the run that will have the chance).
 - **DuckDB reads the Slurm cgroup. Both of its sized defaults do — we guessed
   otherwise twice and were wrong twice.** Measured on duckdb 1.5.4:
   `memory_limit` is ~76% of `--mem` (6.1 GiB under `--mem=8G`, 47.3 GiB under
   `--mem=62G`; ~80% of physical RAM off a cluster) and `threads` is
   `--cpus-per-task` (2 under `--cpus-per-task=2` on a 64-core node — and via the
-  cgroup's CPU quota, not an affinity mask, which read the full 64). **Do not
-  reason from "DuckDB cannot see the allocation"; measure it.** Both claims
-  reached the docs, the `--help` text and an issue before anyone ran the
-  one-line probe in #36/#38 that disproves them. So the buffer pool is not what
-  overruns the allocation; what its limit does not cover is, since the lxml
-  tree, the parsed records and the Arrow batch share the same cgroup and the
-  default already claims three quarters of it.
+  cgroup's CPU quota, not an affinity mask, which read the full 64). Re-taken
+  on 1.5.5 on the cluster (2026-10-21): 6.1 GiB and 2 under `--mem=8G
+  --cpus-per-task=2`, unchanged. **Do not reason from "DuckDB cannot see the
+  allocation"; measure it.** Both claims reached the docs, the `--help` text
+  and an issue before anyone ran the one-line probe in #36/#38 that disproves
+  them. So the buffer pool is not what overruns the allocation; what its limit
+  does not cover is, since the lxml tree, the parsed records and the Arrow
+  batch share the same cgroup and the default already claims three quarters
+  of it.
+
+  These are measurements, so re-take them after a DuckDB upgrade rather than
+  assume they carried over. Every Slurm step's log has a `DuckDB <version>:
+  memory_limit=…, threads=…` line, and the download, journals and validate
+  steps pass no limit, so theirs are the cgroup-derived defaults
+  (`slurm/README.md` → "Monitoring memory and runtime"); compare them with
+  that step's `--mem` and `--cpus-per-task`. Off the pipeline, it is one line
+  inside an allocation, and should print ~76% of `--mem` and
+  `--cpus-per-task`:
+
+  ```bash
+  srun --mem=8G --cpus-per-task=2 uv run python -c "import duckdb; c = duckdb.connect(); print(c.execute(\"SELECT current_setting('memory_limit'), current_setting('threads')\").fetchone())"
+  ```
+
 - **Two memory numbers mislead, and both have bitten.** `util.peak_rss_gib` is
   `ru_maxrss`, a high-water mark that only ever rises, so a climbing per-file
   "peak" is not evidence of a leak; `current_rss_gib` is the one that can fall —
-  which is why the load and validate progress lines log both. Before diagnosing loader memory, read `slurm/README.md` → "Running
-  `load`: how much memory?".
+  which is why the load and validate progress lines log both. Those two are
+  all they log: VSZ, the node's commit charge and the mapping count
+  (`util.memory_summary`, the figures that explain a `(bad allocation)`) are
+  only in the export's heartbeat and its out-of-memory line. If load or
+  validate is ever refused an allocation, switch its progress line to
+  `memory_summary` before reading anything into its RSS. Before diagnosing
+  loader memory, read `slurm/README.md` → "Running `load`: how much memory?".
+- **`--mem` is not the only memory limit on the cluster.** A
+  `Failed to allocate block ... (bad allocation)` from DuckDB means `mmap`
+  itself failed: not a Slurm OOM-kill (SIGKILL, no traceback), and not
+  `memory_limit`, whose error names the limit. Two exports failed that way at
+  ~68 GiB RSS under `--mem=192G` and `256G` (#42). The nodes run strict
+  overcommit (`vm.overcommit_memory=2`), but the node-wide `CommitLimit` was
+  ruled out: the 256G run's node never charged an eighth of it. The suspect
+  is `vm.max_map_count`, which jemalloc's `PROT_NONE` remapping under strict
+  overcommit can exhaust. The export now holds freed memory rather than
+  returning it (`export._HOLD_ALLOCATOR`, `EXPORT_JE_MALLOC_CONF`), and that
+  got the next run through on the same node. It does not confirm the suspect:
+  `maps` stayed at 881 of 65,530 with the hold on, and no failed run logged
+  them. **The held memory is outside `memory_limit`**: that run's RSS
+  plateaued at 204 GiB against a 149 GiB limit, so `--mem=256G` is now
+  needed, not inherited. `slurm/README.md` → "A refused allocation" has the
+  figures and what would confirm the suspect.
 - **An efetch mismatch is not evidence about what we parsed.** `validate`
   compares the export against Entrez `efetch`, but efetch output is a
   *rendering*, not the archival XML: it serves PMID 152567 as
@@ -426,6 +457,11 @@ explains its part; this table is only a map.
   module they replace. A file that fails is skipped and the sync carries on,
   then `download` exits non-zero naming it; a SIGKILL skips `download_file`'s
   cleanup, so `download` and the catalog prune each sweep stale `.part` files.
+- **Don't record the HPC cluster's name or domain name.** Call it "the
+  cluster" or "the HPC cluster" in docs, code comments, tests, commit
+  messages, issues and PR descriptions, never by its name or hostname, and
+  never with its domain. The public download host in `docs/data-model/` is
+  published on purpose and is not covered by this rule.
 - **The `#SBATCH` headers in `slurm/` are the only place an allocation is
   written down**, and `slurm/README.md` deliberately does not repeat them — it
   carries the *evidence* (dated run tables, peak RSS, the shard-read breakdown)

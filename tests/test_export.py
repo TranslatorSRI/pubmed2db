@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import json
 
+import duckdb
 import pytest
 
 
@@ -308,7 +309,16 @@ def test_writing_progress_line_renders(tmp_path, caplog):
         ex._log_writing_progress(out, time.monotonic() - 5)
 
     line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("writing:"))
-    for fragment in ("GiB across 1 shard(s)", "MiB/s", "elapsed", "RSS"):
+    for fragment in (
+        "GiB across 1 shard(s)",
+        "MiB/s",
+        "elapsed",
+        "RSS",
+        "VSZ",
+        "node commit",
+        "maps",
+        "spill",
+    ):
         assert fragment in line, line
 
 
@@ -388,7 +398,16 @@ def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog)
         ex.export_json(loaded_con, tmp_path / "json")
 
     line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("writing:"))
-    for fragment in ("GiB across 1 shard(s)", "MiB/s", "elapsed", "RSS"):
+    for fragment in (
+        "GiB across 1 shard(s)",
+        "MiB/s",
+        "elapsed",
+        "RSS",
+        "VSZ",
+        "node commit",
+        "maps",
+        "spill",
+    ):
         assert fragment in line, line
 
 
@@ -644,6 +663,7 @@ def test_the_heartbeat_survives_a_shard_vanishing(tmp_path):
     disappear between the glob and the stat. Taking the thread down there would
     leave a 20-minute export silent -- the failure it exists to prevent."""
     from pubmed2db import export as ex
+    from pubmed2db.util import size_bytes
 
     out = tmp_path / "json"
     out.mkdir()
@@ -661,7 +681,7 @@ def test_the_heartbeat_survives_a_shard_vanishing(tmp_path):
 
     ex._shard_paths = racing
     try:
-        assert ex._shard_bytes(ex._shard_paths(out)) == 2048
+        assert size_bytes(ex._shard_paths(out)) == 2048
     finally:
         ex._shard_paths = real_glob
 
@@ -763,3 +783,188 @@ def test_a_finished_export_is_refused_without_overwrite(loaded_con, tmp_path):
     # A partial export (no metadata.json: a run that died) is swept unasked.
     (out / "metadata.json").unlink()
     export_json(loaded_con, out)
+
+
+class _RecordingConnection:
+    """A DuckDB connection that records each statement and can fail one.
+
+    DuckDB's connection attributes are read-only, so a failure in the middle of
+    `export_json` is injected by wrapping the connection rather than patching it.
+    """
+
+    def __init__(self, con, fail_on: str | None = None, error: Exception | None = None):
+        self._con = con
+        self._fail_on = fail_on
+        self._error = error
+        self.statements: list[str] = []
+
+    def execute(self, sql, *args, **kwargs):
+        self.statements.append(sql)
+        if self._fail_on is not None and sql.lstrip().startswith(self._fail_on):
+            raise self._error
+        return self._con.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._con, name)
+
+
+_REFUSED = "Out of Memory Error: Failed to allocate block of 263176 bytes (bad allocation)"
+
+
+@pytest.mark.parametrize("fail_on", ["CREATE OR REPLACE TEMP TABLE _latest_snapshot", "COPY"])
+def test_an_out_of_memory_error_logs_the_memory_figures_and_propagates(
+    loaded_con, tmp_path, caplog, fail_on
+):
+    """The 192G run died a minute after its last heartbeat line, with nothing
+    to say what the node's commit charge was (#42). Either memory-heavy
+    statement failing now logs the figures, and the error still ends the run."""
+    import logging
+
+    import duckdb
+
+    from pubmed2db.export import export_json
+
+    con = _RecordingConnection(loaded_con, fail_on, duckdb.OutOfMemoryException(_REFUSED))
+    threads_before = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    with caplog.at_level(logging.ERROR, logger="pubmed2db.export"):
+        with pytest.raises(duckdb.OutOfMemoryException):
+            export_json(con, tmp_path / "json", shards=1)
+
+    (line,) = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    for fragment in ("RSS", "VSZ", "node commit", "maps", "spill", "A refused allocation"):
+        assert fragment in line, line
+    after = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    assert after == threads_before
+
+
+class _FailingRestore(_RecordingConnection):
+    """Also fails to put insertion order back, as a connection DuckDB has
+    invalidated after a refused allocation would."""
+
+    broken = False
+
+    def execute(self, sql, *args, **kwargs):
+        if self.broken and sql.startswith("SET preserve_insertion_order = true"):
+            self.statements.append(sql)
+            raise duckdb.ConnectionException("connection invalidated")
+        try:
+            return super().execute(sql, *args, **kwargs)
+        except duckdb.OutOfMemoryException:
+            self.broken = True
+            raise
+
+
+def test_a_failed_restore_neither_hides_the_out_of_memory_error_nor_skips_the_rest(
+    loaded_con, tmp_path, caplog
+):
+    """The figures are logged before the settings are restored, the caller still
+    gets the out-of-memory error, and the settings after the one that failed
+    (threads, pinned to --shards) are restored anyway."""
+    import logging
+
+    from pubmed2db.export import export_json
+
+    threads_before = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    con = _FailingRestore(loaded_con, "COPY", duckdb.OutOfMemoryException(_REFUSED))
+    with caplog.at_level(logging.WARNING, logger="pubmed2db.export"):
+        with pytest.raises(duckdb.OutOfMemoryException):
+            export_json(con, tmp_path / "json", shards=1)
+
+    messages = [r.getMessage() for r in caplog.records]
+    logged = next(i for i, m in enumerate(messages) if m.startswith("DuckDB ran out of memory"))
+    warned = next(i for i, m in enumerate(messages) if m.startswith("could not restore"))
+    assert logged < warned
+    after = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    assert after == threads_before
+
+
+def test_a_failed_restore_after_a_clean_block_is_raised(loaded_con):
+    """With nothing else to report, a setting that cannot be restored is the error."""
+    from pubmed2db.export import _duckdb_settings
+
+    threads_before = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    con = _FailingRestore(loaded_con)
+    con.broken = True
+    with pytest.raises(duckdb.ConnectionException):
+        with _duckdb_settings(con, preserve_insertion_order=False, threads=1):
+            pass
+    after = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    assert after == threads_before
+
+
+def test_a_memory_limit_error_is_not_blamed_on_overcommit(loaded_con, tmp_path, caplog):
+    """DuckDB's own limit names itself; the overcommit hint is only for a refusal."""
+    import logging
+
+    import duckdb
+
+    from pubmed2db.export import export_json
+
+    error = duckdb.OutOfMemoryException(
+        "Out of Memory Error: could not allocate block of size 256.0 KiB (1.0 GiB/1.0 GiB used)"
+    )
+    con = _RecordingConnection(loaded_con, "COPY", error)
+    with caplog.at_level(logging.ERROR, logger="pubmed2db.export"):
+        with pytest.raises(duckdb.OutOfMemoryException):
+            export_json(con, tmp_path / "json", shards=1)
+
+    (line,) = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert "node commit" in line
+    assert "overcommit" not in line
+
+
+def test_the_export_drops_insertion_order_for_its_heavy_statements_and_restores_it(
+    loaded_con, tmp_path
+):
+    """Both corpus-sized statements run unordered, as DuckDB's own OOM message
+    suggests and nothing downstream needs; the connection gets its settings back."""
+    from pubmed2db.export import export_json
+
+    def settings():
+        return loaded_con.execute(
+            "SELECT current_setting('preserve_insertion_order'), current_setting('threads'), "
+            "current_setting('allocator_flush_threshold'), "
+            "current_setting('allocator_bulk_deallocation_flush_threshold')"
+        ).fetchone()
+
+    before = settings()
+    con = _RecordingConnection(loaded_con)
+    export_json(con, tmp_path / "json", shards=1)
+    assert settings() == before
+
+    statements = [" ".join(sql.split()) for sql in con.statements]
+    unordered = "SET preserve_insertion_order = false"
+    for heavy in ("CREATE OR REPLACE TEMP TABLE _latest_snapshot", "COPY"):
+        index = next(i for i, sql in enumerate(statements) if sql.startswith(heavy))
+        last_set = max(
+            i for i, sql in enumerate(statements[:index]) if "preserve_insertion_order =" in sql
+        )
+        assert statements[last_set] == unordered, (heavy, statements[last_set])
+    assert "SET threads = 1" in statements
+
+
+def test_the_export_holds_allocator_memory_for_its_heavy_statements(loaded_con, tmp_path):
+    """Both corpus-sized statements run with DuckDB's allocator flushes raised
+    out of reach (#42), and the connection's own thresholds come back after."""
+    from pubmed2db.export import export_json
+
+    before = loaded_con.execute(
+        "SELECT current_setting('allocator_flush_threshold'), "
+        "current_setting('allocator_bulk_deallocation_flush_threshold')"
+    ).fetchone()
+    con = _RecordingConnection(loaded_con)
+    export_json(con, tmp_path / "json", shards=1)
+
+    statements = [" ".join(sql.split()) for sql in con.statements]
+    for setting in ("allocator_flush_threshold", "allocator_bulk_deallocation_flush_threshold"):
+        for heavy in ("CREATE OR REPLACE TEMP TABLE _latest_snapshot", "COPY"):
+            index = next(i for i, sql in enumerate(statements) if sql.startswith(heavy))
+            last_set = max(
+                i for i, sql in enumerate(statements[:index]) if sql.startswith(f"SET {setting} =")
+            )
+            assert statements[last_set] == f"SET {setting} = '1TB'", (heavy, statements[last_set])
+    after = loaded_con.execute(
+        "SELECT current_setting('allocator_flush_threshold'), "
+        "current_setting('allocator_bulk_deallocation_flush_threshold')"
+    ).fetchone()
+    assert after == before
