@@ -571,10 +571,17 @@ and only one of them leaks. It is exported only when non-empty: exported empty,
 
 Set `VALIDATE_OFFLINE=1` for a node without egress, and `VALIDATE_FAIL_ON_WARN=1`
 to make warnings non-zero too — but not on a corpus run expecting a clean pass.
-The `month-format` check warns there by design: `pub_month` passes shapes like
-`"Sep-Oct 01"`, `"1st Quarter"` and `"Jun-Jun"` through verbatim (~0.02% of
-records, 5 in the 23,052 of one baseline plus one update file), so a correct
-corpus export reports `WARN`, not `PASS`. See #43.
+The `month-format` check warns there by design: `pub_month` passes PubMed's
+odder `MedlineDate` shapes through verbatim, so a correct corpus export reports
+`WARN`, not `PASS`. Expect about **0.5% of records**: 221,000 of 41,371,020 on
+2026-11-09, and 220,122 of 41,153,516 when the 2026-09-26 database was
+recounted with the export's own `pub_month`. A sample of two recent files had
+suggested ~0.02%, but older records carry far more `MedlineDate`s. In the
+September recount, the shapes were a day range (`"Dec 23-30"`, 38%), a spaced
+range (`"Nov - Dec"`, 21%), a range with a day (`"Jul-Aug 01"`, 13%), a slash
+range (`"Nov/Dec"`, 13%), a range across months with days (`"Jan 29-Feb 4"`)
+and the cross-year `"Dec-1999 Jan"` (2%). A count far from 0.5% is the thing
+to look into. See #43.
 
 It reads the *export*, not the database: every line of every shard is
 `json.loads`-ed once (gzipped shards are decompressed on the fly), and the only
@@ -591,12 +598,16 @@ matters far less here than it does for `load`.
 | 2026-08-05 (API key) | 40,923,261 | 16, 52.0 GiB | **7m 57s** | **5.182 GiB** |
 | 2026-08-21 (API key) | 40,990,218 | 8 gzip, 15.4 GiB | 25m 47s | 5.184 GiB |
 | 2026-09-26 (API key, `--previous-manifest`) | 41,153,516 | 8 gzip, 15.7 GiB | 28m 37s | 8.802 GiB |
+| 2026-11-09 (API key, no previous manifest found) | 41,371,020 | 8 gzip | 30m 10s | 5.249 GiB |
+| 2026-11-09 re-run (API key, `--previous-manifest`) | 41,371,020 | 8 gzip | 30m 42s | 8.925 GiB |
 
 The script's allocation is roughly 2× the larger peak, which is the margin to
 keep when passing `--previous-manifest`: that manifest is read into a second
 PMID set of comparable size, and it is what took the 2026-09-26 run from 5.2 to
-8.8 GiB. Both figures are in every report (`duration`, `peak_rss_gib`) — size
-the next run from those, not from this note. (The 2026-08-05 run was submitted
+8.8 GiB. The two 2026-11-09 runs, on the same export without and then with a
+previous manifest, measured it directly: 5.2 GiB, then 8.9. Both figures are
+in every report (`duration`, `peak_rss_gib`) — size the next run from those,
+not from this note. (The 2026-08-05 run was submitted
 with `--mem=256G --time=06:00:00`, copied from the export. It used 2% of that
 memory and 2% of the time; there is no reason to hold a big node for this job.)
 
