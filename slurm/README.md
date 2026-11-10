@@ -132,8 +132,9 @@ until the pool is full, after which RSS is flat:
 | --- | --- | --- | --- | --- |
 | 2026-08-20 | 32GB | ~35–37 GiB | 38.2 GiB | ~file 1,000 of 1,595 |
 | 2026-09-25 | 48GB (the default) | ~51–53 GiB | 53.3 GiB | ~file 1,200 of 1,636 |
+| 2026-10-21 | 48GB | ~51–53 GiB | 53.6 GiB | not recorded |
 
-Both under `--mem=64G`, both from an empty database. The 16 GB of extra limit
+All under `--mem=64G`, all from an empty database. The 16 GB of extra limit
 bought 15 GiB of extra peak, so the growing half is DuckDB's pool and it is
 bounded by the limit; ours is the ~5–6 GiB on top. The rate did not move
 between the two (46.4 vs 47.3 s/file), so neither limit was low enough to spill.
@@ -206,6 +207,16 @@ slower as the database grows — not because anything is wrong.**
 | --- | --- | --- | --- | --- | --- |
 | 2026-08-20 | 1,595 (1,334 baseline + 261 update) | 20h 32m | 46.4 s/file | 32GB | 38.2 GiB |
 | 2026-09-25 | 1,636 (1,334 baseline + 302 update) | 21h 29m | 47.3 s/file | 48GB | 53.3 GiB |
+| 2026-10-21 | 1,690 (1,334 baseline + 356 update) | 25h 53m | 55.2 s/file | 48GB | 53.6 GiB |
+
+The 2026-10-21 load was the first on data model 1.0 and on pubmed-downloader
+0.1.0, and it was 17% slower per file than September's for 3% more files. It
+was already slower at the start (~36 s/file over its first 42 files, against
+~30 over September's first 200), so the database's size does not explain it
+alone. Nothing has been measured to say whether the cause is the new schema,
+the new parser or the node. The build that used it, 2026nov08, topped up
+with the 31 update files posted since in 41m 02s (79 s/file, the first file
+included start-up).
 
 The average hides the shape. By stretch of the 2026-09-25 run (baseline files
 are a full 30,000 articles each; update files average ~20,000):
@@ -229,6 +240,7 @@ which is the one regime a corpus load never sees. Overlapping parse with insert
 
 The 24h limit that ran the 2026-09-25 load was 90% used, and each month's
 update files add ~50 files to the count, so `03-load.sbatch` now asks for 36h.
+The 2026-10-21 load used 72% of that, and would have overrun the old 24h.
 Don't guess the next run's limit — the progress line reports the rate and the
 elapsed time to date, which is exactly what scales:
 
@@ -598,8 +610,8 @@ matters far less here than it does for `load`.
 | 2026-08-05 (API key) | 40,923,261 | 16, 52.0 GiB | **7m 57s** | **5.182 GiB** |
 | 2026-08-21 (API key) | 40,990,218 | 8 gzip, 15.4 GiB | 25m 47s | 5.184 GiB |
 | 2026-09-26 (API key, `--previous-manifest`) | 41,153,516 | 8 gzip, 15.7 GiB | 28m 37s | 8.802 GiB |
-| 2026-11-09 (API key, no previous manifest found) | 41,371,020 | 8 gzip | 30m 10s | 5.249 GiB |
-| 2026-11-09 re-run (API key, `--previous-manifest`) | 41,371,020 | 8 gzip | 30m 42s | 8.925 GiB |
+| 2026-11-09 (API key, no previous manifest found) | 41,371,020 | 8 gzip, 15.9 GiB | 30m 10s | 5.249 GiB |
+| 2026-11-09 re-run (API key, `--previous-manifest`) | 41,371,020 | 8 gzip, 15.9 GiB | 30m 42s | 8.925 GiB |
 
 The script's allocation is roughly 2× the larger peak, which is the margin to
 keep when passing `--previous-manifest`: that manifest is read into a second
