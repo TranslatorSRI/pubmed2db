@@ -70,7 +70,7 @@ def _proc_kib(path: str, *keys: str) -> tuple[int, ...] | None:
 def virtual_size_gib() -> float | None:
     """This process's virtual size (``VmSize``) in GiB, or ``None`` off Linux.
 
-    Under strict overcommit (``vm.overcommit_memory=2``, as on ``ht1``) what the
+    Under strict overcommit (``vm.overcommit_memory=2``, as on the cluster) what the
     kernel charges is reserved memory, not resident memory, so RSS can sit far
     below the point where an allocation is refused. ``VmSize`` is an upper
     bound on this process's share of that charge (it also counts read-only and

@@ -363,7 +363,7 @@ explains its part; this table is only a map.
   `--mem=62G`; ~80% of physical RAM off a cluster) and `threads` is
   `--cpus-per-task` (2 under `--cpus-per-task=2` on a 64-core node — and via the
   cgroup's CPU quota, not an affinity mask, which read the full 64). Re-taken
-  on 1.5.5 on `ht1` (2026-10-21): 6.1 GiB and 2 under `--mem=8G
+  on 1.5.5 on the cluster (2026-10-21): 6.1 GiB and 2 under `--mem=8G
   --cpus-per-task=2`, unchanged. **Do not reason from "DuckDB cannot see the
   allocation"; measure it.** Both claims reached the docs, the `--help` text
   and an issue before anyone ran the one-line probe in #36/#38 that disproves
@@ -395,7 +395,7 @@ explains its part; this table is only a map.
   validate is ever refused an allocation, switch its progress line to
   `memory_summary` before reading anything into its RSS. Before diagnosing
   loader memory, read `slurm/README.md` → "Running `load`: how much memory?".
-- **`--mem` is not the only memory limit on `ht1`.** A
+- **`--mem` is not the only memory limit on the cluster.** A
   `Failed to allocate block ... (bad allocation)` from DuckDB means `mmap`
   itself failed: not a Slurm OOM-kill (SIGKILL, no traceback), and not
   `memory_limit`, whose error names the limit. Two exports failed that way at
@@ -457,6 +457,11 @@ explains its part; this table is only a map.
   module they replace. A file that fails is skipped and the sync carries on,
   then `download` exits non-zero naming it; a SIGKILL skips `download_file`'s
   cleanup, so `download` and the catalog prune each sweep stale `.part` files.
+- **Don't record the HPC cluster's name or domain name.** Call it "the
+  cluster" or "the HPC cluster" in docs, code comments, tests, commit
+  messages, issues and PR descriptions, never by its name or hostname, and
+  never with its domain. The public download host in `docs/data-model/` is
+  published on purpose and is not covered by this rule.
 - **The `#SBATCH` headers in `slurm/` are the only place an allocation is
   written down**, and `slurm/README.md` deliberately does not repeat them — it
   carries the *evidence* (dated run tables, peak RSS, the shard-read breakdown)

@@ -1,6 +1,6 @@
 # Running pubmed2db on Slurm
 
-Notes for running the loader and the export on Hatteras, the shared cluster Babel also uses (see
+Notes for running the loader and the export on the HPC cluster that Babel also uses (see
 [Babel's slurm/README](https://github.com/NCATSTranslator/Babel/blob/main/slurm/README.md)).
 
 ## TL;DR
@@ -250,7 +250,7 @@ Three independent ways, in rough order of convenience:
 1. **The progress log lines** — per file for `load` (current RSS, high-water
    peak, rate, elapsed and ETA), once a minute with an ETA for the JSON export.
    The simplest in-process signal,
-   no Slurm tooling needed, and the only one of the three available on Hatteras.
+   no Slurm tooling needed, and the only one of the three available on the cluster.
    Every step's log also opens with what it ran with. First comes a block from
    `config.sh`'s `log_run_settings`: `git describe` of the checkout, the Slurm
    job and allocation, and each setting after overrides (never the NCBI
@@ -278,7 +278,7 @@ Three independent ways, in rough order of convenience:
    srun --mem=... /usr/bin/time -v uv run pubmed2db load
    ```
 
-> **Note:** `seff` is **not installed on Hatteras**, and `sacct`'s
+> **Note:** `seff` is **not installed on the cluster**, and `sacct`'s
 > `MaxRSS`/`MaxVMSize` came back empty for the export job 145739: the cluster
 > does not appear to gather per-job memory figures, so use the logged numbers.
 > Long interactive runs are easiest inside `screen` with a log:
@@ -324,7 +324,7 @@ calculation does not cover. The third held freed memory instead of returning
 it and finished, but its peak sits ~55 GiB above the buffer limit, so it needs
 the 256G (see "A refused allocation" below).
 
-For the record, the 2026-08-05 run on Hatteras was submitted as `srun --mem=256G
+For the record, the 2026-08-05 run on the cluster was submitted as `srun --mem=256G
 --cpus-per-task=8 --time=02:00:00` (12:14:50 started, 12:32:56 finished) — kept
 here as the provenance of the numbers above, not as a command to copy;
 `04-export.sbatch` is what to run. The 2026-08-21 and 2026-09-26 runs were
@@ -337,7 +337,7 @@ materializing before the first shard opens, not the `_latest_snapshot` window:
 job 155264 built the snapshot and counted it in 17 seconds (the `starting JSON
 export` line's timestamp, against the heartbeat's elapsed time).
 
-### A refused allocation: `(bad allocation)` on Hatteras
+### A refused allocation: `(bad allocation)` on the cluster
 
 Two exports from the v1.2 branch failed the same way, and neither was
 OOM-killed. DuckDB raised `Out of Memory Error: Failed to allocate block of

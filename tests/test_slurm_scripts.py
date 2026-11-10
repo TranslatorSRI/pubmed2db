@@ -147,7 +147,7 @@ def test_a_step_named_twice_is_submitted_once() -> None:
 def test_a_federated_job_id_is_stripped_before_it_reaches_a_dependency() -> None:
     """`sbatch --parsable` prints "jobid;clustername" on a multi-cluster site.
 
-    Interpolated whole, the suffix lands inside --dependency=afterok:12345;ht1,
+    Interpolated whole, the suffix lands inside --dependency=afterok:12345;mycluster,
     which sbatch rejects -- so the chain breaks at submit time on exactly the
     sites hardest to debug from here. This is the one test that runs the real
     submit path rather than --dry-run, against a stub sbatch.
@@ -155,7 +155,7 @@ def test_a_federated_job_id_is_stripped_before_it_reaches_a_dependency() -> None
     with tempfile.TemporaryDirectory() as tmp:
         stub_dir = Path(tmp)
         sbatch = stub_dir / "sbatch"
-        sbatch.write_text('#!/bin/sh\necho "12345;ht1"\n')
+        sbatch.write_text('#!/bin/sh\necho "12345;mycluster"\n')
         sbatch.chmod(0o755)
 
         result = subprocess.run(
@@ -176,7 +176,7 @@ def test_a_federated_job_id_is_stripped_before_it_reaches_a_dependency() -> None
         )
     assert result.returncode == 0, result.stderr
     assert "job 12345 " in result.stdout or result.stdout.rstrip().endswith("job 12345")
-    assert "ht1" not in result.stdout
+    assert "mycluster" not in result.stdout
 
 
 def test_single_step_has_no_dependency() -> None:
@@ -538,7 +538,7 @@ def test_spill_dir_is_opt_in() -> None:
     """DUCKDB_TEMP_DIR defaults to empty -- DuckDB's own spill location.
 
     It used to default to /local/scratch/duckdb_tmp, which does not exist on
-    ht1, so every export there warned and fell back to the default anyway. A
+    the cluster, so every export there warned and fell back to the default anyway. A
     path here is for a node that has local scratch, and is passed explicitly.
     """
     result = subprocess.run(
@@ -683,7 +683,7 @@ def test_every_step_logs_the_settings_it_runs_with(sandbox: Path, script: Path) 
 
 def _submit_with_stub_sbatch(tmp: Path, *args: str) -> subprocess.CompletedProcess[str]:
     sbatch = tmp / "sbatch"
-    sbatch.write_text('#!/bin/sh\necho "12345;ht1"\n')
+    sbatch.write_text('#!/bin/sh\necho "12345;mycluster"\n')
     sbatch.chmod(0o755)
     return subprocess.run(
         ["bash", str(SUBMIT), *args],

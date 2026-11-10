@@ -628,7 +628,7 @@ _UNORDERED = {"preserve_insertion_order": False}
 #: Stop DuckDB telling jemalloc to hand memory back to the kernel mid-export
 #: (#42). By default it flushes after any task that peaked above 128 MiB and
 #: after any single deallocation above 512 MiB, both of which the snapshot's
-#: hash tables and a spill trigger. On ht1's nodes (vm.overcommit_memory=2)
+#: hash tables and a spill trigger. On the cluster's nodes (vm.overcommit_memory=2)
 #: jemalloc returns memory by remapping it PROT_NONE, which splits mappings,
 #: and the suspect for two exports refused by mmap at ~68 GiB RSS is the
 #: process running out of them (vm.max_map_count). Held instead, the freed
@@ -756,7 +756,7 @@ def export_json(
 
     # Clock the whole export, not just the COPY: slurm/README.md tells operators
     # to size --time from the line this feeds. The snapshot below is cheap (17s
-    # of a 15m full-corpus run on ht1, 2026-11-09); the COPY's join and
+    # of a 15m full-corpus run on the cluster, 2026-11-09); the COPY's join and
     # string_agg are the expensive part.
     start = time.monotonic()
 
