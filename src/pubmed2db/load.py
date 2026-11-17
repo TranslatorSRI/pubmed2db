@@ -25,7 +25,7 @@ from pubmed_downloader.utils import Collective
 
 from .datamodel import record_load
 from .db import NEEDS_LOAD_SQL, parse_file_name, record_run
-from .parse import ParsedArticle, ParsedFile, parse_file
+from .parse import ParsedArticle, ParsedFile, iter_records, parse_file
 from .util import current_rss_gib, download_file, eta_str, fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
@@ -772,9 +772,9 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
     """Map ``nlm_catalog_id -> (start_year, end_year, active)`` from serfile XML.
 
     Files are read in the order given, so a later monthly update wins over the
-    baseline. This uses ``iterparse`` rather than the whole-tree ``etree.parse``
-    that :mod:`pubmed2db.parse` uses for the much smaller PubMed files: the
-    baseline is ~450 MB, and streaming it costs ~5 s and ~50 MiB.
+    baseline. The XML is streamed with :func:`pubmed2db.parse.iter_records`,
+    as the PubMed files are: the baseline is ~450 MB, and streaming it costs
+    ~5 s and ~50 MiB.
 
     A monthly update that will not parse is skipped, but a baseline that will
     not parse, or holds no records, raises. The updates only amend it, so
@@ -787,9 +787,7 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
         is_baseline = bool(_SERFILE_BASELINE_RE.fullmatch(path.name))
         n_before = len(years)
         try:
-            for _, element in etree.iterparse(
-                os.fspath(path), tag="NLMCatalogRecord", recover=True
-            ):
+            for element in iter_records(os.fspath(path), "NLMCatalogRecord", recover=True):
                 nlm_id = element.findtext("NlmUniqueID")
                 if nlm_id:
                     end_raw = element.findtext("PublicationInfo/PublicationEndYear")
@@ -799,9 +797,6 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
                         None if end_raw == "9999" else _catalog_year(end_raw),
                         _catalog_active(end_raw),
                     )
-                element.clear()
-                while element.getprevious() is not None:
-                    del element.getparent()[0]
         except etree.XMLSyntaxError as exc:
             # NLM really does publish empty files -- serfile.20240903.xml is
             # Content-Length: 0 -- and `recover=True` does not save an empty

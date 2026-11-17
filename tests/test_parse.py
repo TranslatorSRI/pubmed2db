@@ -241,7 +241,7 @@ def test_book_records_are_counted_not_dropped_silently(gz_fixture, caplog, tmp_p
     assert "skipped 1 PubmedBookArticle record(s)" in caplog.text
 
 
-def test_a_file_with_only_deletions_parses(tmp_path):
+def test_deletions_and_articles_each_parse_without_the_other(gz_fixture, tmp_path):
     """Streaming reads the three record kinds in one pass, so a file holding a
     DeleteCitation and no articles (a real shape for an update file) must still
     yield its deletions, and one with articles and no DeleteCitation none."""
@@ -263,6 +263,11 @@ def test_a_file_with_only_deletions_parses(tmp_path):
     assert parsed.deleted_pmids == [1002, 1003]
     assert parsed.n_failed == 0 and parsed.n_book_records == 0
 
+    # pubmed25n0001 has articles and no <DeleteCitation>.
+    articles_only = parse_file(gz_fixture("pubmed25n0001"))
+    assert articles_only.articles
+    assert articles_only.deleted_pmids == []
+
 
 def test_an_uncompressed_xml_file_parses_too(gz_fixture, tmp_path):
     """`iterparse` does not decompress by path as `etree.parse` did; both
@@ -279,3 +284,17 @@ def test_an_uncompressed_xml_file_parses_too(gz_fixture, tmp_path):
     assert [a.pubmed for a in parse_file(plain).articles] == [
         a.pubmed for a in parse_file(src).articles
     ]
+
+
+def test_iter_records_yields_direct_children_of_the_root_only():
+    """`iterparse`'s `tag=` matches at any depth, but `root.findall` (which the
+    streaming replaced) matched the root's children only. A nested match must
+    be neither yielded nor pruned: pruning its "earlier siblings" would delete
+    the start of the enclosing record before that record was read."""
+    import io
+
+    from pubmed2db.parse import iter_records
+
+    xml = b"<Set><R><a/><R><b/></R><c/></R><x/><R><d/></R></Set>"
+    seen = [[child.tag for child in el] for el in iter_records(io.BytesIO(xml), "R")]
+    assert seen == [["a", "R", "c"], ["d"]]

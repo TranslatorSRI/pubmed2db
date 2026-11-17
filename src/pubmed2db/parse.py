@@ -23,9 +23,10 @@ from __future__ import annotations
 
 import gzip
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, BinaryIO, NamedTuple
 
 from lxml import etree
 from pubmed_downloader.api import Article, _extract_article
@@ -245,6 +246,33 @@ def _pmid_version(element: etree._Element) -> int | None:
 _RECORD_TAGS = ("PubmedArticle", "PubmedBookArticle", "DeleteCitation")
 
 
+def iter_records(
+    source: str | BinaryIO, tag: str | tuple[str, ...], **iterparse_kwargs: Any
+) -> Iterator[etree._Element]:
+    """Stream the ``tag`` children of the document root, discarding each after use.
+
+    Each element is yielded complete (at its end event) and cleared once the
+    caller resumes, along with any earlier siblings still under the root
+    (whitespace, comments, elements of other tags), so the tree never holds
+    more than the current record. Both the PubMed files and NLM's serial
+    catalog are read this way, which is why it lives in one place.
+
+    Only **direct children of the root** are yielded, as ``root.findall(tag)``
+    found them. ``iterparse``'s ``tag=`` matches at any depth, and pruning
+    "earlier siblings" of a nested match would delete parts of the record
+    enclosing it before that record was read. The DTDs forbid such nesting
+    today; this keeps a future one from silently truncating records.
+    """
+    for _event, element in etree.iterparse(source, events=("end",), tag=tag, **iterparse_kwargs):
+        parent = element.getparent()
+        if parent is None or parent.getparent() is not None:
+            continue  # the root itself, or nested: left for its enclosing record
+        yield element
+        element.clear(keep_tail=True)
+        while element.getprevious() is not None:
+            del parent[0]
+
+
 def _parse_article(element: etree._Element, path: str | Path, result: ParsedFile) -> None:
     """Read one ``<PubmedArticle>`` into ``result``, counting one that is rejected."""
     try:
@@ -284,9 +312,8 @@ def _parse_article(element: etree._Element, path: str | Path, result: ParsedFile
 def parse_file(path: str | Path) -> ParsedFile:
     """Parse a (gzipped) PubMed XML file into a :class:`ParsedFile`.
 
-    The file is streamed with ``iterparse`` and each record's element is
-    discarded once read, so the process holds the parsed records but never
-    the document tree. ``etree.parse`` kept the whole tree alive while every
+    The file is streamed with :func:`iter_records`, so the process holds the
+    parsed records but never the document tree. ``etree.parse`` kept the whole tree alive while every
     record was built: ~1.2 GiB of a ~2.2 GiB per-file peak for a 30,000-article
     baseline file (#25), paid once per process today and once per *worker*
     when files are parsed in parallel (#68). Nothing needed the tree: every
@@ -300,7 +327,7 @@ def parse_file(path: str | Path) -> ParsedFile:
     result = ParsedFile()
     opener = gzip.open if str(path).endswith(".gz") else open
     with opener(path, "rb") as handle:
-        for _event, element in etree.iterparse(handle, events=("end",), tag=_RECORD_TAGS):
+        for element in iter_records(handle, _RECORD_TAGS):
             if element.tag == "PubmedArticle":
                 _parse_article(element, path, result)
             elif element.tag == "PubmedBookArticle":
@@ -313,11 +340,6 @@ def parse_file(path: str | Path) -> ParsedFile:
                 for pmid_tag in element.findall("PMID"):
                     if pmid_tag.text and pmid_tag.text.strip().isdigit():
                         result.deleted_pmids.append(int(pmid_tag.text.strip()))
-            # Drop the record, and any earlier siblings still hanging off the
-            # root, so the tree never holds more than the current record.
-            element.clear(keep_tail=True)
-            while element.getprevious() is not None:
-                del element.getparent()[0]
 
     if result.n_book_records:
         logger.warning(
