@@ -414,6 +414,11 @@ explains its part; this table is only a map.
   module they replace. A file that fails is skipped and the sync carries on,
   then `download` exits non-zero naming it; a SIGKILL skips `download_file`'s
   cleanup, so `download` and the catalog prune each sweep stale `.part` files.
+- **Don't record the HPC cluster's name or domain name.** Call it "the
+  cluster" or "the HPC cluster" in docs, code comments, tests, commit
+  messages, issues and PR descriptions, never by its name or hostname, and
+  never with its domain. The public download host in `docs/data-model/` is
+  published on purpose and is not covered by this rule.
 - **The `#SBATCH` headers in `slurm/` are the only place an allocation is
   written down**, and `slurm/README.md` deliberately does not repeat them — it
   carries the *evidence* (dated run tables, peak RSS, the shard-read breakdown)

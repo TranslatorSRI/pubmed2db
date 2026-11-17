@@ -12,7 +12,7 @@ once the release PR has merged.
 | --- | --- | --- |
 | Milestone | `pubmed2db v<version>`, due on the planned build date | "pubmed2db v1.1" |
 | Release branch | `pubmed2db-v<version>` | `pubmed2db-v1.1` |
-| Release PR | `pubmed2db v<version>`, stacked on the last feature PR; `pubmed2db v<version>: <what it changes>` once the release branch carries changes of its own (step 3) | "pubmed2db v1.1"; "pubmed2db v1.2: hold freed memory so the export finishes on ht1, and log what explains a refused allocation" |
+| Release PR | `pubmed2db v<version>`, stacked on the last feature PR; `pubmed2db v<version>: <what it changes>` once the release branch carries changes of its own (step 3) | "pubmed2db v1.1"; "pubmed2db v1.2: hold freed memory so the export finishes on the cluster, and log what explains a refused allocation" |
 | Data-build tag | the UTC date NCBI posted the last file the build loaded, its cutoff (step 4); unknown until the download, so write `2026sepNN` in anything drafted before the run | `2026sep24` |
 | Version tag and GitHub release | `v<version>.<patch>` / "pubmed2db v<version>.<patch>" | `v1.1.0` |
 

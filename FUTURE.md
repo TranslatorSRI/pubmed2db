@@ -20,7 +20,7 @@ on, and a copy left here rots into a contradiction of the code.
   - restoring an output is a **minor** data model bump, with a changelog entry
     and a golden file (AGENTS.md);
   - give its snapshot the same DuckDB settings as the JSON export's before
-    running it on ht1, whose exports were refused allocations without them
+    running it on the cluster, whose exports were refused allocations without them
     (#42);
   - measure it at corpus scale before relying on it. #29 asked for that
     measurement and was closed with the removal; it is background, not this

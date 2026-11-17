@@ -86,7 +86,7 @@ unset _export_dir_given _manifest_dir_given
 # jemalloc options for the export only, passed as DUCKDB_JE_MALLOC_CONF (the
 # name DuckDB's Linux builds read; macOS and Windows builds have no jemalloc).
 # The default turns off jemalloc's time-based release of freed memory, the
-# other half of export._HOLD_ALLOCATOR: on ht1's strict-overcommit nodes that
+# other half of export._HOLD_ALLOCATOR: on the cluster's strict-overcommit nodes that
 # release remaps memory PROT_NONE, splitting mappings, and running out of them
 # is the suspect for the two refused exports in #42. Set it empty to pass none
 # of ours: a DUCKDB_JE_MALLOC_CONF already in the environment then still
@@ -96,7 +96,7 @@ unset _export_dir_given _manifest_dir_given
 
 # Fast local scratch for DuckDB to spill into, e.g. /local/scratch/duckdb_tmp
 # on a node that has one. Empty leaves DuckDB's default (next to the database
-# file), which is what every ht1 run has actually used: the old default path
+# file), which is what every run on the cluster has used: the old default path
 # does not exist there, so 04-export.sbatch warned and fell back on every run.
 # The exports before v1.2 were not seen to spill; the 2026-11-09 one spilled
 # 9 GiB there before it failed (#42).
@@ -136,7 +136,7 @@ log_run_settings() {
 
 # The memory limits that are not --mem, any of which makes mmap fail with the
 # job well under its own --mem: DuckDB then says "(bad allocation)" rather than
-# being OOM-killed, as both #42 exports did. ht1's nodes run strict overcommit
+# being OOM-killed, as both #42 exports did. The cluster's nodes run strict overcommit
 # (vm.overcommit_memory=2), which refuses reservations past a node-wide
 # CommitLimit and changes how jemalloc returns memory; max_map_count caps a
 # process's mappings. Committed_AS here is the node's charge at job start,
