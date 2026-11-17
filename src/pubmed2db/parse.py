@@ -245,6 +245,22 @@ def _pmid_version(element: etree._Element) -> int | None:
 #: DTD is ``((PubmedArticle | PubmedBookArticle)+, DeleteCitation?)``.
 _RECORD_TAGS = ("PubmedArticle", "PubmedBookArticle", "DeleteCitation")
 
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+def open_xml(path: str | Path) -> BinaryIO:
+    """Open an XML file for reading, decompressing it if its *content* is gzip.
+
+    ``etree.parse`` let libxml2 decide, and libxml2 sniffs the bytes, so a
+    gzipped file parsed whatever its name. ``iterparse`` on a file object does
+    no decompression at all, and choosing by extension would turn a renamed
+    file (``.GZ``, a temp name in a script) into an ``XMLSyntaxError`` at byte
+    0. Reading the two magic bytes keeps the old behaviour.
+    """
+    with open(path, "rb") as probe:
+        magic = probe.read(len(_GZIP_MAGIC))
+    return gzip.open(path, "rb") if magic == _GZIP_MAGIC else open(path, "rb")
+
 
 def iter_records(
     source: str | BinaryIO, tag: str | tuple[str, ...], **iterparse_kwargs: Any
@@ -319,14 +335,12 @@ def parse_file(path: str | Path) -> ParsedFile:
     when files are parsed in parallel (#68). Nothing needed the tree: every
     extractor works on one ``<PubmedArticle>`` at a time.
 
-    ``iterparse`` does not decompress a ``.gz`` path the way ``etree.parse``
-    does, hence the explicit ``gzip.open``. The three record kinds are read in
-    one pass, in document order, so a file with a ``<DeleteCitation>`` and no
-    articles, or the reverse, parses the same as before.
+    The three record kinds are read in one pass, in document order, so a file
+    with a ``<DeleteCitation>`` and no articles, or the reverse, parses the
+    same as before.
     """
     result = ParsedFile()
-    opener = gzip.open if str(path).endswith(".gz") else open
-    with opener(path, "rb") as handle:
+    with open_xml(path) as handle:
         for element in iter_records(handle, _RECORD_TAGS):
             if element.tag == "PubmedArticle":
                 _parse_article(element, path, result)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_parses_all_articles_and_raw_dates(gz_fixture):
     from pubmed2db.parse import parse_file
@@ -269,19 +271,26 @@ def test_deletions_and_articles_each_parse_without_the_other(gz_fixture, tmp_pat
     assert articles_only.deleted_pmids == []
 
 
-def test_an_uncompressed_xml_file_parses_too(gz_fixture, tmp_path):
-    """`iterparse` does not decompress by path as `etree.parse` did; both
-    spellings go through the same opener choice."""
+@pytest.mark.parametrize("name", ["renamed.xml.GZ", "renamed.tmp", "plain.xml"])
+def test_compression_is_read_from_the_content_not_the_name(gz_fixture, tmp_path, name):
+    """`etree.parse` let libxml2 sniff for gzip, so a gzipped file parsed under
+    any name; `iterparse` on a file object decompresses nothing, and choosing by
+    extension would fail such a file at byte 0. `open_xml` sniffs the magic
+    bytes instead, so a renamed gzip file and a plain one both parse."""
     import gzip
+    import shutil
 
     from pubmed2db.parse import parse_file
 
     src = gz_fixture("pubmed25n0001")
-    plain = tmp_path / "pubmed25n0001.xml"
-    with gzip.open(src, "rb") as handle:
-        plain.write_bytes(handle.read())
+    dst = tmp_path / name
+    if name.startswith("plain"):
+        with gzip.open(src, "rb") as handle:
+            dst.write_bytes(handle.read())
+    else:
+        shutil.copyfile(src, dst)
 
-    assert [a.pubmed for a in parse_file(plain).articles] == [
+    assert [a.pubmed for a in parse_file(dst).articles] == [
         a.pubmed for a in parse_file(src).articles
     ]
 
