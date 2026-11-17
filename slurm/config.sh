@@ -83,11 +83,23 @@ unset _export_dir_given _manifest_dir_given
 : "${LOAD_MEMORY_LIMIT=48GB}"
 : "${EXPORT_MEMORY_LIMIT=160GB}"
 
+# jemalloc options for the export only, passed as DUCKDB_JE_MALLOC_CONF (the
+# name DuckDB's Linux builds read; macOS and Windows builds have no jemalloc).
+# The default turns off jemalloc's time-based release of freed memory, the
+# other half of export._HOLD_ALLOCATOR: on the cluster's strict-overcommit nodes that
+# release remaps memory PROT_NONE, splitting mappings, and running out of them
+# is the suspect for the two refused exports in #42. Set it empty to pass none
+# of ours: a DUCKDB_JE_MALLOC_CONF already in the environment then still
+# applies, and every step's log prints it. `=` rather than `:=` for the reason
+# above.
+: "${EXPORT_JE_MALLOC_CONF=dirty_decay_ms:-1,muzzy_decay_ms:-1}"
+
 # Fast local scratch for DuckDB to spill into, e.g. /local/scratch/duckdb_tmp
 # on a node that has one. Empty leaves DuckDB's default (next to the database
-# file), which is what every ht1 run has actually used: the old default path
-# does not exist there, so 04-export.sbatch warned and fell back on every run,
-# and neither export spilled anyway -- RSS stayed under the buffer-pool limit.
+# file), which is what every run on the cluster has used: the old default path
+# does not exist there, so 04-export.sbatch warned and fell back on every run.
+# The exports before v1.2 were not seen to spill; the 2026-11-09 one spilled
+# 9 GiB there before it failed (#42).
 : "${DUCKDB_TEMP_DIR=}"
 
 # uv's package cache. ~/.cache/uv is not always writable on the cluster.
@@ -116,7 +128,28 @@ log_run_settings() {
     for name in SLURM_JOB_ID SLURM_JOB_NAME SLURMD_NODENAME SLURM_MEM_PER_NODE \
                 SLURM_CPUS_PER_TASK DATA_DIR EXPORT_DIR MANIFEST_DIR SHARDS \
                 VALIDATE_SAMPLE_TOTAL LOAD_MEMORY_LIMIT EXPORT_MEMORY_LIMIT \
-                DUCKDB_TEMP_DIR UV_CACHE_DIR; do
+                EXPORT_JE_MALLOC_CONF DUCKDB_JE_MALLOC_CONF DUCKDB_TEMP_DIR UV_CACHE_DIR; do
         echo "  $name=${!name-}"
+    done
+    log_memory_limits
+}
+
+# The memory limits that are not --mem, any of which makes mmap fail with the
+# job well under its own --mem: DuckDB then says "(bad allocation)" rather than
+# being OOM-killed, as both #42 exports did. The cluster's nodes run strict overcommit
+# (vm.overcommit_memory=2), which refuses reservations past a node-wide
+# CommitLimit and changes how jemalloc returns memory; max_map_count caps a
+# process's mappings. Committed_AS here is the node's charge at job start,
+# i.e. mostly the neighbours'. Off Linux the /proc reads fail and print empty,
+# like an unset setting above.
+log_memory_limits() {
+    local name
+    echo "  ulimit_v=$(ulimit -v)"
+    for name in overcommit_memory overcommit_ratio max_map_count; do
+        echo "  vm.$name=$(cat "/proc/sys/vm/$name" 2>/dev/null)"
+    done
+    for name in MemTotal CommitLimit Committed_AS; do
+        echo "  $name=$(awk -v key="$name:" '$1 == key { printf "%.1f GiB", $2 / 1048576 }' \
+            /proc/meminfo 2>/dev/null)"
     done
 }

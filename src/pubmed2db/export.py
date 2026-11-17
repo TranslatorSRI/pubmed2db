@@ -1,12 +1,13 @@
-"""Export the latest version of every abstract to JSON or Parquet.
+"""Export the latest version of every abstract to sharded NDJSON.
 
-JSON export follows the NCATS Translator DocumentMetadataAPI field names (which
+The export follows the NCATS Translator DocumentMetadataAPI field names (which
 differ from the PubMed names used in the database) and emits empty strings, not
-nulls, for absent values. Parquet export keeps PubMed's own field names.
+nulls, for absent values.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -19,7 +20,7 @@ from pathlib import Path
 import duckdb
 
 from . import datamodel
-from .util import current_rss_gib, eta_str, fmt_duration, peak_rss_gib
+from .util import dir_size_gib, fmt_duration, memory_summary, peak_rss_gib, size_bytes
 
 #: Shard filename stem; DuckDB appends the writer-thread index and the extension.
 _SHARD_STEM = "pubmed_metadata_"
@@ -38,30 +39,6 @@ logger = logging.getLogger(__name__)
 #: A full corpus export runs ~15 min, so a minute between lines still gives a
 #: dozen-odd data points to watch RSS and the rate on.
 _PROGRESS_INTERVAL_S = 60.0
-
-#: Child tables whose rows belong to a specific article version (pmid, source_file).
-_VERSIONED_CHILDREN = (
-    "abstract_text",
-    "author",
-    "author_affiliation",
-    "mesh_heading",
-    "mesh_qualifier",
-    "publication_type",
-    "article_grant",
-    "article_id",
-    "history",
-)
-
-#: Dimension/bookkeeping tables exported as-is. ``pubmed2db_metadata`` goes with
-#: them so a Parquet export carries its data model version, like the database.
-_OTHER_TABLES = (
-    "journal",
-    "journal_issn",
-    "source_file",
-    "deleted_pmid",
-    "pipeline_run",
-    "pubmed2db_metadata",
-)
 
 #: PubMed ``ArticleId/@IdType`` -> CURIE prefix for the JSON ``identifiers``
 #: field. ``doi`` is lowercase to match Babel's ``src/prefixes.py``, so those
@@ -560,7 +537,7 @@ LEFT JOIN pts ON pts.pmid = la.pmid AND pts.source_file = la.source_file
 )
 
 
-def _remove_finished_mark(out_dir: Path, overwrite: bool, *, archivable: bool) -> None:
+def _remove_finished_mark(out_dir: Path, overwrite: bool) -> None:
     """Delete a previous export's ``metadata.json`` and ``SHA256SUMS`` before writing.
 
     ``metadata.json`` is the "export finished" mark. Left in place, an export
@@ -572,17 +549,12 @@ def _remove_finished_mark(out_dir: Path, overwrite: bool, *, archivable: bool) -
     export is about to delete that one's files, the only local copy of its
     build until ``scripts/archive_build.py`` has moved it (#24). A partial
     export, with no mark, is swept without asking. The check is here rather
-    than in ``04-export.sbatch`` so every caller gets it. ``archivable`` is
-    whether that script can take the export: it archives the validated JSON
-    build, and ``validate`` reads no Parquet, so a Parquet export is only ever
-    moved aside or overwritten.
+    than in ``04-export.sbatch`` so every caller gets it.
     """
     if not overwrite and (out_dir / METADATA_FILE).exists():
-        first = (
-            "Archive it first (scripts/archive_build.py)" if archivable else "Move it aside first"
-        )
         raise FileExistsError(
-            f"{out_dir} holds a finished export ({METADATA_FILE} exists). {first}, "
+            f"{out_dir} holds a finished export ({METADATA_FILE} exists). "
+            "Archive it first (scripts/archive_build.py), "
             "or pass --overwrite (EXPORT_OVERWRITE=1 under Slurm) to replace it."
         )
     for name in (METADATA_FILE, CHECKSUMS_FILE):
@@ -596,39 +568,31 @@ def _shard_paths(out_dir: Path) -> list[Path]:
     )
 
 
-def _shard_bytes(paths: list[Path]) -> int:
-    """Total size of the shards that still exist, skipping any that vanish.
+def _log_writing_progress(out_dir: Path, start: float, temp_dir: str | None = None) -> None:
+    """Log how much shard output exists so far, memory, and DuckDB's spill size.
 
-    DuckDB is writing this directory while we read it, so a path can disappear
-    between the glob and the stat. That is a missing data point, not a reason to
-    take the heartbeat down.
+    RSS alone looked healthy on the run that failed (#42): the node refused a
+    reservation at 68 GiB RSS under strict overcommit, so VSZ and the node's
+    commit charge are logged beside it, and the spill directory's size shows
+    when the buffer pool is full enough to be writing to disk.
     """
-    total = 0
-    for path in paths:
-        try:
-            total += path.stat().st_size
-        except OSError:
-            continue
-    return total
-
-
-def _log_writing_progress(out_dir: Path, start: float) -> None:
-    """Log how much shard output exists so far, and current RSS."""
     paths = _shard_paths(out_dir)
-    written = _shard_bytes(paths)
+    written = size_bytes(paths)
     elapsed = time.monotonic() - start
-    current = current_rss_gib()
     logger.info(
-        "writing: %.1f GiB across %d shard(s) · %.0f MiB/s · elapsed %s · RSS %s",
+        "writing: %.1f GiB across %d shard(s) · %.0f MiB/s · elapsed %s · %s · spill %.1f GiB",
         written / 1024**3,
         len(paths),
         written / 1024**2 / elapsed if elapsed else 0.0,
         fmt_duration(elapsed),
-        "n/a" if current is None else f"{current:.1f} GiB",
+        memory_summary(),
+        dir_size_gib(temp_dir),
     )
 
 
-def _log_while_writing(out_dir: Path, stop: threading.Event, start: float) -> None:
+def _log_while_writing(
+    out_dir: Path, stop: threading.Event, start: float, temp_dir: str | None = None
+) -> None:
     """Log progress every ``_PROGRESS_INTERVAL_S`` until ``stop`` is set.
 
     The whole export is now a single ``COPY``, so there are no batches to log
@@ -636,7 +600,7 @@ def _log_while_writing(out_dir: Path, stop: threading.Event, start: float) -> No
     exactly what left the last run's ``--mem`` a guess. DuckDB releases the GIL
     while the statement runs, so this thread does get scheduled.
 
-    Bytes and RSS, no ETA — the total output size is not known until it has been
+    Bytes and memory, no ETA — the total output size is not known until it has been
     written. If a run ever needs one, split the COPY into PMID ranges and count
     rows per range.
 
@@ -647,9 +611,114 @@ def _log_while_writing(out_dir: Path, stop: threading.Event, start: float) -> No
     """
     while not stop.wait(_PROGRESS_INTERVAL_S):
         try:
-            _log_writing_progress(out_dir, start)
+            _log_writing_progress(out_dir, start, temp_dir)
         except Exception as exc:  # noqa: BLE001 - see the docstring
             logger.warning("could not log export progress: %s", exc)
+
+
+#: Settings for the export's two corpus-sized statements. Insertion order is
+#: free to drop: the query has no ORDER BY, each writer thread already owns its
+#: own file, and nothing downstream reads the order (see _LATEST_METADATA_SQL).
+#: Keeping it makes DuckDB buffer rows to emit them in scan order, and its own
+#: out-of-memory message suggests turning it off. What it saves at corpus scale
+#: is unmeasured: it was on in both the export refused on 2026-11-09 and the
+#: one that finished, which differed only in the hold below (#42).
+_UNORDERED = {"preserve_insertion_order": False}
+
+#: Stop DuckDB telling jemalloc to hand memory back to the kernel mid-export
+#: (#42). By default it flushes after any task that peaked above 128 MiB and
+#: after any single deallocation above 512 MiB, both of which the snapshot's
+#: hash tables and a spill trigger. On the cluster's nodes (vm.overcommit_memory=2)
+#: jemalloc returns memory by remapping it PROT_NONE, which splits mappings,
+#: and the suspect for two exports refused by mmap at ~68 GiB RSS is the
+#: process running out of them (vm.max_map_count). Held instead, the freed
+#: memory stays mapped for jemalloc to reuse. 04-export.sbatch turns off
+#: jemalloc's own time-based release to match (EXPORT_JE_MALLOC_CONF). With
+#: both, the 2026-11-09 export finished, but RSS plateaued ~55 GiB above
+#: memory_limit, which does not count held memory: --mem has to cover it. The
+#: suspect is still unconfirmed, and #80 plans the runs that would settle it;
+#: docs/Memory.md, "A refused allocation", has the figures.
+_HOLD_ALLOCATOR = {
+    "allocator_flush_threshold": "1TB",
+    "allocator_bulk_deallocation_flush_threshold": "1TB",
+}
+
+#: Everything the snapshot and the COPY run under.
+_HEAVY_STATEMENT_SETTINGS = {**_UNORDERED, **_HOLD_ALLOCATOR}
+
+
+def _sql_setting_value(value: bool | int | str) -> str:
+    """Render a setting's value for ``SET``: booleans lower-case, strings quoted."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+@contextlib.contextmanager
+def _duckdb_settings(con: duckdb.DuckDBPyConnection, **values: bool | int | str):
+    """``SET`` each setting for the duration of the block, then restore it.
+
+    Restores on an error too, so a failed export does not leave the connection
+    single-threaded or unordered for whatever the caller runs next. Every
+    setting is attempted even if one fails to restore, which after a refused
+    allocation it can. A failed restore is logged and, when the block itself
+    raised, does not replace that error: the caller is owed the out-of-memory
+    error, not whichever ``SET`` tripped over it.
+    """
+    names = list(values)
+    previous = con.execute(
+        "SELECT " + ", ".join(f"current_setting('{name}')" for name in names)
+    ).fetchone()
+    succeeded = False
+    try:
+        for name, value in values.items():
+            con.execute(f"SET {name} = {_sql_setting_value(value)}")
+        yield
+        succeeded = True
+    finally:
+        failed = None
+        for name, value in zip(names, previous, strict=True):
+            try:
+                con.execute(f"SET {name} = {_sql_setting_value(value)}")
+            except duckdb.Error as exc:
+                logger.warning("could not restore %s to %r: %s", name, value, exc)
+                failed = failed or exc
+        if succeeded and failed is not None:
+            raise failed
+
+
+@contextlib.contextmanager
+def _logging_out_of_memory(temp_dir: str | None):
+    """Log the memory figures when DuckDB runs out, then let the error propagate.
+
+    The heartbeat samples once a minute, so without this the last figures
+    before a failure can be a minute stale (#42). Nest it *inside*
+    ``_duckdb_settings``, so it logs before the settings are restored rather
+    than after. These are read after DuckDB
+    has unwound the statement, so its spill files may already be gone and RSS
+    may have fallen; VSZ, the node's commit charge and the mapping count fall
+    less readily, and are the figures that explain a ``(bad allocation)``.
+    """
+    try:
+        yield
+    except duckdb.OutOfMemoryException as exc:
+        refused = "bad allocation" in str(exc)
+        logger.error(
+            "DuckDB ran out of memory: %s · spill %.1f GiB · peak RSS %.1f GiB%s",
+            memory_summary(),
+            dir_size_gib(temp_dir),
+            peak_rss_gib(),
+            (
+                ". '(bad allocation)' is mmap failing, not DuckDB's memory_limit: "
+                "compare the node commit with its limit and the maps with "
+                "vm.max_map_count (docs/Memory.md, 'A refused allocation')"
+            )
+            if refused
+            else "",
+        )
+        raise
 
 
 def export_json(
@@ -683,20 +752,25 @@ def export_json(
         raise ValueError("shards must be >= 1")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    _remove_finished_mark(out_dir, overwrite, archivable=True)
+    _remove_finished_mark(out_dir, overwrite)
 
-    # Clock the whole export, not just the COPY. Materializing the snapshot is a
-    # window function over the entire `article` table -- the reason export memory
-    # scales with the database rather than the input file -- and with the sort
-    # gone it is plausibly the dominant phase. slurm/README.md tells operators to
-    # size --time from the line this feeds, so it must not start after the
-    # expensive part.
+    # Clock the whole export, not just the COPY: slurm/README.md tells operators
+    # to size --time from the line this feeds. The snapshot below is cheap (17s
+    # of a 15m full-corpus run on the cluster, 2026-11-09); the COPY's join and
+    # string_agg are the expensive part.
     start = time.monotonic()
+
+    # Read *before* the heartbeat starts: the thread is non-daemon and only
+    # stops when `stop` is set in the finally below, so a statement that raises
+    # between start() and the try would hang the interpreter instead of
+    # reporting the error.
+    temp_dir = con.execute("SELECT current_setting('temp_directory')").fetchone()[0]
 
     # Materialize the latest-version snapshot once: `latest_article` is a window
     # function over the full `article` table, and both the count and the export
     # query below would otherwise recompute it.
-    con.execute("CREATE OR REPLACE TEMP TABLE _latest_snapshot AS SELECT * FROM latest_article")
+    with _duckdb_settings(con, **_HEAVY_STATEMENT_SETTINGS), _logging_out_of_memory(temp_dir):
+        con.execute("CREATE OR REPLACE TEMP TABLE _latest_snapshot AS SELECT * FROM latest_article")
     total = con.execute("SELECT count(*) FROM _latest_snapshot").fetchone()[0]
     logger.info(
         "starting JSON export: %d document(s) to %s in %s%s",
@@ -727,36 +801,29 @@ def export_json(
     ]
     if gzip_output:
         options.append("COMPRESSION 'gzip'")
-    # Escape single quotes so a path containing one doesn't break out of the
-    # quoted string literal (same reason as _copy_parquet).
+    # Escape single quotes so a path containing one (an apostrophe in a
+    # directory name) doesn't break out of the quoted string literal.
     escaped_dir = out_dir.as_posix().replace("'", "''")
     copy_sql = f"COPY ({_LATEST_METADATA_SQL}) TO '{escaped_dir}' ({', '.join(options)})"
 
-    # `shards` is the thread cap for this statement only: one file per writer
-    # thread is what PER_THREAD_OUTPUT gives us, so asking for N shards is
-    # asking N threads to write. Restore whatever the connection had after.
-    #
-    # Read *before* the heartbeat starts: the thread is non-daemon and only
-    # stops when `stop` is set in the finally below, so a statement that raises
-    # between start() and the try would hang the interpreter instead of
-    # reporting the error.
-    previous_threads = con.execute("SELECT current_setting('threads')").fetchone()[0]
-
     stop = threading.Event()
-    heartbeat = threading.Thread(target=_log_while_writing, args=(out_dir, stop, start))
+    heartbeat = threading.Thread(target=_log_while_writing, args=(out_dir, stop, start, temp_dir))
     heartbeat.start()
+    # `shards` is the thread cap for the COPY only: one file per writer thread
+    # is what PER_THREAD_OUTPUT gives us, so asking for N shards is asking N
+    # threads to write.
+    copy_settings = dict(_HEAVY_STATEMENT_SETTINGS)
+    if shards is not None:
+        copy_settings["threads"] = int(shards)
     try:
-        if shards is not None:
-            con.execute(f"SET threads = {int(shards)}")
-        con.execute(copy_sql)
+        with _duckdb_settings(con, **copy_settings), _logging_out_of_memory(temp_dir):
+            con.execute(copy_sql)
     finally:
         stop.set()
         heartbeat.join()
-        if shards is not None:
-            con.execute(f"SET threads = {int(previous_threads)}")
 
     paths = _shard_paths(out_dir)
-    write_export_metadata(con, out_dir, paths, fmt="ndjson", records=total)
+    write_export_metadata(con, out_dir, paths, records=total)
     logger.info(
         "exported %d documents to %d shard(s) in %s in %s (peak RSS %.1f GiB)",
         total,
@@ -779,18 +846,15 @@ def write_export_metadata(
     out_dir: Path,
     files: list[Path],
     *,
-    fmt: str,
     records: int,
-    article_versions: int | None = None,
 ) -> Path:
     """Write ``metadata.json`` and ``SHA256SUMS``: the export's version, provenance and checksums.
 
     An export travels without its database, so this is where a consumer learns
     which data model it follows (``data_model_version``; check the major), what
     corpus it holds (``corpus``: the cutoff file and when NCBI posted it, #57),
-    how many current articles it holds (``records``, the same in every format;
-    a history export adds ``article_versions``, every row of
-    ``article.parquet``), and each file's size and SHA-256. ``validate``
+    how many current articles it holds (``records``), and each file's size and
+    SHA-256. ``validate``
     checks the directory against it. ``SHA256SUMS`` repeats the hashes for
     ``sha256sum -c``. Both are written last, after every file they describe,
     and ``metadata.json`` after ``SHA256SUMS``, so its presence means the export
@@ -812,9 +876,8 @@ def write_export_metadata(
     )
     content = {
         "data_model_version": datamodel.DATA_MODEL_VERSION,
-        "format": fmt,
+        "format": "ndjson",
         "records": records,
-        **({} if article_versions is None else {"article_versions": article_versions}),
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "generated_by": datamodel.code_version(),
         "database": datamodel.metadata(con),
@@ -827,115 +890,3 @@ def write_export_metadata(
     path = out_dir / METADATA_FILE
     path.write_text(json.dumps(content, indent=2) + "\n")
     return path
-
-
-def _copy_parquet(con: duckdb.DuckDBPyConnection, query: str, path: Path) -> None:
-    # Escape single quotes so a path containing one (e.g. an apostrophe in a
-    # directory name) doesn't break out of the quoted string literal.
-    escaped_path = path.as_posix().replace("'", "''")
-    con.execute(f"COPY ({query}) TO '{escaped_path}' (FORMAT PARQUET)")
-
-
-def export_parquet(
-    con: duckdb.DuckDBPyConnection,
-    out_dir: str | Path,
-    *,
-    latest: bool = True,
-    overwrite: bool = False,
-) -> list[Path]:
-    """Export the database to one Parquet file per table.
-
-    With ``latest=True`` (default) only the latest non-deleted version of each
-    article and its children are exported; with ``latest=False`` the full
-    version history is exported. Returns the list of files written.
-    """
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    _remove_finished_mark(out_dir, overwrite, archivable=False)
-    written: list[Path] = []
-
-    tables = 1 + len(_VERSIONED_CHILDREN) + len(_OTHER_TABLES)
-    logger.info(
-        "starting Parquet export: %d table(s) (%s) to %s",
-        tables,
-        "latest version" if latest else "full history",
-        out_dir,
-    )
-    run_start = time.monotonic()
-
-    # A re-export overwrites its own fixed set of file names, so the only file
-    # that can survive is one whose table left the schema — `reference_citation`
-    # is exactly that case. Left in place it reads as part of this export to
-    # anything globbing the directory. Same sweep the JSON export does.
-    keep = {f"{t}.parquet" for t in ("article", *_VERSIONED_CHILDREN, *_OTHER_TABLES)}
-    stale = [path for path in out_dir.glob("*.parquet") if path.name not in keep]
-    for path in stale:
-        path.unlink()
-    if stale:
-        logger.info(
-            "removed %d Parquet file(s) for table(s) no longer in the schema: %s",
-            len(stale),
-            ", ".join(sorted(path.stem for path in stale)),
-        )
-
-    def _progress(done: int) -> None:
-        remaining = tables - done
-        elapsed = time.monotonic() - run_start
-        eta = eta_str(elapsed, done, remaining)
-        logger.info("progress: %d/%d tables, ~%s remaining", done, tables, eta)
-
-    if latest:
-        # Materialize once: `latest_article` is a window function over the full
-        # `article` table, and it would otherwise be recomputed for the article
-        # export itself plus once per child table's EXISTS below.
-        con.execute("CREATE OR REPLACE TEMP TABLE _latest_snapshot AS SELECT * FROM latest_article")
-        article_query = "SELECT * FROM _latest_snapshot"
-    else:
-        article_query = "SELECT * FROM article"
-    article_path = out_dir / "article.parquet"
-    _copy_parquet(con, article_query, article_path)
-    written.append(article_path)
-    _progress(len(written))
-
-    for table in _VERSIONED_CHILDREN:
-        if latest:
-            query = (
-                f"SELECT c.* FROM {table} c "
-                "WHERE EXISTS (SELECT 1 FROM _latest_snapshot la "
-                "WHERE la.pmid = c.pmid AND la.source_file = c.source_file)"
-            )
-        else:
-            query = f"SELECT * FROM {table}"
-        path = out_dir / f"{table}.parquet"
-        _copy_parquet(con, query, path)
-        written.append(path)
-        _progress(len(written))
-
-    # Dimension / bookkeeping tables are exported in full regardless of `latest`.
-    for table in _OTHER_TABLES:
-        path = out_dir / f"{table}.parquet"
-        _copy_parquet(con, f"SELECT * FROM {table}", path)
-        written.append(path)
-        _progress(len(written))
-
-    # `records` counts current articles in every format, so two exports of one
-    # build agree on it; the history export adds its version count separately.
-    records = con.execute(
-        "SELECT count(*) FROM _latest_snapshot" if latest else "SELECT count(*) FROM latest_article"
-    ).fetchone()[0]
-    article_versions = None if latest else con.execute("SELECT count(*) FROM article").fetchone()[0]
-    write_export_metadata(
-        con,
-        out_dir,
-        written,
-        fmt="parquet-latest" if latest else "parquet-all",
-        records=records,
-        article_versions=article_versions,
-    )
-    logger.info(
-        "exported %d Parquet file(s) to %s (peak RSS %.1f GiB)",
-        len(written),
-        out_dir,
-        peak_rss_gib(),
-    )
-    return written

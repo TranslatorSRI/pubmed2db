@@ -49,8 +49,8 @@ def connect(
 
     ``threads`` caps DuckDB's thread pool. It is rarely needed: DuckDB reads the
     Slurm cgroup's CPU quota and already sizes the pool from ``--cpus-per-task``
-    (measured on duckdb 1.5.4 — 2 threads under ``--cpus-per-task=2`` on a
-    64-core node), falling back to the core count off a cluster. Pass it to
+    (measured on duckdb 1.5.4 and 1.5.5 — 2 threads under ``--cpus-per-task=2``
+    on a 64-core node), falling back to the core count off a cluster. Pass it to
     leave headroom on a busy node, not to rescue an oversubscribed allocation.
     ``temp_directory`` is where DuckDB spills when a query exceeds its memory
     budget — worth pointing at local scratch for `export`.
