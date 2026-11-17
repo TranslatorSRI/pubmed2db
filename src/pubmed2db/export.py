@@ -637,7 +637,7 @@ _UNORDERED = {"preserve_insertion_order": False}
 #: both, the 2026-11-09 export finished, but RSS plateaued ~55 GiB above
 #: memory_limit, which does not count held memory: --mem has to cover it. The
 #: suspect is still unconfirmed, and #80 plans the runs that would settle it;
-#: slurm/README.md, "A refused allocation", has the figures.
+#: docs/Memory.md, "A refused allocation", has the figures.
 _HOLD_ALLOCATOR = {
     "allocator_flush_threshold": "1TB",
     "allocator_bulk_deallocation_flush_threshold": "1TB",
@@ -713,7 +713,7 @@ def _logging_out_of_memory(temp_dir: str | None):
             (
                 ". '(bad allocation)' is mmap failing, not DuckDB's memory_limit: "
                 "compare the node commit with its limit and the maps with "
-                "vm.max_map_count (slurm/README.md, 'A refused allocation')"
+                "vm.max_map_count (docs/Memory.md, 'A refused allocation')"
             )
             if refused
             else "",

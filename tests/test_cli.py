@@ -430,7 +430,7 @@ def test_every_command_logs_the_duckdb_settings_it_runs_with(tmp_path, caplog):
     """What DuckDB actually runs with, not what was asked for.
 
     With no limit passed these are what it derived from the Slurm cgroup, so a
-    cluster log records the probe AGENTS.md asks to keep re-taking; with one
+    cluster log records the probe docs/Memory.md asks to keep re-taking; with one
     passed, they confirm it took.
     """
     import logging
