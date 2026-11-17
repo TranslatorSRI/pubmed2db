@@ -323,3 +323,81 @@ def test_build_name_is_the_utc_posting_date_of_the_cutoff():
     # Late enough in the US evening to be the next day in UTC: UTC decides.
     assert build_name(datetime(2026, 9, 24, 21, 0, tzinfo=eastern)) == "2026sep25"
     assert build_name(None) is None
+
+
+def test_load_logs_phase_timings(con, gz_fixture, caplog):
+    """Each phase is timed on its own, because the per-file total grows with
+    the database (#68) and the total cannot say which phase is growing."""
+    import logging
+    import time
+
+    from pubmed2db.load import _VERSIONED_TABLES, LoadTiming, load_file, load_parsed
+    from pubmed2db.parse import parse_file
+
+    with caplog.at_level(logging.DEBUG, logger="pubmed2db.load"):
+        load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
+
+    messages = [r.getMessage() for r in caplog.records]
+    loaded = next(m for m in messages if m.startswith("loaded "))
+    for phase in ("parse ", "build ", "delete ", "insert ", "commit "):
+        assert phase in loaded, loaded
+    timing = next(m for m in messages if m.startswith("timing "))
+    for phase in ("delete ", "build ", "insert ", "registry ", "commit "):
+        assert phase in timing, timing
+
+    # A caller-supplied record is filled in, phase by phase. Whether the phases
+    # cover the whole load is not asserted as a share of the wall time: on a
+    # load of a few milliseconds, a GC pause or a busy CI runner in the untimed
+    # glue would fail any ratio at random.
+    record = LoadTiming()
+    parsed = parse_file(gz_fixture("pubmed25n0001"))
+    started = time.perf_counter()
+    load_parsed(con, parsed, "pubmed25n0001.xml.gz", kind="baseline", timing=record)
+    wall = time.perf_counter() - started
+    for phase in ("delete", "build", "registry", "commit"):
+        assert getattr(record, phase) > 0, phase
+    stored = {
+        table: con.execute(
+            f"SELECT count(*) FROM {table} WHERE source_file = 'pubmed25n0001.xml.gz'"
+        ).fetchone()[0]
+        for table in _VERSIONED_TABLES
+    }
+    assert set(record.inserts) == {table for table, n in stored.items() if n}
+    assert all(seconds > 0 for seconds in record.inserts.values())
+    assert record.n_rows == sum(stored.values())
+    assert record.total <= wall
+
+
+def test_rollback_after_a_failed_commit_keeps_the_commit_error():
+    """A failed COMMIT leaves DuckDB with no transaction, so a bare ROLLBACK in
+    the ``except`` raised "no transaction is active" in place of the COMMIT's
+    own error -- the one the load's phase timing exists to diagnose."""
+    import duckdb
+    import pytest
+
+    from pubmed2db.load import rollback
+
+    db = duckdb.connect(":memory:")
+    db.execute("CREATE TABLE t (k INTEGER PRIMARY KEY)")
+    first, second = db.cursor(), db.cursor()
+    first.execute("BEGIN TRANSACTION")
+    second.execute("BEGIN TRANSACTION")
+    first.execute("INSERT INTO t VALUES (1)")
+    second.execute("INSERT INTO t VALUES (1)")  # the conflict surfaces at COMMIT
+    first.execute("COMMIT")
+
+    def commit_second():
+        try:
+            second.execute("COMMIT")
+        except Exception:
+            rollback(second)
+            raise
+
+    with pytest.raises(duckdb.Error, match="Failed to commit"):
+        commit_second()
+
+    # And within a live transaction it still rolls back.
+    first.execute("BEGIN TRANSACTION")
+    first.execute("INSERT INTO t VALUES (2)")
+    rollback(first)
+    assert first.execute("SELECT count(*) FROM t").fetchone()[0] == 1
