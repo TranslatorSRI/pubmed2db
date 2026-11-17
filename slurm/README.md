@@ -340,7 +340,7 @@ DuckDB's limit; #42). `export._HOLD_ALLOCATOR` and `EXPORT_JE_MALLOC_CONF`
 keep what DuckDB frees, which got job 155264 through, and that held memory
 sits outside `memory_limit`: lower `EXPORT_MEMORY_LIMIT` before lowering
 `--mem`. The failures, the evidence and what would let the hold go (#80) are
-in [`docs/Memory.md` → "A refused allocation"](../docs/Memory.md#a-refused-allocation-bad-allocation-on-ht1).
+in [`docs/Memory.md` → "A refused allocation"](../docs/Memory.md#a-refused-allocation-bad-allocation).
 
 For the record, the 2026-08-05 run on the cluster was submitted as `srun --mem=256G
 --cpus-per-task=8 --time=02:00:00` (12:14:50 started, 12:32:56 finished) — kept

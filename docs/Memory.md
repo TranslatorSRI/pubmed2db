@@ -1,6 +1,7 @@
 # Memory on the cluster
 
-How pubmed2db's memory behaves under Slurm on `ht1`, what has been measured,
+How pubmed2db's memory behaves under Slurm on the cluster, what has been
+measured,
 and how to tell one memory failure from another. It applies to every step.
 What each step should ask for is in [`slurm/README.md`](../slurm/README.md),
 with its dated run tables. The `#SBATCH` headers in `slurm/` are the only place
@@ -9,7 +10,7 @@ an allocation is written down.
 - [What DuckDB takes from the allocation](#what-duckdb-takes-from-the-allocation)
 - [Reading the memory figures](#reading-the-memory-figures)
 - [Three kinds of memory failure](#three-kinds-of-memory-failure)
-- [A refused allocation: `(bad allocation)` on `ht1`](#a-refused-allocation-bad-allocation-on-ht1)
+- [A refused allocation: `(bad allocation)`](#a-refused-allocation-bad-allocation)
 
 ## What DuckDB takes from the allocation
 
@@ -20,8 +21,8 @@ disproves them. Measured on duckdb 1.5.4, `memory_limit` is ~76% of `--mem`
 (6.1 GiB under `--mem=8G`, 47.3 GiB under `--mem=62G`; ~80% of physical RAM
 off a cluster), and `threads` is `--cpus-per-task` (2 under
 `--cpus-per-task=2` on a 64-core node, read from the cgroup's CPU quota, not
-an affinity mask, which showed all 64). Re-taken on 1.5.5 on `ht1`
-(2026-10-21): 6.1 GiB and 2 under `--mem=8G --cpus-per-task=2`, unchanged.
+an affinity mask, which showed all 64). Re-taken on 1.5.5 on the
+cluster (2026-10-21): 6.1 GiB and 2 under `--mem=8G --cpus-per-task=2`, unchanged.
 
 These are measurements, so re-take them after a DuckDB upgrade rather than
 assume they carried over. Every Slurm step's log has a `DuckDB <version>:
@@ -40,7 +41,7 @@ srun --mem=8G --cpus-per-task=2 uv run python -c "import duckdb; c = duckdb.conn
 the process shares the same cgroup and counts against the same `--mem`: the
 loader's lxml tree, its parsed records and its Arrow batch, and, since #42, the
 freed memory the export holds instead of returning (see
-[below](#a-refused-allocation-bad-allocation-on-ht1)). A default that claims
+[below](#a-refused-allocation-bad-allocation)). A default that claims
 three quarters of the allocation leaves the rest of the process a quarter. So
 the buffer pool is not what overruns an allocation; what its limit does not
 cover is. That is why `config.sh` caps DuckDB below `--mem` for the load and
@@ -63,8 +64,8 @@ the export, to buy back headroom rather than to rescue DuckDB from itself.
   `ulimit -v`, `vm.overcommit_memory` and its ratio, `vm.max_map_count`, and
   the node's `CommitLimit` and `Committed_AS` at job start (`config.sh`'s
   `log_memory_limits`).
-- **The step log is the only record of a run's memory on `ht1`**: `sacct`
-  gathers none there
+- **The step log is the only record of a run's memory on the cluster**:
+  `sacct` gathers none there
   ([`slurm/README.md` → "Monitoring memory and runtime"](../slurm/README.md#monitoring-memory-and-runtime)).
 
 ## Three kinds of memory failure
@@ -79,7 +80,7 @@ They look different in the log, and only one of them is about `--mem`:
 - **`(bad allocation)`** means `malloc`/`mmap` itself returned nothing: the
   kernel refused the request, whatever DuckDB's limit and the cgroup allowed.
 
-## A refused allocation: `(bad allocation)` on `ht1`
+## A refused allocation: `(bad allocation)`
 
 Two exports from the v1.2 branch failed with DuckDB's `Out of Memory Error:
 Failed to allocate block of … bytes (bad allocation)`, and neither was
