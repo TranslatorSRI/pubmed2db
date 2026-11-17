@@ -8,6 +8,7 @@ first — which is also how an MD5 change triggers a refresh.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -173,6 +174,19 @@ def delete_file_rows(con: duckdb.DuckDBPyConnection, source_file: str) -> None:
         con.execute(f"DELETE FROM {table} WHERE source_file = ?", [source_file])
 
 
+def rollback(con: duckdb.DuckDBPyConnection) -> None:
+    """Roll back the open transaction, for an ``except`` block that re-raises.
+
+    A COMMIT that fails (a constraint checked at commit, or the checkpoint it
+    runs) leaves DuckDB with no transaction, and ``ROLLBACK`` then raises
+    "cannot rollback - no transaction is active" -- which, raised from the
+    ``except``, would replace the COMMIT's own error. So its failure is
+    swallowed: the caller's ``raise`` carries the error that matters.
+    """
+    with contextlib.suppress(duckdb.Error):
+        con.execute("ROLLBACK")
+
+
 @dataclass
 class LoadTiming:
     """Where one file's load spent its time, in seconds, phase by phase.
@@ -206,7 +220,7 @@ class LoadTiming:
         return self.delete + self.build + self.insert + self.registry + self.commit
 
     def describe(self) -> str:
-        """One line, the slowest tables first, for the DEBUG log and the benchmark."""
+        """One line, the slowest tables first, for the DEBUG log."""
         slowest = sorted(self.inserts.items(), key=lambda kv: kv[1], reverse=True)[:3]
         tables = ", ".join(f"{table} {seconds:.2f}" for table, seconds in slowest)
         return (
@@ -231,7 +245,7 @@ def _load_parsed_rows(
     costs -- while `load_parsed` keeps the one-file-one-transaction rule
     `load_files` relies on for its failure semantics.
     """
-    year_yy, file_number, order_key = parse_file_name(source_file)
+    *_, order_key = parse_file_name(source_file)
 
     started = time.perf_counter()
     delete_file_rows(con, source_file)
@@ -252,6 +266,13 @@ def _load_parsed_rows(
             rows_by_table[table].extend(table_rows)
     for pmid in parsed.deleted_pmids:
         rows_by_table["deleted_pmid"].append((pmid, source_file, order_key))
+    # Every table's Arrow copy is built before the first insert, so the build
+    # is timed in one piece. That holds no more memory than building each just
+    # before its insert, which looks leaner and is not: DuckDB keeps an Arrow
+    # table registered inside a transaction alive until the transaction ends,
+    # `unregister` and `del` notwithstanding, so one at a time holds them all by
+    # the last insert anyway (DuckDB 1.5.5, measured 2026-11-17 on a
+    # 30,000-article file: 137 MiB of Arrow at the last insert either way).
     batches = {table: _arrow_batch(rows) for table, rows in rows_by_table.items() if rows}
     timing.build += time.perf_counter() - started
 
@@ -262,7 +283,15 @@ def _load_parsed_rows(
         timing.n_rows += batch.num_rows
 
     started = time.perf_counter()
-    _upsert_source_file(con, source_file, kind, year_yy, file_number, order_key, deduped, parsed)
+    _upsert_source_file(
+        con,
+        source_file,
+        kind,
+        n_articles=len(deduped),
+        n_deletions=len(parsed.deleted_pmids),
+        n_failed=parsed.n_failed,
+        n_book_records=parsed.n_book_records,
+    )
     timing.registry += time.perf_counter() - started
     return len(deduped)
 
@@ -271,13 +300,14 @@ def _upsert_source_file(
     con: duckdb.DuckDBPyConnection,
     source_file: str,
     kind: str,
-    year_yy: int,
-    file_number: int,
-    order_key: int,
-    deduped: dict[int, ParsedArticle],
-    parsed: ParsedFile,
+    *,
+    n_articles: int,
+    n_deletions: int,
+    n_failed: int,
+    n_book_records: int,
 ) -> None:
     """Record the file as processed, with its counts, in the ``source_file`` registry."""
+    year_yy, file_number, order_key = parse_file_name(source_file)
     con.execute(
         """
             INSERT INTO source_file
@@ -307,10 +337,10 @@ def _upsert_source_file(
             year_yy,
             file_number,
             order_key,
-            len(deduped),
-            len(parsed.deleted_pmids),
-            parsed.n_failed,
-            parsed.n_book_records,
+            n_articles,
+            n_deletions,
+            n_failed,
+            n_book_records,
         ],
     )
 
@@ -338,7 +368,7 @@ def load_parsed(
         con.execute("COMMIT")
         timing.commit += time.perf_counter() - started
     except Exception:
-        con.execute("ROLLBACK")
+        rollback(con)
         raise
     logger.debug("timing %s: %s", source_file, timing.describe())
     return n_articles
@@ -897,6 +927,6 @@ def load_journals(con: duckdb.DuckDBPyConnection) -> int:
         record_run(con, "journals")
         con.execute("COMMIT")
     except Exception:
-        con.execute("ROLLBACK")
+        rollback(con)
         raise
     return len(journals)

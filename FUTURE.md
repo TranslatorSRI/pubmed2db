@@ -9,6 +9,25 @@ on, and a copy left here rots into a contradiction of the code.
 
 ## Integrations / goals
 
+- **A Parquet export, if someone needs one.** `export --format parquet` wrote
+  one Parquet file per table, current versions by default or the whole history
+  with `--all`, with `metadata.json` beside it. It shipped in `v1.0` and
+  `v1.1.0`, but no data build ran it (each ran `--format json`), it had no
+  consumers and had never been run at corpus scale, so it was removed in
+  `v1.2.0` (#81). To bring it back, revert #81's two commits: the code and
+  tests (e5a9a32, the newest hit of `git log -S export_parquet -- src`), then
+  the docs (2db5199, the commit after it). Then:
+  - restoring an output is a **minor** data model bump, with a changelog entry
+    and a golden file (AGENTS.md);
+  - give its snapshot the same DuckDB settings as the JSON export's before
+    running it on the cluster, whose exports were refused allocations without them
+    (#42);
+  - measure it at corpus scale before relying on it. #29 asked for that
+    measurement and was closed with the removal; it is background, not this
+    entry's issue, so its closing is no reason to delete the entry.
+  Until then, DuckDB writes any table out directly:
+  `COPY latest_article TO 'article.parquet' (FORMAT PARQUET)` against the
+  database.
 - **Replace Babel's PubMed downloader.** Wire this tool into
   `NCATSTranslator/Babel` `src/createcompendia/publications.py` so Babel reuses
   these downloads/exports instead of its own wget+TSV pipeline. Sharing the
@@ -137,17 +156,6 @@ Still open:
 - **`latest_article` view** runs a window over the entire `article` table on every
   read. At full scale, consider an index on `article(pmid, file_order_key)` or
   materializing the latest set into a table before export.
-- **JSON export throughput — done.** The export was a single Python loop calling
-  `json.dumps` per row behind a full `ORDER BY la.pmid`; the sort delayed the
-  first written row by ~3 minutes of an 18-minute run and was the job's
-  peak-memory event, and the loop then serialized 40.9M documents on one core
-  while the other seven idled. DuckDB now writes the NDJSON itself
-  (`COPY ... FORMAT JSON`, one file per writer thread) with no sort: 3x faster
-  end-to-end on a 2M-document benchmark (112.9s → 35.5s), byte-identical record
-  sets. Closes issue #8. At corpus scale: 12–13 minutes against 18–23 before,
-  and the peak now follows the DuckDB memory limit (153.3 GiB at 160GB, 191.9
-  at 200GB) rather than sitting at ~201 GiB; whether `--mem=256G` itself can
-  come down is #42.
 - **No indexes** are created on the big per-version tables yet (kept lean for bulk
   load). Add them if interactive querying of the DB becomes a use case.
 

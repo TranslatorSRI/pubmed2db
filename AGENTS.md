@@ -2,15 +2,18 @@
 
 pubmed2db downloads PubMed abstracts, loads them into a DuckDB database keeping
 **full version history**, and exports the **latest** version of every abstract to
-JSON (DocumentMetadataAPI field names, for Node Annotator / ElasticSearch) and to
-Parquet (PubMed field names, for downloadable queries).
+JSON (DocumentMetadataAPI field names, for Node Annotator / ElasticSearch). There
+is no Parquet export: v1.0 and v1.1.0 had one that no build ran, it was removed
+in v1.2, and FUTURE.md says how to bring it back.
 
 Everything a user needs — commands, options, operational notes, the year-boundary
 rebuild — is in [`README.md`](./README.md); deferred work and known limitations
 are in [`FUTURE.md`](./FUTURE.md); how a release and its data build are cut is in
 [`docs/Releases.md`](./docs/Releases.md); what the outputs *mean*, for the
-people who consume them, is in [`docs/data-model/`](./docs/data-model/README.md). This
-file is the map plus the handful of decisions you cannot see from the code.
+people who consume them, is in [`docs/data-model/`](./docs/data-model/README.md);
+how memory behaves on the cluster, and what was measured, is in
+[`docs/Memory.md`](./docs/Memory.md). This file is the map plus the handful of
+decisions you cannot see from the code.
 
 ## Layout
 
@@ -25,7 +28,7 @@ explains its part; this table is only a map.
 | `src/pubmed2db/download.py` | Fetches baseline/update files; adds `.md5` sidecar tracking. |
 | `src/pubmed2db/parse.py` | Self-driven XML iteration over each file. |
 | `src/pubmed2db/load.py` | Loads parsed files (full history, provenance-tagged), delete logic, journal dimension. |
-| `src/pubmed2db/export.py` | JSON (one DuckDB `COPY`, gzipped by default) + Parquet export. |
+| `src/pubmed2db/export.py` | The NDJSON export: one DuckDB `COPY`, gzipped by default. |
 | `src/pubmed2db/validate.py` | Post-export checks over a directory of NDJSON shards; emits a gated JSON report. |
 | `src/pubmed2db/status.py` | Pipeline-readiness checks derived from DB state. |
 | `src/pubmed2db/util.py` | Shared helpers for the long steps: progress/ETA, durations, peak RSS. |
@@ -38,8 +41,8 @@ explains its part; this table is only a map.
 - **The outputs follow a versioned data model, separate from the code
   version.** The code version (`v1.2`) says how the code changed;
   `datamodel.DATA_MODEL_VERSION` (1.0.0, standard semver) says how consumers
-  are affected, and `docs/Releases.md` defines both. It covers the database,
-  the Parquet export and the NDJSON record together. One number, because the
+  are affected, and `docs/Releases.md` defines both. It covers the database
+  and the NDJSON record together. One number, because the
   NDJSON fields are SQL over the tables, so documenting one documents the other.
   Changing the shape fails `tests/test_data_model.py` until you bump it:
   - **minor** only appends (a column at a table's end, a table, a view, an
@@ -62,6 +65,10 @@ explains its part; this table is only a map.
     goes in the code's release notes, with whether it needs a reload
     (`docs/Releases.md`, step 7). Nothing in a database records which code
     loaded which rows: `last_loaded_by` is one key, overwritten by every load.
+  - **A version is settled when its first release is tagged**, not when
+    `DATA_MODEL_VERSION` changes: until then it can change without a bump, but
+    only where no data build already tagged under it is affected
+    (`docs/Releases.md`). That is how 1.0.0 lost the Parquet export unbumped.
 
   Then write `tests/data_model/<MAJOR.MINOR>.json` with
   `python -m pubmed2db.datamodel --golden`; there is one file per
@@ -94,10 +101,11 @@ explains its part; this table is only a map.
     pre-1.0 naive `TIMESTAMP`s stored the loading machine's local wall-clock
     time: `now()` and a bound UTC datetime are both cast through the session's
     time zone.
-  - **The exports don't read the `latest_*` views.** Each view re-evaluates
-    `latest_article`, a window over every version, so the exports materialize
-    one snapshot and filter against it. A test holds the views to exactly the
-    exports' rows.
+  - **The export doesn't read the `latest_*` views.** Each view re-evaluates
+    `latest_article`, a window over every version, so the export materializes
+    one snapshot and filters against it.
+    `test_the_latest_views_hold_the_rows_the_export_ships` rebuilds the
+    export's child-table fields from the views, so the two filters can't drift.
   - **`metadata.json` is written last**, after every file it checksums, and
     `validate` fails on any shard that differs from it. **The SHA-256s are for
     identity, not damage**, so don't justify them, or drop them, on integrity
@@ -351,29 +359,17 @@ explains its part; this table is only a map.
   `test_cli_export_then_validate_needs_no_flags` runs both commands with no
   flags, because a compressed default is only safe while the checker downstream
   stays flag-free.
-- **The cgroup measurements below were taken on duckdb 1.5.4 and have not been
-  re-taken.** The dependency floor is now 1.5.5, and nothing about the readings
-  is version-fragile in principle — but they are measurements, and the rule that
-  produced them is *measure it, don't reason about it*. Re-run the one-line
-  probe on the first cluster job rather than assuming they carried over (#42 is
-  the run that will have the chance).
-- **DuckDB reads the Slurm cgroup. Both of its sized defaults do — we guessed
-  otherwise twice and were wrong twice.** Measured on duckdb 1.5.4:
-  `memory_limit` is ~76% of `--mem` (6.1 GiB under `--mem=8G`, 47.3 GiB under
-  `--mem=62G`; ~80% of physical RAM off a cluster) and `threads` is
-  `--cpus-per-task` (2 under `--cpus-per-task=2` on a 64-core node — and via the
-  cgroup's CPU quota, not an affinity mask, which read the full 64). **Do not
-  reason from "DuckDB cannot see the allocation"; measure it.** Both claims
-  reached the docs, the `--help` text and an issue before anyone ran the
-  one-line probe in #36/#38 that disproves them. So the buffer pool is not what
-  overruns the allocation; what its limit does not cover is, since the lxml
-  tree, the parsed records and the Arrow batch share the same cgroup and the
-  default already claims three quarters of it.
-- **Two memory numbers mislead, and both have bitten.** `util.peak_rss_gib` is
-  `ru_maxrss`, a high-water mark that only ever rises, so a climbing per-file
-  "peak" is not evidence of a leak; `current_rss_gib` is the one that can fall —
-  which is why the load and validate progress lines log both. Before diagnosing loader memory, read `slurm/README.md` → "Running
-  `load`: how much memory?".
+- **Memory: measure it, and read [`docs/Memory.md`](./docs/Memory.md) before
+  reasoning about it.** Two claims about how DuckDB sizes itself under Slurm
+  reached the docs and an issue before a one-line probe disproved both: it
+  reads the cgroup (#36/#38). Re-take that probe after a DuckDB upgrade. Three
+  more things have misled: peak RSS (`ru_maxrss`) only ever rises;
+  `memory_limit` covers only DuckDB's buffer pool, not the loader's own memory
+  or the ~55 GiB the export now holds instead of returning (#42); and a
+  `(bad allocation)` is `mmap` refused, which is neither `--mem` nor
+  `memory_limit`. Don't size `--mem` against that last one. Before diagnosing
+  or resizing the loader's memory, read `slurm/README.md` → "Running `load`:
+  how much memory?", which has the measured plateaus.
 - **An efetch mismatch is not evidence about what we parsed.** `validate`
   compares the export against Entrez `efetch`, but efetch output is a
   *rendering*, not the archival XML: it serves PMID 152567 as
@@ -420,6 +416,11 @@ explains its part; this table is only a map.
   module they replace. A file that fails is skipped and the sync carries on,
   then `download` exits non-zero naming it; a SIGKILL skips `download_file`'s
   cleanup, so `download` and the catalog prune each sweep stale `.part` files.
+- **Don't record the HPC cluster's name or domain name.** Call it "the
+  cluster" or "the HPC cluster" in docs, code comments, tests, commit
+  messages, issues and PR descriptions, never by its name or hostname, and
+  never with its domain. The public download host in `docs/data-model/` is
+  published on purpose and is not covered by this rule.
 - **The `#SBATCH` headers in `slurm/` are the only place an allocation is
   written down**, and `slurm/README.md` deliberately does not repeat them — it
   carries the *evidence* (dated run tables, peak RSS, the shard-read breakdown)
@@ -472,6 +473,14 @@ Tests gzip the readable XML fixtures under `tests/fixtures/` into temp
 `pubmedNNnNNNN.xml.gz` files. Scratch downloads and databases go under `./data`
 (gitignored); the CLI points `PYSTOW_HOME` at `--data-dir` so
 `pubmed_downloader` caches under `data/pubmed/{baseline,updates}/`.
+
+Point at a section of a doc with a relative Markdown link, or, where a link
+can't go (a log line, a comment, a docstring), as `docs/Memory.md, "A refused
+allocation"`: the path, then `,`, `->` or `→`, then the heading's opening
+words in quotes. `tests/test_doc_links.py` resolves both forms, so renaming a
+heading fails a test instead of stranding whatever pointed at it; a pointer
+in any other shape is not checked. Its helpers, shared with
+`test_data_model.py`, are in `tests/doc_links.py`.
 
 The lint line is what `.github/workflows/lint.yml` runs; the config is in
 `pyproject.toml`, and `uv.lock` pins both tools (the `lint` dependency group,
