@@ -307,3 +307,43 @@ def test_iter_records_yields_direct_children_of_the_root_only():
     xml = b"<Set><R><a/><R><b/></R><c/></R><x/><R><d/></R></Set>"
     seen = [[child.tag for child in el] for el in iter_records(io.BytesIO(xml), "R")]
     assert seen == [["a", "R", "c"], ["d"]]
+
+
+def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog):
+    """Only the three tags the DTD allows are read as records. Anything else
+    directly under the root, before, between or after them, is skipped,
+    counted by tag and named in a warning, not mistaken for a deletion; and
+    the same tag nested inside a record is not counted at all."""
+    import gzip
+    import logging
+
+    from pubmed2db.parse import parse_file
+
+    xml = (
+        "<?xml version='1.0'?><PubmedArticleSet>"
+        "<!-- a comment is not a record -->"
+        "<Mystery><PMID>7</PMID></Mystery>"
+        "<DeleteCitation><PMID Version='1'>1002</PMID></DeleteCitation>"
+        "<Mystery/><Other/>"
+        "<DeleteCitation><PMID Version='1'>1003<Mystery/></PMID></DeleteCitation>"
+        "<Mystery/>"
+        "</PubmedArticleSet>"
+    )
+    dst = tmp_path / "pubmed25n0009.xml.gz"
+    with gzip.open(dst, "wt", encoding="utf-8") as handle:
+        handle.write(xml)
+
+    with caplog.at_level(logging.WARNING, logger="pubmed2db.parse"):
+        parsed = parse_file(dst)
+    assert parsed.deleted_pmids == [1002, 1003]
+    assert parsed.unrecognized_records == {"Mystery": 3, "Other": 1}
+    assert "skipped 4 top-level record(s)" in caplog.text
+    assert "Mystery ×3, Other ×1" in caplog.text
+
+
+def test_a_known_file_has_no_unrecognized_records(gz_fixture, caplog):
+    from pubmed2db.parse import parse_file
+
+    for stem in ("pubmed25n0001", "pubmed25n0002"):
+        assert parse_file(gz_fixture(stem)).unrecognized_records == {}
+    assert "does not know" not in caplog.text

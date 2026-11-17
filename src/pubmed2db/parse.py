@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import gzip
 import logging
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -89,6 +90,9 @@ class ParsedFile:
     deleted_pmids: list[int] = field(default_factory=list)
     n_failed: int = 0
     n_book_records: int = 0
+    #: Top-level records ``parse_file`` does not know, by tag. The DTD allows
+    #: none, so anything here means PubMed has changed its file format.
+    unrecognized_records: dict[str, int] = field(default_factory=dict)
 
 
 _PUBDATE_PATH = "MedlineCitation/Article/Journal/JournalIssue/PubDate"
@@ -263,7 +267,11 @@ def open_xml(path: str | Path) -> BinaryIO:
 
 
 def iter_records(
-    source: str | BinaryIO, tag: str | tuple[str, ...], **iterparse_kwargs: Any
+    source: str | BinaryIO,
+    tag: str | tuple[str, ...],
+    *,
+    unrecognized: Counter[str] | None = None,
+    **iterparse_kwargs: Any,
 ) -> Iterator[etree._Element]:
     """Stream the ``tag`` children of the document root, discarding each after use.
 
@@ -278,15 +286,33 @@ def iter_records(
     "earlier siblings" of a nested match would delete parts of the record
     enclosing it before that record was read. The DTDs forbid such nesting
     today; this keeps a future one from silently truncating records.
+
+    ``unrecognized``, if given, counts the root's *other* element children by
+    tag. ``tag=`` filters in C, so those never reach Python as events; they
+    are counted as the pruning removes them, and at the end for any after the
+    last record, which costs nothing per record. Filtering in Python instead
+    would mean an event for each of a file's millions of elements.
     """
-    for _event, element in etree.iterparse(source, events=("end",), tag=tag, **iterparse_kwargs):
+    tags = {tag} if isinstance(tag, str) else set(tag)
+
+    def note(node: etree._Element) -> None:
+        # Comments and processing instructions have a non-str tag.
+        if unrecognized is not None and isinstance(node.tag, str) and node.tag not in tags:
+            unrecognized[node.tag] += 1
+
+    context = etree.iterparse(source, events=("end",), tag=tag, **iterparse_kwargs)
+    for _event, element in context:
         parent = element.getparent()
         if parent is None or parent.getparent() is not None:
             continue  # the root itself, or nested: left for its enclosing record
         yield element
         element.clear(keep_tail=True)
         while element.getprevious() is not None:
+            note(parent[0])
             del parent[0]
+    if context.root is not None:
+        for child in context.root:
+            note(child)
 
 
 def _parse_article(element: etree._Element, path: str | Path, result: ParsedFile) -> None:
@@ -343,11 +369,14 @@ def parse_file(path: str | Path) -> ParsedFile:
 
     The three record kinds are read in one pass, in document order, so a file
     with a ``<DeleteCitation>`` and no articles, or the reverse, parses the
-    same as before.
+    same as before. Any other top-level element is skipped, counted in
+    ``unrecognized_records`` and named in a warning, rather than read as one of
+    the three.
     """
     result = ParsedFile()
+    unrecognized: Counter[str] = Counter()
     with open_xml(path) as handle:
-        for element in iter_records(handle, _RECORD_TAGS):
+        for element in iter_records(handle, _RECORD_TAGS, unrecognized=unrecognized):
             if element.tag == "PubmedArticle":
                 _parse_article(element, path, result)
             elif element.tag == "PubmedBookArticle":
@@ -356,10 +385,15 @@ def parse_file(path: str | Path) -> ParsedFile:
                 # rather than dropping them silently — the count is what
                 # issue #27 needs to decide whether to support them.
                 result.n_book_records += 1
-            else:
+            elif element.tag == "DeleteCitation":
                 for pmid_tag in element.findall("PMID"):
                     if pmid_tag.text and pmid_tag.text.strip().isdigit():
                         result.deleted_pmids.append(int(pmid_tag.text.strip()))
+            else:
+                # Reached only by a tag added to _RECORD_TAGS without a branch
+                # here; a tag not in it is counted by iter_records instead.
+                unrecognized[element.tag] += 1
+    result.unrecognized_records = dict(unrecognized)
 
     if result.n_book_records:
         logger.warning(
@@ -369,5 +403,13 @@ def parse_file(path: str | Path) -> ParsedFile:
         )
     if result.n_failed:
         logger.warning("%s: %d article(s) failed to parse and were skipped", path, result.n_failed)
+    if unrecognized:
+        logger.warning(
+            "%s: skipped %d top-level record(s) of a kind the parser does not know (%s); "
+            "PubMed's file format may have changed",
+            path,
+            unrecognized.total(),
+            ", ".join(f"{tag} ×{n}" for tag, n in unrecognized.most_common()),
+        )
 
     return result
