@@ -139,14 +139,10 @@ bought 15 GiB of extra peak, so the growing half is DuckDB's pool and it is
 bounded by the limit; ours is the ~5–6 GiB on top. The rate did not move
 between the two (46.4 vs 47.3 s/file), so neither limit was low enough to spill.
 
-**DuckDB's default limit is ~76% of `--mem`, and it governs only its own
-buffer pool** ([`docs/Memory.md`](../docs/Memory.md#what-duckdb-takes-from-the-allocation)
-has the measurements). The lxml tree, the parsed records and the Arrow batch
-count against the same `--mem`, so the default leaves the loader a quarter of
-the allocation, and the loader's own footprint is not small.
-
-So cap it to buy that headroom back, not to rescue DuckDB from itself. That is
-what `LOAD_MEMORY_LIMIT` in `slurm/config.sh` does.
+`LOAD_MEMORY_LIMIT` in `slurm/config.sh` caps that pool. DuckDB's default is
+already ~76% of `--mem`, and everything else the loader holds counts against
+the same `--mem`; how much the cap buys back (for the load, little) is in
+[`docs/Memory.md` → "What DuckDB takes from the allocation"](../docs/Memory.md#what-duckdb-takes-from-the-allocation).
 
 The scripts pass it per-invocation (`env PUBMED2DB_DUCKDB_MEMORY_LIMIT=… uv run
 …`) rather than exporting it, and that detail matters if you run a step by hand:
@@ -332,15 +328,8 @@ under, and the one `04-export.sbatch` asks for again. The first two v1.2-branch
 runs, at 192G and at 256G, failed on a refused allocation that a headroom
 calculation does not cover. The third held freed memory instead of returning
 it and finished, but its peak sits ~55 GiB above the buffer limit, so it needs
-the 256G.
-
-**Why the export holds freed memory.** Without it, the export's allocations
-were refused about 6 minutes in (`(bad allocation)`, not an OOM-kill and not
-DuckDB's limit; #42). `export._HOLD_ALLOCATOR` and `EXPORT_JE_MALLOC_CONF`
-keep what DuckDB frees, which got job 155264 through, and that held memory
-sits outside `memory_limit`: lower `EXPORT_MEMORY_LIMIT` before lowering
-`--mem`. The failures, the evidence and what would let the hold go (#80) are
-in [`docs/Memory.md` → "A refused allocation"](../docs/Memory.md#a-refused-allocation-bad-allocation).
+the 256G. Why it holds memory, and what would let it stop (#80), is in
+[`docs/Memory.md` → "A refused allocation"](../docs/Memory.md#a-refused-allocation-bad-allocation).
 
 For the record, the 2026-08-05 run on the cluster was submitted as `srun --mem=256G
 --cpus-per-task=8 --time=02:00:00` (12:14:50 started, 12:32:56 finished) — kept

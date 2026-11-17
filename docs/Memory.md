@@ -44,8 +44,22 @@ freed memory the export holds instead of returning (see
 [below](#a-refused-allocation-bad-allocation)). A default that claims
 three quarters of the allocation leaves the rest of the process a quarter. So
 the buffer pool is not what overruns an allocation; what its limit does not
-cover is. That is why `config.sh` caps DuckDB below `--mem` for the load and
-the export, to buy back headroom rather than to rescue DuckDB from itself.
+cover is.
+
+`config.sh` sets a limit for the load and the export. Both are in DuckDB's
+decimal units, so `48GB` is 44.7 GiB and `160GB` is 149.0 GiB, and the two buy
+back very different amounts:
+
+- **The load** (`LOAD_MEMORY_LIMIT=48GB` under `--mem=64G`) is only ~4 GiB
+  below DuckDB's default there, ~48.6 GiB. The load fits because the loader's
+  own footprint is small, not because of the cap: its measured peak is
+  53.6 GiB, ~10 GiB under `--mem`. Don't lower `--mem` on the strength of the
+  cap; the runs are in
+  [`slurm/README.md` → "Running `load`: how much memory?"](../slurm/README.md#running-load-how-much-memory---mem).
+- **The export** (`EXPORT_MEMORY_LIMIT=160GB` under `--mem=256G`) is ~46 GiB
+  below its default of ~195 GiB, and since #42 the ~55 GiB it holds more than
+  uses that up: its 205.1 GiB peak is above what the default alone would
+  claim.
 
 ## Reading the memory figures
 
