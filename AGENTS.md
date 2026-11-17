@@ -479,7 +479,8 @@ can't go (a log line, a comment, a docstring), as `docs/Memory.md, "A refused
 allocation"`: the path, then `,`, `->` or `→`, then the heading's opening
 words in quotes. `tests/test_doc_links.py` resolves both forms, so renaming a
 heading fails a test instead of stranding whatever pointed at it; a pointer
-in any other shape is not checked.
+in any other shape is not checked. Its helpers, shared with
+`test_data_model.py`, are in `tests/doc_links.py`.
 
 The lint line is what `.github/workflows/lint.yml` runs; the config is in
 `pyproject.toml`, and `uv.lock` pins both tools (the `lint` dependency group,

@@ -19,13 +19,11 @@ import ast
 import re
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from tests.doc_links import REPO_ROOT, anchors, headings, resolve
 
 #: Directories whose files are not the repository's own docs or code.
 _SKIP_DIRS = {".git", ".venv", "data", "node_modules", ".pytest_cache", ".ruff_cache"}
 
-_FENCE = re.compile(r"^\s*(```|~~~)")
-_HEADING = re.compile(r"^#{1,6} (.+?)\s*#*\s*$")
 #: An inline link's target, or a reference-style definition's.
 _LINK = re.compile(r"\]\(([^)\s]+)\)|^\s*\[[^\]]+\]:\s*(\S+)", re.M)
 #: ``<path>.md`` (optionally in backticks), then ``,``, ``->`` or ``→``, then a
@@ -45,42 +43,6 @@ def _files(*patterns: str) -> list[Path]:
     return sorted(found)
 
 
-def _headings(path: Path) -> list[str]:
-    """The file's heading texts, as written, skipping fenced code blocks."""
-    headings, fenced = [], False
-    for line in path.read_text().splitlines():
-        if _FENCE.match(line):
-            fenced = not fenced
-        elif not fenced and (match := _HEADING.match(line)):
-            headings.append(match.group(1))
-    return headings
-
-
-def _slug(heading: str) -> str:
-    """GitHub's anchor for a heading: link text kept, then lower-cased, with
-    punctuation other than ``-`` and ``_`` dropped and spaces made ``-``."""
-    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", heading)
-    return re.sub(r"[^\w\- ]", "", text.strip().lower()).replace(" ", "-")
-
-
-def _anchors(path: Path) -> set[str]:
-    anchors, seen = set(), {}
-    for heading in _headings(path):
-        slug = _slug(heading)
-        count = seen.get(slug, 0)
-        seen[slug] = count + 1
-        anchors.add(slug if count == 0 else f"{slug}-{count}")
-    return anchors
-
-
-def _resolve(name: str, source: Path) -> Path | None:
-    """A repository-relative path, or failing that one relative to its source."""
-    for base in (REPO_ROOT, source.parent):
-        if (base / name).is_file():
-            return (base / name).resolve()
-    return None
-
-
 def test_relative_markdown_links_resolve():
     broken = []
     for source in _files("*.md", "**/*.md"):
@@ -93,7 +55,7 @@ def test_relative_markdown_links_resolve():
             where = f"{source.relative_to(REPO_ROOT)}: {target}"
             if not resolved.exists():
                 broken.append(f"{where} (no such file)")
-            elif anchor and resolved.suffix == ".md" and anchor not in _anchors(resolved):
+            elif anchor and resolved.suffix == ".md" and anchor not in anchors(resolved):
                 broken.append(f"{where} (no such heading)")
     assert not broken, "\n".join(broken)
 
@@ -128,11 +90,11 @@ def test_named_sections_exist():
     broken, checked = [], 0
     for source in sources:
         for name, section in sorted(_pointers(source)):
-            target = _resolve(name, source)
+            target = resolve(name, source)
             where = f'{source.relative_to(REPO_ROOT)}: {name}, "{section}"'
             if target is None:
                 broken.append(f"{where} (no such file)")
-            elif not any(h.startswith(section) for h in _headings(target)):
+            elif not any(h.startswith(section) for h in headings(target)):
                 broken.append(f"{where} (no such heading)")
             checked += 1
     assert not broken, "\n".join(broken)

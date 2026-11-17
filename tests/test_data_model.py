@@ -601,14 +601,9 @@ def test_links_between_the_data_model_docs_resolve():
     before the branch merges; this does, against the files and their headings."""
     import re
 
-    base = "https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/"
+    from tests.doc_links import anchors
 
-    def anchors(path: Path) -> set[str]:
-        # GitHub's slug: lower-case, drop punctuation but `-` and `_`, spaces to `-`.
-        return {
-            re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
-            for heading in re.findall(r"^#+ (.+)$", path.read_text(), re.M)
-        }
+    base = "https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/"
 
     broken = []
     for source in (DOC, CHANGELOG, REFERENCE):
