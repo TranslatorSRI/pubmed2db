@@ -367,3 +367,37 @@ def test_load_logs_phase_timings(con, gz_fixture, caplog):
     assert record.n_rows == sum(stored.values())
     assert record.total <= wall
 
+
+def test_rollback_after_a_failed_commit_keeps_the_commit_error():
+    """A failed COMMIT leaves DuckDB with no transaction, so a bare ROLLBACK in
+    the ``except`` raised "no transaction is active" in place of the COMMIT's
+    own error -- the one the load's phase timing exists to diagnose."""
+    import duckdb
+    import pytest
+
+    from pubmed2db.load import rollback
+
+    db = duckdb.connect(":memory:")
+    db.execute("CREATE TABLE t (k INTEGER PRIMARY KEY)")
+    first, second = db.cursor(), db.cursor()
+    first.execute("BEGIN TRANSACTION")
+    second.execute("BEGIN TRANSACTION")
+    first.execute("INSERT INTO t VALUES (1)")
+    second.execute("INSERT INTO t VALUES (1)")  # the conflict surfaces at COMMIT
+    first.execute("COMMIT")
+
+    def commit_second():
+        try:
+            second.execute("COMMIT")
+        except Exception:
+            rollback(second)
+            raise
+
+    with pytest.raises(duckdb.Error, match="Failed to commit"):
+        commit_second()
+
+    # And within a live transaction it still rolls back.
+    first.execute("BEGIN TRANSACTION")
+    first.execute("INSERT INTO t VALUES (2)")
+    rollback(first)
+    assert first.execute("SELECT count(*) FROM t").fetchone()[0] == 1

@@ -8,6 +8,7 @@ first — which is also how an MD5 change triggers a refresh.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -171,6 +172,19 @@ def delete_file_rows(con: duckdb.DuckDBPyConnection, source_file: str) -> None:
     """Remove every row previously loaded from ``source_file``."""
     for table in _VERSIONED_TABLES:
         con.execute(f"DELETE FROM {table} WHERE source_file = ?", [source_file])
+
+
+def rollback(con: duckdb.DuckDBPyConnection) -> None:
+    """Roll back the open transaction, for an ``except`` block that re-raises.
+
+    A COMMIT that fails (a constraint checked at commit, or the checkpoint it
+    runs) leaves DuckDB with no transaction, and ``ROLLBACK`` then raises
+    "cannot rollback - no transaction is active" -- which, raised from the
+    ``except``, would replace the COMMIT's own error. So its failure is
+    swallowed: the caller's ``raise`` carries the error that matters.
+    """
+    with contextlib.suppress(duckdb.Error):
+        con.execute("ROLLBACK")
 
 
 @dataclass
@@ -338,7 +352,7 @@ def load_parsed(
         con.execute("COMMIT")
         timing.commit += time.perf_counter() - started
     except Exception:
-        con.execute("ROLLBACK")
+        rollback(con)
         raise
     logger.debug("timing %s: %s", source_file, timing.describe())
     return n_articles
@@ -897,6 +911,6 @@ def load_journals(con: duckdb.DuckDBPyConnection) -> int:
         record_run(con, "journals")
         con.execute("COMMIT")
     except Exception:
-        con.execute("ROLLBACK")
+        rollback(con)
         raise
     return len(journals)
