@@ -15,6 +15,7 @@ this file checks everything relative.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -97,19 +98,36 @@ def test_relative_markdown_links_resolve():
     assert not broken, "\n".join(broken)
 
 
-def test_named_sections_exist():
-    """``<doc>.md, "<section>"`` in code, scripts, tests and docs names a real heading.
+def _pointers(source: Path) -> set[tuple[str, str]]:
+    """The ``(doc, section)`` pairs a file names in ``_POINTER``'s form.
 
-    Comments and docstrings wrap, so a pointer can break across lines; the
-    text is read with comment markers and line breaks folded to spaces."""
+    Comments and docstrings wrap, so a pointer can break across lines: the
+    text is read with comment markers and line breaks folded to spaces. A
+    Python pointer can also be split across adjacent string literals
+    (``"…(docs/data-model/README.md, " '"Versioning…"'``), which no folding of
+    the source rejoins, so a Python file's string constants are read too, as
+    the parser joins them."""
+    text = source.read_text()
+    texts = [text if source.suffix == ".md" else re.sub(r"\n\s*(?:#:?|//)?\s*", " ", text)]
+    if source.suffix == ".py":
+        texts += [
+            node.value
+            for node in ast.walk(ast.parse(text))
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        ]
+    return {
+        (name, section)
+        for text in texts
+        for name, _, section in _POINTER.findall(re.sub(r"\s+", " ", text))
+    }
+
+
+def test_named_sections_exist():
+    """``<doc>.md, "<section>"`` in code, scripts, tests and docs names a real heading."""
     sources = _files("*.md", "**/*.md", "src/**/*.py", "tests/*.py", "slurm/*", "scripts/*")
     broken, checked = [], 0
     for source in sources:
-        text = source.read_text()
-        if source.suffix != ".md":
-            text = re.sub(r"\n\s*(?:#:?|//)?\s*", " ", text)
-        text = re.sub(r"\s+", " ", text)
-        for name, _, section in _POINTER.findall(text):
+        for name, section in sorted(_pointers(source)):
             target = _resolve(name, source)
             where = f'{source.relative_to(REPO_ROOT)}: {name}, "{section}"'
             if target is None:
@@ -118,8 +136,7 @@ def test_named_sections_exist():
                 broken.append(f"{where} (no such heading)")
             checked += 1
     assert not broken, "\n".join(broken)
-    # The out-of-memory log line's pointer is among those checked; if the
-    # pattern stopped matching it, this test would pass while checking nothing.
+    # A pattern that stopped matching would pass here while checking nothing.
     assert checked > 5
 
 
@@ -138,5 +155,13 @@ def test_docs_named_in_code_exist():
 def test_the_out_of_memory_pointer_is_one_of_those_checked():
     """The log line an operator reads on a refused allocation names a section
     in ``_POINTER``'s form, so ``test_named_sections_exist`` covers it."""
-    source = (REPO_ROOT / "src/pubmed2db/export.py").read_text()
-    assert ("docs/Memory.md", "'", "A refused allocation") in _POINTER.findall(source)
+    pointers = _pointers(REPO_ROOT / "src/pubmed2db/export.py")
+    assert ("docs/Memory.md", "A refused allocation") in pointers
+
+
+def test_a_pointer_split_across_string_literals_is_checked():
+    """``test_the_patch_level_is_unused``'s message splits its pointer across
+    two literals, with the section's quotes in the second; reading the source
+    alone skipped it."""
+    pointers = _pointers(REPO_ROOT / "tests/test_data_model.py")
+    assert ("docs/data-model/README.md", "Versioning and stability") in pointers
