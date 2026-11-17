@@ -367,7 +367,9 @@ explains its part; this table is only a map.
   `memory_limit` covers only DuckDB's buffer pool, not the loader's own memory
   or the ~55 GiB the export now holds instead of returning (#42); and a
   `(bad allocation)` is `mmap` refused, which is neither `--mem` nor
-  `memory_limit`. Don't size `--mem` against that last one.
+  `memory_limit`. Don't size `--mem` against that last one. Before diagnosing
+  or resizing the loader's memory, read `slurm/README.md` → "Running `load`:
+  how much memory?", which has the measured plateaus.
 - **An efetch mismatch is not evidence about what we parsed.** `validate`
   compares the export against Entrez `efetch`, but efetch output is a
   *rendering*, not the archival XML: it serves PMID 152567 as

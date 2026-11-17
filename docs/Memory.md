@@ -138,7 +138,10 @@ Three things follow from it:
   so no run has shown them climbing. The run is equally consistent with any
   cause that only bites when memory is handed back. Confirming it would take
   one export with the hold off, watching `maps` approach 65,530 before the
-  failure; #80 plans that run, and one with each knob alone. That evidence is
+  failure; #80 plans that run, and one with each knob alone. The hold is off
+  only with **both** knobs undone: `EXPORT_JE_MALLOC_CONF=` set empty, and
+  `export._HOLD_ALLOCATOR` emptied in the code. Clearing one alone is a
+  one-knob run, not a run without the hold. That evidence is
   what to take to the cluster admins before asking them to raise
   `vm.max_map_count` (Elasticsearch's documented minimum, 262,144, is a
   common setting).
@@ -158,7 +161,9 @@ ran the 2026-08-21 and 2026-09-26 exports that succeeded (jobs 119057 and
 2026-05-21, on the same kernel, and `vm.overcommit_memory = 2` has been in its
 `/etc/sysctl.conf` since that day. So strict overcommit and `max_map_count`
 were the same for the runs that succeeded. The 2026-09-26 run's RSS was still
-144 GiB 9½ minutes in, while both failed runs had fallen to ~68 GiB by
+144 GiB 9½ minutes in (the excerpt under
+[`slurm/README.md` → "Running `export`"](../slurm/README.md#running-export)),
+while both failed runs had fallen to ~68 GiB by
 minute 6. Candidates for the difference: v1.2 builds a fresh database rather
 than continuing one, and data model 1.0 reshaped the tables, though the
 export query's structure is unchanged. Both successful runs' logs are gone.
