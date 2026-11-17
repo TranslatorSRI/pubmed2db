@@ -58,8 +58,8 @@ def connect(
     ``memory_limit`` (e.g. ``"48GB"``) caps DuckDB's buffer pool. Its default is
     allocation-scaled the same way — ~76% of ``--mem`` — so this is not about a
     node-sized cache either. What that limit does *not* cover is the problem:
-    the lxml tree, the parsed records and the Arrow batch share the same cgroup
-    and get only the remaining quarter. Set it a margin below your allocation on
+    the parsed records and the Arrow batch share the same cgroup and get only
+    the remaining quarter. Set it a margin below your allocation on
     any long load to widen that headroom.
 
     ``read_only`` opens an existing database without writing to it: it is still

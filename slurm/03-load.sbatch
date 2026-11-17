@@ -15,10 +15,11 @@
 #
 # --mem=64G with the buffer pool capped below it. DuckDB's own default is
 # already allocation-scaled (~76% of --mem), so the cap is not rescuing it from
-# a node-sized cache -- it is leaving room for the lxml tree, the parsed records
-# and the Arrow batch, which share the cgroup and are not covered by that limit.
-# Measured: RSS settles at the cap plus ~5-6 GiB (53.3 GiB peak under 48GB),
-# so 48GB under 64G leaves ~11 GiB spare.
+# a node-sized cache -- it is leaving room for the parsed records and the Arrow
+# batch, which share the cgroup and are not covered by that limit. Measured:
+# RSS settles at the cap plus ~5-6 GiB (53.3 GiB peak under 48GB), so 48GB
+# under 64G leaves ~11 GiB spare. That was before #25 stopped the loader
+# holding each file's whole lxml tree, so the margin is now wider.
 #
 # The progress lines report s/file, elapsed, current RSS and peak RSS. Read the
 # next run's --time off the rate and the next --mem off the RSS ramp; see

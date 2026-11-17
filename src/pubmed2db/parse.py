@@ -329,11 +329,17 @@ def parse_file(path: str | Path) -> ParsedFile:
     """Parse a (gzipped) PubMed XML file into a :class:`ParsedFile`.
 
     The file is streamed with :func:`iter_records`, so the process holds the
-    parsed records but never the document tree. ``etree.parse`` kept the whole tree alive while every
-    record was built: ~1.2 GiB of a ~2.2 GiB per-file peak for a 30,000-article
-    baseline file (#25), paid once per process today and once per *worker*
-    when files are parsed in parallel (#68). Nothing needed the tree: every
-    extractor works on one ``<PubmedArticle>`` at a time.
+    parsed records but never the document tree. ``etree.parse`` kept the whole
+    tree alive while every record was built, though every extractor works on
+    one ``<PubmedArticle>`` at a time (#25). Measured on pubmed26n1333
+    (30,000 articles) on 2026-11-17, the file ``slurm/README.md`` cites: peak
+    RSS 3.66 GiB holding the tree, 1.07 GiB streaming, and the parse slightly
+    faster (6.4 s against 6.2 s), so reading the gzip through Python rather
+    than libxml2's zlib costs nothing visible. #25's own figures (a ~1.2 GiB
+    tree in a ~2.2 GiB peak) came from pubmed26n0005, whose older records are
+    smaller: the tree grows with the records, not only with their count. The
+    saving is paid once per process today, and would be once per *worker* if
+    files were parsed in parallel (#68).
 
     The three record kinds are read in one pass, in document order, so a file
     with a ``<DeleteCitation>`` and no articles, or the reverse, parses the

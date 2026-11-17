@@ -39,7 +39,7 @@ srun --mem=8G --cpus-per-task=2 uv run python -c "import duckdb; c = duckdb.conn
 
 **`memory_limit` governs only DuckDB's own buffer pool.** Everything else in
 the process shares the same cgroup and counts against the same `--mem`: the
-loader's lxml tree, its parsed records and its Arrow batch, and, since #42, the
+loader's parsed records and its Arrow batch, and, since #42, the
 freed memory the export holds instead of returning (see
 [below](#a-refused-allocation-bad-allocation)). A default that claims
 three quarters of the allocation leaves the rest of the process a quarter. So
