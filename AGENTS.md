@@ -474,6 +474,13 @@ Tests gzip the readable XML fixtures under `tests/fixtures/` into temp
 (gitignored); the CLI points `PYSTOW_HOME` at `--data-dir` so
 `pubmed_downloader` caches under `data/pubmed/{baseline,updates}/`.
 
+Point at a section of a doc with a relative Markdown link, or, where a link
+can't go (a log line, a comment, a docstring), as `docs/Memory.md, "A refused
+allocation"`: the path, then `,`, `->` or `→`, then the heading's opening
+words in quotes. `tests/test_doc_links.py` resolves both forms, so renaming a
+heading fails a test instead of stranding whatever pointed at it; a pointer
+in any other shape is not checked.
+
 The lint line is what `.github/workflows/lint.yml` runs; the config is in
 `pyproject.toml`, and `uv.lock` pins both tools (the `lint` dependency group,
 which CI installs on its own), since a new ruff can reformat code. Three things the fixers get wrong:
