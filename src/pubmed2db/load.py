@@ -266,6 +266,13 @@ def _load_parsed_rows(
             rows_by_table[table].extend(table_rows)
     for pmid in parsed.deleted_pmids:
         rows_by_table["deleted_pmid"].append((pmid, source_file, order_key))
+    # Every table's Arrow copy is built before the first insert, so the build
+    # is timed in one piece. That holds no more memory than building each just
+    # before its insert, which looks leaner and is not: DuckDB keeps an Arrow
+    # table registered inside a transaction alive until the transaction ends,
+    # `unregister` and `del` notwithstanding, so one at a time holds them all by
+    # the last insert anyway (DuckDB 1.5.5, measured 2026-11-17 on a
+    # 30,000-article file: 137 MiB of Arrow at the last insert either way).
     batches = {table: _arrow_batch(rows) for table, rows in rows_by_table.items() if rows}
     timing.build += time.perf_counter() - started
 
