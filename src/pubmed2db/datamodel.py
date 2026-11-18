@@ -33,7 +33,7 @@ from . import __version__
 
 #: The data model this code reads and writes. See the module docstring, and
 #: `docs/data-model/README.md` for when to bump it.
-DATA_MODEL_VERSION = "1.0.0"
+DATA_MODEL_VERSION = "1.1.0"
 
 #: The table holding :data:`DATA_MODEL_VERSION` and who built the database.
 METADATA_TABLE = "pubmed2db_metadata"

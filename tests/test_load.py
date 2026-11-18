@@ -224,13 +224,41 @@ def test_registry_records_the_skip_counts(con, gz_fixture, tmp_path):
     load_file(con, path, kind="baseline")
 
     assert con.execute(
-        "SELECT n_failed, n_book_records FROM source_file WHERE file_name = ?",
+        "SELECT n_failed, n_book_records, n_unrecognized FROM source_file WHERE file_name = ?",
         [path.name],
-    ).fetchone() == (0, 1)
+    ).fetchone() == (0, 1, 0)
 
     from pubmed2db.status import summarize
 
     assert summarize(con)["skipped_records"] == 1
+
+
+def test_registry_records_unrecognized_records(con, gz_fixture, tmp_path):
+    """Records the DTD does not allow where they are, of both kinds (an
+    unknown top-level element, and a known record inside another element),
+    are counted in the registry and in every rollup of the skip counts."""
+    import gzip
+
+    from pubmed2db.load import load_file
+    from pubmed2db.status import corpus_provenance, summarize
+
+    with gzip.open(gz_fixture("pubmed25n0001"), "rt", encoding="utf-8") as handle:
+        xml = handle.read()
+    extra = (
+        "<Mystery/>"
+        "<Wrapper><DeleteCitation><PMID Version='1'>1001</PMID></DeleteCitation></Wrapper>"
+    )
+    path = tmp_path / "pubmed25n0007.xml.gz"
+    with gzip.open(path, "wt", encoding="utf-8") as handle:
+        handle.write(xml.replace("</PubmedArticleSet>", extra + "</PubmedArticleSet>"))
+
+    load_file(con, path, kind="baseline")
+
+    assert con.execute(
+        "SELECT n_unrecognized FROM source_file WHERE file_name = ?", [path.name]
+    ).fetchone() == (3,)  # <Mystery>, <Wrapper>, and the DeleteCitation inside it
+    assert summarize(con)["skipped_records"] == 3
+    assert corpus_provenance(con)["unrecognized_records_skipped"] == 3
 
 
 def test_publication_types_are_stored_with_names_and_order(loaded_con):
@@ -309,6 +337,7 @@ def test_corpus_provenance_names_the_cutoff(loaded_con):
         "deletions_loaded": 1,
         "records_failed": 0,
         "book_records_skipped": 0,
+        "unrecognized_records_skipped": 0,
     }
 
 

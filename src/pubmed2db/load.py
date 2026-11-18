@@ -291,6 +291,7 @@ def _load_parsed_rows(
         n_deletions=len(parsed.deleted_pmids),
         n_failed=parsed.n_failed,
         n_book_records=parsed.n_book_records,
+        n_unrecognized=parsed.n_unrecognized,
     )
     timing.registry += time.perf_counter() - started
     return len(deduped)
@@ -305,6 +306,7 @@ def _upsert_source_file(
     n_deletions: int,
     n_failed: int,
     n_book_records: int,
+    n_unrecognized: int,
 ) -> None:
     """Record the file as processed, with its counts, in the ``source_file`` registry."""
     year_yy, file_number, order_key = parse_file_name(source_file)
@@ -313,8 +315,8 @@ def _upsert_source_file(
             INSERT INTO source_file
                 (file_name, kind, year_yy, file_number, file_order_key,
                  downloaded_at, processed_at, n_articles, n_deletions,
-                 n_failed, n_book_records)
-            VALUES (?, ?, ?, ?, ?, now(), now(), ?, ?, ?, ?)
+                 n_failed, n_book_records, n_unrecognized)
+            VALUES (?, ?, ?, ?, ?, now(), now(), ?, ?, ?, ?, ?)
             ON CONFLICT (file_name) DO UPDATE SET
                 kind = excluded.kind,
                 -- Files obtained outside `download` (rsync/FTP) have no
@@ -329,7 +331,8 @@ def _upsert_source_file(
                 n_articles = excluded.n_articles,
                 n_deletions = excluded.n_deletions,
                 n_failed = excluded.n_failed,
-                n_book_records = excluded.n_book_records
+                n_book_records = excluded.n_book_records,
+                n_unrecognized = excluded.n_unrecognized
             """,
         [
             source_file,
@@ -341,6 +344,7 @@ def _upsert_source_file(
             n_deletions,
             n_failed,
             n_book_records,
+            n_unrecognized,
         ],
     )
 

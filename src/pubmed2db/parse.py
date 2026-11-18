@@ -92,14 +92,18 @@ class ParsedFile:
     n_failed: int = 0
     n_book_records: int = 0
     #: Top-level records ``parse_file`` does not know, by tag. The DTD allows
-    #: none, so anything here means PubMed has changed its file format. Only
-    #: logged: a ``source_file`` count would be a data-model bump.
+    #: none, so anything here means PubMed has changed its file format.
     unrecognized_records: dict[str, int] = field(default_factory=dict)
     #: Known records found *inside* another element rather than directly under
     #: the root, by tag. Skipped, because pruning around them would truncate
     #: the record that encloses them; the DTD forbids them, so, as above, any
     #: here means the format has changed.
     nested_records: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def n_unrecognized(self) -> int:
+        """Records skipped as unrecognized, of both kinds: ``source_file.n_unrecognized``."""
+        return sum(self.unrecognized_records.values()) + sum(self.nested_records.values())
 
 
 _PUBDATE_PATH = "MedlineCitation/Article/Journal/JournalIssue/PubDate"

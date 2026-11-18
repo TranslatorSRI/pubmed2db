@@ -9,6 +9,15 @@ and say whether an existing database needs a reload. The version scheme, and
 how to tell whether a build carries a fix, are in
 [Versioning and stability](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/README.md#versioning-and-stability).
 
+## 1.1.0
+
+Adds `source_file.n_unrecognized`. Not yet in a release.
+
+| Output | What a consumer must do |
+| --- | --- |
+| NDJSON | Nothing: the records are unchanged. `metadata.json`'s `corpus` block gains `unrecognized_records_skipped`. |
+| DuckDB | Nothing. `source_file.n_unrecognized` counts records the parser skipped because PubMed's DTD does not allow them where they are; anything but 0 means PubMed changed its file format. A 1.0 database gains the column when 1.1 code first opens it, NULL for the files already loaded. |
+
 ## 1.0.0
 
 The first versioned data model, first built after `2026sep26`.

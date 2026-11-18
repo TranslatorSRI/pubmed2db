@@ -129,7 +129,8 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
             max(downloaded_at),
             count(*) FILTER (WHERE processed_at IS NOT NULL),
             max(processed_at),
-            coalesce(sum(n_failed), 0) + coalesce(sum(n_book_records), 0),
+            coalesce(sum(n_failed), 0) + coalesce(sum(n_book_records), 0)
+                + coalesce(sum(n_unrecognized), 0),
             -- More than one baseline year on disk means a new baseline landed:
             -- every PMID is stored twice and only the newest year is exported.
             list_sort(list(DISTINCT year_yy) FILTER (
@@ -205,7 +206,18 @@ def corpus_provenance(con: duckdb.DuckDBPyConnection) -> dict:
     cannot disagree with what was actually loaded. `status` prints it and
     `export` writes it into ``metadata.json`` beside the shards.
     """
-    first, last, published, files, baseline_year, articles, deletions, failed, books = con.execute(
+    (
+        first,
+        last,
+        published,
+        files,
+        baseline_year,
+        articles,
+        deletions,
+        failed,
+        books,
+        unrecognized,
+    ) = con.execute(
         """
         SELECT
             arg_min(file_name, file_order_key),
@@ -216,7 +228,8 @@ def corpus_provenance(con: duckdb.DuckDBPyConnection) -> dict:
             sum(n_articles),
             sum(n_deletions),
             sum(n_failed),
-            sum(n_book_records)
+            sum(n_book_records),
+            sum(n_unrecognized)
         FROM source_file
         WHERE processed_at IS NOT NULL
         """
@@ -235,4 +248,5 @@ def corpus_provenance(con: duckdb.DuckDBPyConnection) -> dict:
         "deletions_loaded": deletions or 0,
         "records_failed": failed or 0,
         "book_records_skipped": books or 0,
+        "unrecognized_records_skipped": unrecognized or 0,
     }
