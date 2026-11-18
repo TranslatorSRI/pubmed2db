@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import gzip
 import logging
+from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, BinaryIO, NamedTuple
 
 from lxml import etree
 from pubmed_downloader.api import Article, _extract_article
@@ -88,6 +90,9 @@ class ParsedFile:
     deleted_pmids: list[int] = field(default_factory=list)
     n_failed: int = 0
     n_book_records: int = 0
+    #: Top-level records ``parse_file`` does not know, by tag. The DTD allows
+    #: none, so anything here means PubMed has changed its file format.
+    unrecognized_records: dict[str, int] = field(default_factory=dict)
 
 
 _PUBDATE_PATH = "MedlineCitation/Article/Journal/JournalIssue/PubDate"
@@ -244,6 +249,71 @@ def _pmid_version(element: etree._Element) -> int | None:
 #: DTD is ``((PubmedArticle | PubmedBookArticle)+, DeleteCitation?)``.
 _RECORD_TAGS = ("PubmedArticle", "PubmedBookArticle", "DeleteCitation")
 
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+def open_xml(path: str | Path) -> BinaryIO:
+    """Open an XML file for reading, decompressing it if its *content* is gzip.
+
+    ``etree.parse`` let libxml2 decide, and libxml2 sniffs the bytes, so a
+    gzipped file parsed whatever its name. ``iterparse`` on a file object does
+    no decompression at all, and choosing by extension would turn a renamed
+    file (``.GZ``, a temp name in a script) into an ``XMLSyntaxError`` at byte
+    0. Reading the two magic bytes keeps the old behaviour.
+    """
+    with open(path, "rb") as probe:
+        magic = probe.read(len(_GZIP_MAGIC))
+    return gzip.open(path, "rb") if magic == _GZIP_MAGIC else open(path, "rb")
+
+
+def iter_records(
+    source: str | BinaryIO,
+    tag: str | tuple[str, ...],
+    *,
+    unrecognized: Counter[str] | None = None,
+    **iterparse_kwargs: Any,
+) -> Iterator[etree._Element]:
+    """Stream the ``tag`` children of the document root, discarding each after use.
+
+    Each element is yielded complete (at its end event) and cleared once the
+    caller resumes, along with any earlier siblings still under the root
+    (whitespace, comments, elements of other tags), so the tree never holds
+    more than the current record. Both the PubMed files and NLM's serial
+    catalog are read this way, which is why it lives in one place.
+
+    Only **direct children of the root** are yielded, as ``root.findall(tag)``
+    found them. ``iterparse``'s ``tag=`` matches at any depth, and pruning
+    "earlier siblings" of a nested match would delete parts of the record
+    enclosing it before that record was read. The DTDs forbid such nesting
+    today; this keeps a future one from silently truncating records.
+
+    ``unrecognized``, if given, counts the root's *other* element children by
+    tag. ``tag=`` filters in C, so those never reach Python as events; they
+    are counted as the pruning removes them, and at the end for any after the
+    last record, which costs nothing per record. Filtering in Python instead
+    would mean an event for each of a file's millions of elements.
+    """
+    tags = {tag} if isinstance(tag, str) else set(tag)
+
+    def note(node: etree._Element) -> None:
+        # Comments and processing instructions have a non-str tag.
+        if unrecognized is not None and isinstance(node.tag, str) and node.tag not in tags:
+            unrecognized[node.tag] += 1
+
+    context = etree.iterparse(source, events=("end",), tag=tag, **iterparse_kwargs)
+    for _event, element in context:
+        parent = element.getparent()
+        if parent is None or parent.getparent() is not None:
+            continue  # the root itself, or nested: left for its enclosing record
+        yield element
+        element.clear(keep_tail=True)
+        while element.getprevious() is not None:
+            note(parent[0])
+            del parent[0]
+    if context.root is not None:
+        for child in context.root:
+            note(child)
+
 
 def _parse_article(element: etree._Element, path: str | Path, result: ParsedFile) -> None:
     """Read one ``<PubmedArticle>`` into ``result``, counting one that is rejected."""
@@ -284,23 +354,29 @@ def _parse_article(element: etree._Element, path: str | Path, result: ParsedFile
 def parse_file(path: str | Path) -> ParsedFile:
     """Parse a (gzipped) PubMed XML file into a :class:`ParsedFile`.
 
-    The file is streamed with ``iterparse`` and each record's element is
-    discarded once read, so the process holds the parsed records but never
-    the document tree. ``etree.parse`` kept the whole tree alive while every
-    record was built: ~1.2 GiB of a ~2.2 GiB per-file peak for a 30,000-article
-    baseline file (#25), paid once per process today and once per *worker*
-    when files are parsed in parallel (#68). Nothing needed the tree: every
-    extractor works on one ``<PubmedArticle>`` at a time.
+    The file is streamed with :func:`iter_records`, so the process holds the
+    parsed records but never the document tree. ``etree.parse`` kept the whole
+    tree alive while every record was built, though every extractor works on
+    one ``<PubmedArticle>`` at a time (#25). Measured on pubmed26n1333
+    (30,000 articles) on 2026-11-17, the file ``slurm/README.md`` cites: peak
+    RSS 3.66 GiB holding the tree, 1.07 GiB streaming, and the parse slightly
+    faster (6.4 s against 6.2 s), so reading the gzip through Python rather
+    than libxml2's zlib costs nothing visible. #25's own figures (a ~1.2 GiB
+    tree in a ~2.2 GiB peak) came from pubmed26n0005, whose older records are
+    smaller: the tree grows with the records, not only with their count. The
+    saving is paid once per process today, and would be once per *worker* if
+    files were parsed in parallel (#68).
 
-    ``iterparse`` does not decompress a ``.gz`` path the way ``etree.parse``
-    does, hence the explicit ``gzip.open``. The three record kinds are read in
-    one pass, in document order, so a file with a ``<DeleteCitation>`` and no
-    articles, or the reverse, parses the same as before.
+    The three record kinds are read in one pass, in document order, so a file
+    with a ``<DeleteCitation>`` and no articles, or the reverse, parses the
+    same as before. Any other top-level element is skipped, counted in
+    ``unrecognized_records`` and named in a warning, rather than read as one of
+    the three.
     """
     result = ParsedFile()
-    opener = gzip.open if str(path).endswith(".gz") else open
-    with opener(path, "rb") as handle:
-        for _event, element in etree.iterparse(handle, events=("end",), tag=_RECORD_TAGS):
+    unrecognized: Counter[str] = Counter()
+    with open_xml(path) as handle:
+        for element in iter_records(handle, _RECORD_TAGS, unrecognized=unrecognized):
             if element.tag == "PubmedArticle":
                 _parse_article(element, path, result)
             elif element.tag == "PubmedBookArticle":
@@ -309,15 +385,15 @@ def parse_file(path: str | Path) -> ParsedFile:
                 # rather than dropping them silently — the count is what
                 # issue #27 needs to decide whether to support them.
                 result.n_book_records += 1
-            else:
+            elif element.tag == "DeleteCitation":
                 for pmid_tag in element.findall("PMID"):
                     if pmid_tag.text and pmid_tag.text.strip().isdigit():
                         result.deleted_pmids.append(int(pmid_tag.text.strip()))
-            # Drop the record, and any earlier siblings still hanging off the
-            # root, so the tree never holds more than the current record.
-            element.clear(keep_tail=True)
-            while element.getprevious() is not None:
-                del element.getparent()[0]
+            else:
+                # Reached only by a tag added to _RECORD_TAGS without a branch
+                # here; a tag not in it is counted by iter_records instead.
+                unrecognized[element.tag] += 1
+    result.unrecognized_records = dict(unrecognized)
 
     if result.n_book_records:
         logger.warning(
@@ -327,5 +403,13 @@ def parse_file(path: str | Path) -> ParsedFile:
         )
     if result.n_failed:
         logger.warning("%s: %d article(s) failed to parse and were skipped", path, result.n_failed)
+    if unrecognized:
+        logger.warning(
+            "%s: skipped %d top-level record(s) of a kind the parser does not know (%s); "
+            "PubMed's file format may have changed",
+            path,
+            unrecognized.total(),
+            ", ".join(f"{tag} ×{n}" for tag, n in unrecognized.most_common()),
+        )
 
     return result

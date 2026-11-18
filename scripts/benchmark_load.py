@@ -23,7 +23,11 @@ insert path with real data, and the per-file row of its output is the growth
 curve. A synthetic row's ``parse_s`` is ``-``: its parse was paid once, on the
 real file's row. Run it again on the same ``--db`` and the numbering carries on
 from the last synthetic file there, so the database keeps growing rather than
-reloading the same names. The knobs below are the candidate settings to test
+reloading the same names; a real file the database already holds is parsed
+(the synthetic files reuse it) but not loaded again. Each file is parsed just
+before its load, so ``peakRSS`` is a per-file load's, except under
+``--synthetic``, which keeps every real file's parse for the run and so reads
+higher than any real load. The knobs below are the candidate settings to test
 against it:
 
 ``--checkpoint-threshold SIZE``
@@ -34,18 +38,21 @@ against it:
     keeps; nothing downstream reads insertion order.
 ``--files-per-txn N``
     N files per transaction instead of one, which is N times fewer COMMITs.
-    Needs ``--db``: in memory every file gets its own database.
+    Needs ``--db``: in memory every file gets its own database. It also holds
+    N files' parses, and DuckDB holds their Arrow copies, until the COMMIT,
+    so ``peakRSS`` rises with N.
 
 A synthetic file is never in the registry, so the load skips its DELETEs as a
 fresh corpus load does, and its ``delete_s`` is the registry lookup alone. To
-time the DELETEs themselves, load real files into a ``--db`` that already holds
-them. (``--skip-delete`` measured what skipping them saves, and was retired once
+time the DELETEs themselves, load real files, without ``--synthetic``, into a
+``--db`` that already holds them. (``--skip-delete`` measured what skipping them saves, and was retired once
 the loader did it for every never-loaded file.)
 """
 
 from __future__ import annotations
 
 import argparse
+import itertools
 import os
 import time
 from pathlib import Path
@@ -96,7 +103,7 @@ def main() -> None:
     import duckdb
 
     from pubmed2db.db import connect
-    from pubmed2db.load import LoadTiming, _load_parsed_rows
+    from pubmed2db.load import LoadTiming, _load_parsed_rows, rollback
     from pubmed2db.parse import parse_file
     from pubmed2db.util import peak_rss_gib
 
@@ -136,26 +143,48 @@ def main() -> None:
             flush=True,
         )
 
-    # Parse every file once.
-    parsed_files = []
-    for path in args.files:
-        t0 = time.perf_counter()
-        parsed = parse_file(path)
-        parsed_files.append((path.name, parsed, time.perf_counter() - t0))
+    # The real files are parsed as they are loaded, one at a time, so peakRSS
+    # is a real per-file load's. Only --synthetic keeps them all, to reload.
+    kept: list = []
+
+    def real_jobs():
+        for path in paths:
+            t0 = time.perf_counter()
+            parsed = parse_file(path)
+            parse_s = time.perf_counter() - t0
+            if args.synthetic:
+                kept.append(parsed)
+            if path.name in already_loaded:
+                print(f"{path.name:24} parsed in {parse_s:.2f}s, already in --db: not reloaded")
+                continue
+            yield path.name, parsed, parse_s, "baseline"
+
+    def synthetic_jobs(first: int):
+        for i in range(first, first + args.synthetic):
+            yield f"pubmed90n{i:04d}.xml.gz", kept[i % len(kept)], None, "baseline"
 
     # The real files: one connection each when in memory (independent runs),
     # one shared connection on disk, so that parse_s is paid once per file.
     con = open_db() if args.db != ":memory:" else None
-    jobs = [(name, parsed, parse_s, "baseline") for name, parsed, parse_s in parsed_files]
+    paths = list(args.files)
+    already_loaded: set[str] = set()
+    first_synthetic = 0
     if args.synthetic:
-        # Carry on from the last synthetic file a previous run left, so a rerun
-        # grows the database instead of reloading the same names.
+        # A rerun grows the same database: the real files it already holds
+        # are parsed (the synthetic files reuse them) but not loaded again,
+        # and the numbering carries on from the last synthetic file there,
+        # so a rerun reloads nothing.
+        names = [path.name for path in paths]
+        already_loaded = {
+            name
+            for (name,) in con.execute(
+                "SELECT file_name FROM source_file WHERE list_contains(?, file_name)", [names]
+            ).fetchall()
+        }
         last = con.execute("SELECT max(file_number) FROM source_file WHERE year_yy = 90")
-        first = (last.fetchone()[0] or 0) + 1
-        jobs += [
-            (f"pubmed90n{i:04d}.xml.gz", parsed_files[i % len(parsed_files)][1], None, "baseline")
-            for i in range(first, first + args.synthetic)
-        ]
+        first_synthetic = (last.fetchone()[0] or 0) + 1
+    jobs = itertools.chain(real_jobs(), synthetic_jobs(first_synthetic) if args.synthetic else ())
+
     print(header)
     print("-" * len(header))
 
@@ -175,7 +204,7 @@ def main() -> None:
             con.execute("COMMIT")
             timings[-1].commit = time.perf_counter() - t0
         except Exception:
-            con.execute("ROLLBACK")
+            rollback(con)
             raise
         for (name, _parsed, parse_s, _kind), timing, n in zip(pending, timings, n_articles):
             report(name, n, parse_s, timing, con)

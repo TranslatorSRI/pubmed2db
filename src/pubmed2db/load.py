@@ -8,6 +8,7 @@ first — which is also how an MD5 change triggers a refresh.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import logging
 import os
@@ -27,7 +28,7 @@ from pubmed_downloader.utils import Collective
 
 from .datamodel import record_load
 from .db import NEEDS_LOAD_SQL, init_schema, parse_file_name, record_run
-from .parse import ParsedArticle, ParsedFile, parse_file
+from .parse import ParsedArticle, ParsedFile, iter_records, parse_file
 from .util import current_rss_gib, download_file, eta_str, fmt_duration, peak_rss_gib
 
 if TYPE_CHECKING:
@@ -262,6 +263,19 @@ def _processed(con: duckdb.DuckDBPyConnection, source_files: list[str]) -> set[s
     return {row[0] for row in rows}
 
 
+def rollback(con: duckdb.DuckDBPyConnection) -> None:
+    """Roll back the open transaction, for an ``except`` block that re-raises.
+
+    A COMMIT that fails (a constraint checked at commit, or the checkpoint it
+    runs) leaves DuckDB with no transaction, and ``ROLLBACK`` then raises
+    "cannot rollback - no transaction is active" -- which, raised from the
+    ``except``, would replace the COMMIT's own error. So its failure is
+    swallowed: the caller's ``raise`` carries the error that matters.
+    """
+    with contextlib.suppress(duckdb.Error):
+        con.execute("ROLLBACK")
+
+
 @dataclass
 class LoadTiming:
     """Where one file's load spent its time, in seconds, phase by phase.
@@ -295,7 +309,7 @@ class LoadTiming:
         return self.delete + self.build + self.insert + self.registry + self.commit
 
     def describe(self) -> str:
-        """One line, the slowest tables first, for the DEBUG log and the benchmark."""
+        """One line, the slowest tables first, for the DEBUG log."""
         slowest = sorted(self.inserts.items(), key=lambda kv: kv[1], reverse=True)[:3]
         tables = ", ".join(f"{table} {seconds:.2f}" for table, seconds in slowest)
         # A staged group's rows were built by `stage`, so it has no build to
@@ -325,6 +339,13 @@ def _load_parsed_rows(
     """
     order_key = parse_file_name(source_file)[2]
     started = time.perf_counter()
+    # build_batches makes every table's Arrow copy before the first insert, so
+    # the build is timed in one piece. That holds no more memory than building
+    # each just before its insert, which looks leaner and is not: DuckDB keeps an
+    # Arrow table registered inside a transaction alive until the transaction
+    # ends, `unregister` and `del` notwithstanding, so one at a time holds them
+    # all by the last insert anyway (DuckDB 1.5.5, measured 2026-11-17 on a
+    # 30,000-article file: 137 MiB of Arrow at the last insert either way).
     batches, n_articles = build_batches(parsed, source_file, order_key)
     timing.build += time.perf_counter() - started
 
@@ -413,7 +434,7 @@ def load_parsed(
         con.execute("COMMIT")
         timing.commit += time.perf_counter() - started
     except Exception:
-        con.execute("ROLLBACK")
+        rollback(con)
         raise
     logger.debug("timing %s: %s", source_file, timing.describe())
     return n_articles
@@ -502,7 +523,7 @@ def _load_group(con: duckdb.DuckDBPyConnection, group: list[Shard]) -> LoadTimin
         con.execute("COMMIT")
         timing.commit = time.perf_counter() - started
     except Exception:
-        con.execute("ROLLBACK")
+        rollback(con)
         raise
     return timing
 
@@ -926,9 +947,9 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
     """Map ``nlm_catalog_id -> (start_year, end_year, active)`` from serfile XML.
 
     Files are read in the order given, so a later monthly update wins over the
-    baseline. This uses ``iterparse`` rather than the whole-tree ``etree.parse``
-    that :mod:`pubmed2db.parse` uses for the much smaller PubMed files: the
-    baseline is ~450 MB, and streaming it costs ~5 s and ~50 MiB.
+    baseline. The XML is streamed with :func:`pubmed2db.parse.iter_records`,
+    as the PubMed files are: the baseline is ~450 MB, and streaming it costs
+    ~5 s and ~50 MiB.
 
     A monthly update that will not parse is skipped, but a baseline that will
     not parse, or holds no records, raises. The updates only amend it, so
@@ -941,9 +962,7 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
         is_baseline = bool(_SERFILE_BASELINE_RE.fullmatch(path.name))
         n_before = len(years)
         try:
-            for _, element in etree.iterparse(
-                os.fspath(path), tag="NLMCatalogRecord", recover=True
-            ):
+            for element in iter_records(os.fspath(path), "NLMCatalogRecord", recover=True):
                 nlm_id = element.findtext("NlmUniqueID")
                 if nlm_id:
                     end_raw = element.findtext("PublicationInfo/PublicationEndYear")
@@ -953,9 +972,6 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
                         None if end_raw == "9999" else _catalog_year(end_raw),
                         _catalog_active(end_raw),
                     )
-                element.clear()
-                while element.getprevious() is not None:
-                    del element.getparent()[0]
         except etree.XMLSyntaxError as exc:
             # NLM really does publish empty files -- serfile.20240903.xml is
             # Content-Length: 0 -- and `recover=True` does not save an empty
@@ -1081,6 +1097,6 @@ def load_journals(con: duckdb.DuckDBPyConnection) -> int:
         record_run(con, "journals")
         con.execute("COMMIT")
     except Exception:
-        con.execute("ROLLBACK")
+        rollback(con)
         raise
     return len(journals)

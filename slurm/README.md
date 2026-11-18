@@ -1,6 +1,6 @@
 # Running pubmed2db on Slurm
 
-Notes for running the loader and the export on the shared cluster (the same one Babel uses; see
+Notes for running the loader and the export on the HPC cluster that Babel also uses (see
 [Babel's slurm/README](https://github.com/NCATSTranslator/Babel/blob/main/slurm/README.md)).
 
 ## TL;DR
@@ -167,9 +167,9 @@ batch), then inserts it and moves on. *Our* footprint does not grow with the
 number of files or the size of the database. It used to include the file's
 whole lxml tree, which `parse_file` kept alive for nothing (#25): streaming
 the file instead took the parse of a 30,000-article baseline file from a
-3.66 GiB peak to 1.06 GiB (pubmed26n1333, measured 2026-10-21), so the "~5–6
-GiB on top" below, measured before that change, is now an overestimate. Both
-full-load rows in the table predate it.
+3.66 GiB peak to 1.07 GiB (pubmed26n1333, measured 2026-10-21 and again
+2026-11-17), so the "~5–6 GiB on top" below, measured before that change, is
+now an overestimate. All three full-load rows in the table predate it.
 
 DuckDB's does. It runs in the same process and caches ever more of a growing
 database, so its buffer pool is what makes a long load's RSS climb run-long —
@@ -179,23 +179,17 @@ until the pool is full, after which RSS is flat:
 | --- | --- | --- | --- | --- |
 | 2026-08-20 | 32GB | ~35–37 GiB | 38.2 GiB | ~file 1,000 of 1,595 |
 | 2026-09-25 | 48GB (the default) | ~51–53 GiB | 53.3 GiB | ~file 1,200 of 1,636 |
+| 2026-10-21 | 48GB | ~51–53 GiB | 53.6 GiB | not recorded |
 
-Both under `--mem=64G`, both from an empty database. The 16 GB of extra limit
+All under `--mem=64G`, all from an empty database. The 16 GB of extra limit
 bought 15 GiB of extra peak, so the growing half is DuckDB's pool and it is
 bounded by the limit; ours is the ~5–6 GiB on top. The rate did not move
 between the two (46.4 vs 47.3 s/file), so neither limit was low enough to spill.
 
-**DuckDB does see the Slurm cgroup**, so its default is not the node-sized
-disaster it looks like: measured on duckdb 1.5.4, it takes ~76% of `--mem`
-(6.1 GiB under `--mem=8G`, 47.3 GiB under `--mem=62G`; off a cluster it is ~80%
-of physical RAM). The problem with the default is subtler — **its limit governs
-only its own buffer pool**, while the lxml tree, the parsed records and the
-Arrow batch live in the same cgroup and count against the same `--mem`. A
-default that claims three quarters of the allocation leaves the rest of the
-process a quarter, and the loader's own footprint is not small.
-
-So cap it to buy that headroom back, not to rescue DuckDB from itself. That is
-what `LOAD_MEMORY_LIMIT` in `slurm/config.sh` does.
+`LOAD_MEMORY_LIMIT` in `slurm/config.sh` caps that pool. DuckDB's default is
+already ~76% of `--mem`, and everything else the loader holds counts against
+the same `--mem`; how much the cap buys back (for the load, little) is in
+[`docs/Memory.md` → "What DuckDB takes from the allocation"](../docs/Memory.md#what-duckdb-takes-from-the-allocation).
 
 The scripts pass it per-invocation (`env PUBMED2DB_DUCKDB_MEMORY_LIMIT=… uv run
 …`) rather than exporting it, and that detail matters if you run a step by hand:
@@ -229,9 +223,10 @@ plateau is the cap binding. Two things would be worth a look:
 
 - **`RSS` still climbing after the plateau should have arrived**, or above
   `LOAD_MEMORY_LIMIT` + ~8 GiB: the growth is in the memory DuckDB's limit does
-  *not* govern (the lxml tree, the parsed records, the Arrow batch — #25 is
-  the loader holding a whole DOM per file). Lowering the limit will not touch
-  it; it only buys spilling.
+  *not* govern: one file's parsed records and its Arrow batch. Neither should
+  grow from file to file (since #25 the loader no longer holds each file's
+  whole tree), so growth there is a leak worth an issue. Lowering the limit
+  will not touch it; it only buys spilling.
 - **`s/file` collapsing** at the point `RSS` plateaus: the limit is low enough
   that DuckDB is spilling to `--temp-dir`. Neither 32GB nor 48GB did.
 
@@ -254,6 +249,16 @@ slower as the database grows — not because anything is wrong.**
 | --- | --- | --- | --- | --- | --- |
 | 2026-08-20 | 1,595 (1,334 baseline + 261 update) | 20h 32m | 46.4 s/file | 32GB | 38.2 GiB |
 | 2026-09-25 | 1,636 (1,334 baseline + 302 update) | 21h 29m | 47.3 s/file | 48GB | 53.3 GiB |
+| 2026-10-21 | 1,690 (1,334 baseline + 356 update) | 25h 53m | 55.2 s/file | 48GB | 53.6 GiB |
+
+The 2026-10-21 load was the first on data model 1.0 and on pubmed-downloader
+0.1.0, and it was 17% slower per file than September's for 3% more files. It
+was already slower at the start (~36 s/file over its first 42 files, against
+~30 over September's first 200), so the database's size does not explain it
+alone. Nothing has been measured to say whether the cause is the new schema,
+the new parser or the node. The build that used it, 2026nov08, topped up
+with the 31 update files posted since in 41m 02s (79 s/file, the first file
+included start-up).
 
 The average hides the shape. By stretch of the 2026-09-25 run (baseline files
 are a full 30,000 articles each; update files average ~20,000):
@@ -286,7 +291,8 @@ the per-file `DELETE ... WHERE source_file = ?` over every versioned table,
 
 The 24h limit that ran the 2026-09-25 load was 90% used, and each month's
 update files add ~50 files to the count, so `04-load.sbatch` asked for 36h,
-and still does until the first staged run is measured.
+and still does until the first staged run is measured. The serial
+2026-10-21 load used 72% of that, and would have overrun the old 24h.
 
 **Where the time goes, measured locally (2026-10-21).** The serial loader's
 phases were timed separately (`loaded` lines carry each phase's seconds;
@@ -357,7 +363,7 @@ Three independent ways, in rough order of convenience:
 1. **The progress log lines** — per file for `load` (current RSS, high-water
    peak, rate, elapsed and ETA), once a minute with an ETA for the JSON export.
    The simplest in-process signal,
-   no Slurm tooling needed, and the only one of the three available on `ht1`.
+   no Slurm tooling needed, and the only one of the three available on the cluster.
    Every step's log also opens with what it ran with. First comes a block from
    `config.sh`'s `log_run_settings`: `git describe` of the checkout, the Slurm
    job and allocation, and each setting after overrides (never the NCBI
@@ -365,7 +371,8 @@ Three independent ways, in rough order of convenience:
    `DuckDB <version>: memory_limit=…, threads=…, temp_directory=…` line, giving
    the values DuckDB actually uses. The download, journals and validate steps
    pass no limit, so their lines are the cgroup-derived defaults. That is the
-   probe AGENTS.md asks to re-take, taken on every run. `submit.sh` appends
+   probe [`docs/Memory.md`](../docs/Memory.md#what-duckdb-takes-from-the-allocation)
+   asks to re-take, taken on every run. `submit.sh` appends
    one line per job it submits to `data/logs/submit.log`: the time, the
    commit, the command as typed and the job id. That is the one thing no step
    log sees.
@@ -385,9 +392,11 @@ Three independent ways, in rough order of convenience:
    srun --mem=... /usr/bin/time -v uv run pubmed2db load
    ```
 
-> **Note:** `seff` is **not installed on `ht1.renci.org`** — use `sacct` or the
-> logged peak RSS instead. Long interactive runs are easiest inside `screen`
-> with a log: `screen -L -Logfile data/logs/$(date +%Y%b%d).log`.
+> **Note:** `seff` is **not installed on the cluster**, and `sacct`'s
+> `MaxRSS`/`MaxVMSize` came back empty for the export job 145739: the cluster
+> does not appear to gather per-job memory figures, so use the logged numbers.
+> Long interactive runs are easiest inside `screen` with a log:
+> `screen -L -Logfile data/logs/$(date +%Y%b%d).log`.
 
 ## Running `export`
 
@@ -404,7 +413,8 @@ the size of the database rather than with the largest input file:
 Neither step can be done a file at a time, which is why the numbers are an order
 of magnitude above the loader's.
 
-**Observed on full JSON exports of the whole corpus, all under `--mem=256G`:**
+**Observed on full JSON exports of the whole corpus, under `--mem=256G` unless
+noted:**
 
 | Run | Documents | Shards | `EXPORT_MEMORY_LIMIT` | Peak RSS | Wall time |
 | --- | --- | --- | --- | --- | --- |
@@ -413,25 +423,34 @@ of magnitude above the loader's.
 | 2026-08-05 | 40,923,261 | 16 | default | 201.0 GiB | 18m 06s, ≈38k documents/s |
 | 2026-08-21 | 40,990,218 | 8, gzip | 160GB | **153.3 GiB** | **12m 03s**, ≈57k documents/s |
 | 2026-09-26 | 41,153,516 | 8, gzip | 200GB | 191.9 GiB | 13m 14s, ≈52k documents/s |
+| 2026-10-22, `--mem=192G` | 41,271,245 | 8, gzip | 160GB | failed: 152.2 GiB, then refused at 68.1 GiB | 6m 41s (refused; see below) |
+| 2026-11-09 | 41,371,020 | 8, gzip | 160GB | failed: 154.3 GiB, then refused at 67.9 GiB | 6m 03s (same) |
+| 2026-11-09, allocator held | 41,371,020 | 8, gzip | 160GB | 205.1 GiB | 15m 00s, ≈46k documents/s |
 
 The first three predate the `COPY`-based writer (see "What changed" below); the
 last two are it. Read the pair together: DuckDB's peak tracks the buffer-pool
 limit it is given, not what the query needs — 40 GB more limit bought 38 GiB
 more peak and a slightly *slower* run — so `config.sh` now sets `160GB`, the
 lower of the two measured values. `--mem=256G` is the allocation both ran
-under; a 192G node would leave ~38 GiB over the 160GB run's peak and is the
-next thing to measure, not a number to assume.
+under, and the one `05-export.sbatch` asks for again. The first two v1.2-branch
+runs, at 192G and at 256G, failed on a refused allocation that a headroom
+calculation does not cover. The third held freed memory instead of returning
+it and finished, but its peak sits ~55 GiB above the buffer limit, so it needs
+the 256G. Why it holds memory, and what would let it stop (#80), is in
+[`docs/Memory.md` → "A refused allocation"](../docs/Memory.md#a-refused-allocation-bad-allocation).
 
-For the record, the 2026-08-05 run on `ht1` was submitted as `srun --mem=256G
+For the record, the 2026-08-05 run on the cluster was submitted as `srun --mem=256G
 --cpus-per-task=8 --time=02:00:00` (12:14:50 started, 12:32:56 finished) — kept
 here as the provenance of the numbers above, not as a command to copy;
 `05-export.sbatch` is what to run. The 2026-08-21 and 2026-09-26 runs were
 `./slurm/submit.sh all`, the first with `EXPORT_MEMORY_LIMIT=160GB` set by hand.
 
 Time is the cheap dimension: `05-export.sbatch` asks for an hour against a
-measured 13 minutes. Expect the first ~5 minutes to log `0.0 GiB across 0
-shard(s)` while RSS climbs — that is the `_latest_snapshot` window and the
-`string_agg` materializing before the first shard opens; both runs did it.
+measured 13–15 minutes. Expect the first ~5 minutes to log `0.0 GiB across 0
+shard(s)` while RSS climbs. That is the `COPY`'s join and `string_agg`
+materializing before the first shard opens, not the `_latest_snapshot` window:
+job 155264 built the snapshot and counted it in 17 seconds (the `starting JSON
+export` line's timestamp, against the heartbeat's elapsed time).
 
 ### What changed (and what to record next run)
 
@@ -501,12 +520,6 @@ Notes on the knobs:
   and did not need to: DuckDB reads the cgroup, so the pool was already the 8
   CPUs asked for. Treat `--threads` as a way to run below your allocation on a
   busy node, not as something the export needs.
-- **Parquet should be the lighter of the two — but is unmeasured.**
-  `export_parquet` builds the same `_latest_snapshot`, then writes each table
-  with a DuckDB `COPY ... TO`, so no full result set is pulled through Python.
-  It has never been run against the full corpus, so that is reasoning rather
-  than a number: give it the same allocation as the JSON export the first time
-  and read the logged peak RSS.
 - **Run `export` in a separate `srun` from `load`.** `update` deliberately does
   not chain into it, and sizing one job for both means paying the export's memory
   for the load's several hours.
@@ -571,10 +584,17 @@ and only one of them leaks. It is exported only when non-empty: exported empty,
 
 Set `VALIDATE_OFFLINE=1` for a node without egress, and `VALIDATE_FAIL_ON_WARN=1`
 to make warnings non-zero too — but not on a corpus run expecting a clean pass.
-The `month-format` check warns there by design: `pub_month` passes shapes like
-`"Sep-Oct 01"`, `"1st Quarter"` and `"Jun-Jun"` through verbatim (~0.02% of
-records, 5 in the 23,052 of one baseline plus one update file), so a correct
-corpus export reports `WARN`, not `PASS`. See #43.
+The `month-format` check warns there by design: `pub_month` passes PubMed's
+odder `MedlineDate` shapes through verbatim, so a correct corpus export reports
+`WARN`, not `PASS`. Expect about **0.5% of records**: 221,000 of 41,371,020 on
+2026-11-09, and 220,122 of 41,153,516 when the 2026-09-26 database was
+recounted with the export's own `pub_month`. A sample of two recent files had
+suggested ~0.02%, but older records carry far more `MedlineDate`s. In the
+September recount, the shapes were a day range (`"Dec 23-30"`, 38%), a spaced
+range (`"Nov - Dec"`, 21%), a range with a day (`"Jul-Aug 01"`, 13%), a slash
+range (`"Nov/Dec"`, 13%), a range across months with days (`"Jan 29-Feb 4"`)
+and the cross-year `"Dec-1999 Jan"` (2%). A count far from 0.5% is the thing
+to look into. See #43.
 
 It reads the *export*, not the database: every line of every shard is
 `json.loads`-ed once (gzipped shards are decompressed on the fly), and the only
@@ -591,12 +611,16 @@ matters far less here than it does for `load`.
 | 2026-08-05 (API key) | 40,923,261 | 16, 52.0 GiB | **7m 57s** | **5.182 GiB** |
 | 2026-08-21 (API key) | 40,990,218 | 8 gzip, 15.4 GiB | 25m 47s | 5.184 GiB |
 | 2026-09-26 (API key, `--previous-manifest`) | 41,153,516 | 8 gzip, 15.7 GiB | 28m 37s | 8.802 GiB |
+| 2026-11-09 (API key, no previous manifest found) | 41,371,020 | 8 gzip, 15.9 GiB | 30m 10s | 5.249 GiB |
+| 2026-11-09 re-run (API key, `--previous-manifest`) | 41,371,020 | 8 gzip, 15.9 GiB | 30m 42s | 8.925 GiB |
 
 The script's allocation is roughly 2× the larger peak, which is the margin to
 keep when passing `--previous-manifest`: that manifest is read into a second
 PMID set of comparable size, and it is what took the 2026-09-26 run from 5.2 to
-8.8 GiB. Both figures are in every report (`duration`, `peak_rss_gib`) — size
-the next run from those, not from this note. (The 2026-08-05 run was submitted
+8.8 GiB. The two 2026-11-09 runs, on the same export without and then with a
+previous manifest, measured it directly: 5.2 GiB, then 8.9. Both figures are
+in every report (`duration`, `peak_rss_gib`) — size the next run from those,
+not from this note. (The 2026-08-05 run was submitted
 with `--mem=256G --time=06:00:00`, copied from the export. It used 2% of that
 memory and 2% of the time; there is no reason to hold a big node for this job.)
 
@@ -693,7 +717,7 @@ before it is folded into the database file, replayed on the next open after a
 crash. Only the load sets it; the export writes nothing.
 
 **DuckDB reads your allocation, not the node.** Both of its sized defaults come
-from the Slurm cgroup, measured on duckdb 1.5.4: `threads` from the CPU quota
+from the Slurm cgroup, measured on duckdb 1.5.4 and 1.5.5: `threads` from the CPU quota
 (2 under `--cpus-per-task=2`, on a node whose `os.cpu_count()` is 64) and
 `memory_limit` from the memory quota (~76% of `--mem`). Neither flag below is
 rescuing DuckDB from a node-sized default — that was this repo's belief twice
