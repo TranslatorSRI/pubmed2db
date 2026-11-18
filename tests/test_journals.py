@@ -593,6 +593,36 @@ def test_parse_serfile_skips_a_file_it_cannot_parse():
     assert _parse_serfile([empty]) == {}  # and alone it is empty, not an error
 
 
+def test_parse_serfile_reads_records_that_recovery_nested(tmp_path):
+    """The catalog is parsed with `recover=True`, and recovering from an
+    unclosed element puts every later record inside the one holding it.
+    Those records must still be read, and the enclosing one with them."""
+    from pubmed2db.load import _parse_serfile
+
+    def record(nlm_id, first, end, *, broken=False):
+        unclosed = "<Unclosed>" if broken else ""
+        return (
+            f"<NLMCatalogRecord><NlmUniqueID>{nlm_id}</NlmUniqueID>"
+            f"<PublicationInfo><PublicationFirstYear>{first}</PublicationFirstYear>"
+            f"<PublicationEndYear>{end}</PublicationEndYear></PublicationInfo>"
+            f"{unclosed}</NLMCatalogRecord>"
+        )
+
+    update = tmp_path / "serfile.20261101.xml"
+    update.write_text(
+        "<?xml version='1.0'?><NLMCatalogRecordSet>"
+        + record("1", 1901, 9999, broken=True)
+        + record("2", 1902, 1950)
+        + record("3", 1903, 9999)
+        + "</NLMCatalogRecordSet>"
+    )
+    assert _parse_serfile([update]) == {
+        "1": (1901, None, True),
+        "2": (1902, 1950, False),
+        "3": (1903, None, True),
+    }
+
+
 def test_parse_serfile_raises_when_the_baseline_will_not_parse(tmp_path):
     """Unlike an update, a broken baseline must not be skipped: the updates alone
     are a non-empty mapping that `load_journals` cannot tell from a real

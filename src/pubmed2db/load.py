@@ -949,7 +949,9 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
     Files are read in the order given, so a later monthly update wins over the
     baseline. The XML is streamed with :func:`pubmed2db.parse.iter_records`,
     as the PubMed files are: the baseline is ~450 MB, and streaming it costs
-    ~5 s and ~50 MiB.
+    ~5 s and ~50 MiB. Unlike them it is parsed with ``recover=True``, and
+    with ``yield_nested``: recovering from an unclosed element moves every
+    later record inside the one that holds it, and those must still be read.
 
     A monthly update that will not parse is skipped, but a baseline that will
     not parse, or holds no records, raises. The updates only amend it, so
@@ -962,7 +964,10 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
         is_baseline = bool(_SERFILE_BASELINE_RE.fullmatch(path.name))
         n_before = len(years)
         try:
-            for element in iter_records(os.fspath(path), "NLMCatalogRecord", recover=True):
+            records = iter_records(
+                os.fspath(path), "NLMCatalogRecord", yield_nested=True, recover=True
+            )
+            for element in records:
                 nlm_id = element.findtext("NlmUniqueID")
                 if nlm_id:
                     end_raw = element.findtext("PublicationInfo/PublicationEndYear")
