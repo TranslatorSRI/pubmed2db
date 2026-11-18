@@ -1,10 +1,11 @@
-"""Tests for JSON and Parquet export."""
+"""Tests for the NDJSON export."""
 
 from __future__ import annotations
 
 import gzip
 import json
 
+import duckdb
 import pytest
 
 
@@ -292,41 +293,6 @@ def test_reexport_removes_stale_shards(loaded_con, tmp_path):
     assert survivors[0].endswith(".ndjson.gz")
 
 
-def test_parquet_latest_filters_versions(loaded_con, tmp_path):
-    from pubmed2db.export import export_parquet
-
-    out = tmp_path / "pq"
-    export_parquet(loaded_con, out, latest=True)
-
-    n_article = loaded_con.execute(
-        f"SELECT count(*) FROM read_parquet('{(out / 'article.parquet').as_posix()}')"
-    ).fetchone()[0]
-    n_abstract = loaded_con.execute(
-        f"SELECT count(*) FROM read_parquet('{(out / 'abstract_text.parquet').as_posix()}')"
-    ).fetchone()[0]
-    # Latest set: articles 1001 (v2) and 1003; only 1001 v2's single abstract section.
-    assert n_article == 2
-    assert n_abstract == 1
-
-    # The Parquet table carries names and PubMed's order too, not just UIs.
-    assert loaded_con.execute(
-        "SELECT type_name FROM read_parquet"
-        f"('{(out / 'publication_type.parquet').as_posix()}') ORDER BY position"
-    ).fetchall() == [("Letter",), ("Research Support, Non-U.S. Gov't",), ("Comment",)]
-
-
-def test_parquet_all_keeps_history(loaded_con, tmp_path):
-    from pubmed2db.export import export_parquet
-
-    out = tmp_path / "pq_all"
-    export_parquet(loaded_con, out, latest=False)
-    n_article = loaded_con.execute(
-        f"SELECT count(*) FROM read_parquet('{(out / 'article.parquet').as_posix()}')"
-    ).fetchone()[0]
-    # All versions: 1001 (x2), 1002, 1003.
-    assert n_article == 4
-
-
 def test_writing_progress_line_renders(tmp_path, caplog):
     """The heartbeat only fires a minute into a real export, so it never runs in
     the suite -- and a mismatched %-format arg there would first surface partway
@@ -343,7 +309,16 @@ def test_writing_progress_line_renders(tmp_path, caplog):
         ex._log_writing_progress(out, time.monotonic() - 5)
 
     line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("writing:"))
-    for fragment in ("GiB across 1 shard(s)", "MiB/s", "elapsed", "RSS"):
+    for fragment in (
+        "GiB across 1 shard(s)",
+        "MiB/s",
+        "elapsed",
+        "RSS",
+        "VSZ",
+        "node commit",
+        "maps",
+        "spill",
+    ):
         assert fragment in line, line
 
 
@@ -365,81 +340,28 @@ def test_placeholder_looking_fields_survive_to_the_export(con, gz_fixture, tmp_p
     assert docs["PMID:28972331"]["article_title"] == "[Not Available]."
 
 
-def test_parquet_export_removes_a_dropped_table_s_file(loaded_con, tmp_path):
-    """A re-export overwrites its own file names, so a table removed from the
-    schema would otherwise leave its Parquet behind for consumers to glob."""
-    from pubmed2db.export import export_parquet
-
-    out = tmp_path / "parquet"
-    out.mkdir()
-    orphan = out / "reference_citation.parquet"  # dropped from schema.sql
-    orphan.write_bytes(b"stale")
-
-    written = export_parquet(loaded_con, out)
-
-    assert not orphan.exists()
-    assert set(out.glob("*.parquet")) == set(written)
-
-
-def test_parquet_exports_every_table(loaded_con, tmp_path):
-    """One file per table, `pipeline_run` included -- it carries the journal
-    refresh provenance, which nothing else in the export records."""
-    from pubmed2db.export import export_parquet
-
-    out = tmp_path / "parquet"
-    written = export_parquet(loaded_con, out)
-
-    tables = {
-        row[0]
-        for row in loaded_con.execute(
-            "SELECT table_name FROM duckdb_tables() WHERE schema_name = 'main' AND NOT temporary"
-        ).fetchall()
-    }
-    assert {path.stem for path in written} == tables
-
-    # Parquet is the same data model as the database, column for column: a
-    # consumer can switch between the two without rewriting a query.
-    for path in written:
-        exported = loaded_con.execute(
-            f"SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM '{path.as_posix()}')"
-        ).fetchall()
-        assert (
-            exported
-            == loaded_con.execute(
-                f"SELECT column_name, column_type FROM (DESCRIBE {path.stem})"
-            ).fetchall()
-        ), path.stem
-
-
 def test_exports_describe_themselves_in_metadata_json(loaded_con, tmp_path):
     """An export travels without its database: metadata.json carries the data
     model version, the corpus cutoff, the record count and a checksum per file."""
     from pubmed2db.datamodel import DATA_MODEL_VERSION
-    from pubmed2db.export import export_json, export_parquet, file_sha256
+    from pubmed2db.export import export_json, file_sha256
 
-    for fmt, export in (
-        ("ndjson", lambda out: export_json(loaded_con, out)),
-        ("parquet-latest", lambda out: export_parquet(loaded_con, out)),
-        ("parquet-all", lambda out: export_parquet(loaded_con, out, latest=False)),
-    ):
-        out = tmp_path / fmt
-        files = export(out)
-        meta = json.loads((out / "metadata.json").read_text())
-        assert meta["data_model_version"] == DATA_MODEL_VERSION
-        assert meta["format"] == fmt
-        # PMIDs 1001 and 1003; 1002 was deleted. The same in every format, so
-        # the history export counts its versions separately.
-        assert meta["records"] == 2
-        assert meta.get("article_versions") == (4 if fmt == "parquet-all" else None)
-        assert meta["corpus"]["cutoff_file"] == "pubmed25n0002.xml.gz"
-        assert meta["database"]["data_model_version"] == DATA_MODEL_VERSION
-        assert [(f["name"], f["sha256"]) for f in meta["files"]] == [
-            (path.name, file_sha256(path)) for path in sorted(files)
-        ]
-        # The same hashes, as `sha256sum -c` reads them: "<hex>  <name>".
-        assert (out / "SHA256SUMS").read_text().splitlines() == [
-            f"{f['sha256']}  {f['name']}" for f in meta["files"]
-        ]
+    out = tmp_path / "json"
+    files = export_json(loaded_con, out)
+    meta = json.loads((out / "metadata.json").read_text())
+    assert meta["data_model_version"] == DATA_MODEL_VERSION
+    assert meta["format"] == "ndjson"
+    # PMIDs 1001 and 1003; 1002 was deleted.
+    assert meta["records"] == 2
+    assert meta["corpus"]["cutoff_file"] == "pubmed25n0002.xml.gz"
+    assert meta["database"]["data_model_version"] == DATA_MODEL_VERSION
+    assert [(f["name"], f["sha256"]) for f in meta["files"]] == [
+        (path.name, file_sha256(path)) for path in sorted(files)
+    ]
+    # The same hashes, as `sha256sum -c` reads them: "<hex>  <name>".
+    assert (out / "SHA256SUMS").read_text().splitlines() == [
+        f"{f['sha256']}  {f['name']}" for f in meta["files"]
+    ]
 
 
 def test_a_failed_re_export_does_not_look_finished(loaded_con, tmp_path, monkeypatch):
@@ -447,18 +369,13 @@ def test_a_failed_re_export_does_not_look_finished(loaded_con, tmp_path, monkeyp
     before it writes anything: dying partway must not leave the mark behind."""
     from pubmed2db import export
 
-    for run in (
-        lambda **kw: export.export_json(loaded_con, tmp_path / "json", **kw),
-        lambda **kw: export.export_parquet(loaded_con, tmp_path / "parquet", **kw),
-    ):
-        run()
-        with monkeypatch.context() as patch:
-            patch.setattr(export, "write_export_metadata", lambda *a, **k: 1 / 0)
-            with pytest.raises(ZeroDivisionError):
-                run(overwrite=True)
-    for out in (tmp_path / "json", tmp_path / "parquet"):
-        assert not (out / "metadata.json").exists()
-        assert not (out / "SHA256SUMS").exists()
+    out = tmp_path / "json"
+    export.export_json(loaded_con, out)
+    monkeypatch.setattr(export, "write_export_metadata", lambda *a, **k: 1 / 0)
+    with pytest.raises(ZeroDivisionError):
+        export.export_json(loaded_con, out, overwrite=True)
+    assert not (out / "metadata.json").exists()
+    assert not (out / "SHA256SUMS").exists()
 
 
 def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog):
@@ -481,7 +398,16 @@ def test_export_progress_line_renders(loaded_con, tmp_path, monkeypatch, caplog)
         ex.export_json(loaded_con, tmp_path / "json")
 
     line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("writing:"))
-    for fragment in ("GiB across 1 shard(s)", "MiB/s", "elapsed", "RSS"):
+    for fragment in (
+        "GiB across 1 shard(s)",
+        "MiB/s",
+        "elapsed",
+        "RSS",
+        "VSZ",
+        "node commit",
+        "maps",
+        "spill",
+    ):
         assert fragment in line, line
 
 
@@ -737,6 +663,7 @@ def test_the_heartbeat_survives_a_shard_vanishing(tmp_path):
     disappear between the glob and the stat. Taking the thread down there would
     leave a 20-minute export silent -- the failure it exists to prevent."""
     from pubmed2db import export as ex
+    from pubmed2db.util import size_bytes
 
     out = tmp_path / "json"
     out.mkdir()
@@ -754,7 +681,7 @@ def test_the_heartbeat_survives_a_shard_vanishing(tmp_path):
 
     ex._shard_paths = racing
     try:
-        assert ex._shard_bytes(ex._shard_paths(out)) == 2048
+        assert size_bytes(ex._shard_paths(out)) == 2048
     finally:
         ex._shard_paths = real_glob
 
@@ -844,19 +771,200 @@ def test_a_finished_export_is_refused_without_overwrite(loaded_con, tmp_path):
     The guard lives in the export itself, not only in 05-export.sbatch, so
     `pubmed2db export` run by hand cannot delete it either (#24).
     """
-    from pubmed2db.export import export_json, export_parquet
+    from pubmed2db.export import export_json
 
-    # archive_build.py takes only the validated JSON build, so only JSON names it.
-    for exporter, out, advice in (
-        (export_json, tmp_path / "json", "archive_build"),
-        (export_parquet, tmp_path / "parquet", "Move it aside"),
-    ):
-        exporter(loaded_con, out)
-        before = sorted(p.name for p in out.iterdir())
-        with pytest.raises(FileExistsError, match=advice):
-            exporter(loaded_con, out)
-        assert sorted(p.name for p in out.iterdir()) == before
-        exporter(loaded_con, out, overwrite=True)
-        # A partial export (no metadata.json: a run that died) is swept unasked.
-        (out / "metadata.json").unlink()
-        exporter(loaded_con, out)
+    out = tmp_path / "json"
+    export_json(loaded_con, out)
+    before = sorted(p.name for p in out.iterdir())
+    with pytest.raises(FileExistsError, match="archive_build"):
+        export_json(loaded_con, out)
+    assert sorted(p.name for p in out.iterdir()) == before
+    export_json(loaded_con, out, overwrite=True)
+    # A partial export (no metadata.json: a run that died) is swept unasked.
+    (out / "metadata.json").unlink()
+    export_json(loaded_con, out)
+
+
+class _RecordingConnection:
+    """A DuckDB connection that records each statement and can fail one.
+
+    DuckDB's connection attributes are read-only, so a failure in the middle of
+    `export_json` is injected by wrapping the connection rather than patching it.
+    """
+
+    def __init__(self, con, fail_on: str | None = None, error: Exception | None = None):
+        self._con = con
+        self._fail_on = fail_on
+        self._error = error
+        self.statements: list[str] = []
+
+    def execute(self, sql, *args, **kwargs):
+        self.statements.append(sql)
+        if self._fail_on is not None and sql.lstrip().startswith(self._fail_on):
+            raise self._error
+        return self._con.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._con, name)
+
+
+_REFUSED = "Out of Memory Error: Failed to allocate block of 263176 bytes (bad allocation)"
+
+
+@pytest.mark.parametrize("fail_on", ["CREATE OR REPLACE TEMP TABLE _latest_snapshot", "COPY"])
+def test_an_out_of_memory_error_logs_the_memory_figures_and_propagates(
+    loaded_con, tmp_path, caplog, fail_on
+):
+    """The 192G run died a minute after its last heartbeat line, with nothing
+    to say what the node's commit charge was (#42). Either memory-heavy
+    statement failing now logs the figures, and the error still ends the run."""
+    import logging
+
+    import duckdb
+
+    from pubmed2db.export import export_json
+
+    con = _RecordingConnection(loaded_con, fail_on, duckdb.OutOfMemoryException(_REFUSED))
+    threads_before = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    with caplog.at_level(logging.ERROR, logger="pubmed2db.export"):
+        with pytest.raises(duckdb.OutOfMemoryException):
+            export_json(con, tmp_path / "json", shards=1)
+
+    (line,) = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    for fragment in ("RSS", "VSZ", "node commit", "maps", "spill", "A refused allocation"):
+        assert fragment in line, line
+    after = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    assert after == threads_before
+
+
+class _FailingRestore(_RecordingConnection):
+    """Also fails to put insertion order back, as a connection DuckDB has
+    invalidated after a refused allocation would."""
+
+    broken = False
+
+    def execute(self, sql, *args, **kwargs):
+        if self.broken and sql.startswith("SET preserve_insertion_order = true"):
+            self.statements.append(sql)
+            raise duckdb.ConnectionException("connection invalidated")
+        try:
+            return super().execute(sql, *args, **kwargs)
+        except duckdb.OutOfMemoryException:
+            self.broken = True
+            raise
+
+
+def test_a_failed_restore_neither_hides_the_out_of_memory_error_nor_skips_the_rest(
+    loaded_con, tmp_path, caplog
+):
+    """The figures are logged before the settings are restored, the caller still
+    gets the out-of-memory error, and the settings after the one that failed
+    (threads, pinned to --shards) are restored anyway."""
+    import logging
+
+    from pubmed2db.export import export_json
+
+    threads_before = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    con = _FailingRestore(loaded_con, "COPY", duckdb.OutOfMemoryException(_REFUSED))
+    with caplog.at_level(logging.WARNING, logger="pubmed2db.export"):
+        with pytest.raises(duckdb.OutOfMemoryException):
+            export_json(con, tmp_path / "json", shards=1)
+
+    messages = [r.getMessage() for r in caplog.records]
+    logged = next(i for i, m in enumerate(messages) if m.startswith("DuckDB ran out of memory"))
+    warned = next(i for i, m in enumerate(messages) if m.startswith("could not restore"))
+    assert logged < warned
+    after = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    assert after == threads_before
+
+
+def test_a_failed_restore_after_a_clean_block_is_raised(loaded_con):
+    """With nothing else to report, a setting that cannot be restored is the error."""
+    from pubmed2db.export import _duckdb_settings
+
+    threads_before = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    con = _FailingRestore(loaded_con)
+    con.broken = True
+    with pytest.raises(duckdb.ConnectionException):
+        with _duckdb_settings(con, preserve_insertion_order=False, threads=1):
+            pass
+    after = loaded_con.execute("SELECT current_setting('threads')").fetchone()[0]
+    assert after == threads_before
+
+
+def test_a_memory_limit_error_is_not_blamed_on_overcommit(loaded_con, tmp_path, caplog):
+    """DuckDB's own limit names itself; the overcommit hint is only for a refusal."""
+    import logging
+
+    import duckdb
+
+    from pubmed2db.export import export_json
+
+    error = duckdb.OutOfMemoryException(
+        "Out of Memory Error: could not allocate block of size 256.0 KiB (1.0 GiB/1.0 GiB used)"
+    )
+    con = _RecordingConnection(loaded_con, "COPY", error)
+    with caplog.at_level(logging.ERROR, logger="pubmed2db.export"):
+        with pytest.raises(duckdb.OutOfMemoryException):
+            export_json(con, tmp_path / "json", shards=1)
+
+    (line,) = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert "node commit" in line
+    assert "overcommit" not in line
+
+
+def test_the_export_drops_insertion_order_for_its_heavy_statements_and_restores_it(
+    loaded_con, tmp_path
+):
+    """Both corpus-sized statements run unordered, as DuckDB's own OOM message
+    suggests and nothing downstream needs; the connection gets its settings back."""
+    from pubmed2db.export import export_json
+
+    def settings():
+        return loaded_con.execute(
+            "SELECT current_setting('preserve_insertion_order'), current_setting('threads'), "
+            "current_setting('allocator_flush_threshold'), "
+            "current_setting('allocator_bulk_deallocation_flush_threshold')"
+        ).fetchone()
+
+    before = settings()
+    con = _RecordingConnection(loaded_con)
+    export_json(con, tmp_path / "json", shards=1)
+    assert settings() == before
+
+    statements = [" ".join(sql.split()) for sql in con.statements]
+    unordered = "SET preserve_insertion_order = false"
+    for heavy in ("CREATE OR REPLACE TEMP TABLE _latest_snapshot", "COPY"):
+        index = next(i for i, sql in enumerate(statements) if sql.startswith(heavy))
+        last_set = max(
+            i for i, sql in enumerate(statements[:index]) if "preserve_insertion_order =" in sql
+        )
+        assert statements[last_set] == unordered, (heavy, statements[last_set])
+    assert "SET threads = 1" in statements
+
+
+def test_the_export_holds_allocator_memory_for_its_heavy_statements(loaded_con, tmp_path):
+    """Both corpus-sized statements run with DuckDB's allocator flushes raised
+    out of reach (#42), and the connection's own thresholds come back after."""
+    from pubmed2db.export import export_json
+
+    before = loaded_con.execute(
+        "SELECT current_setting('allocator_flush_threshold'), "
+        "current_setting('allocator_bulk_deallocation_flush_threshold')"
+    ).fetchone()
+    con = _RecordingConnection(loaded_con)
+    export_json(con, tmp_path / "json", shards=1)
+
+    statements = [" ".join(sql.split()) for sql in con.statements]
+    for setting in ("allocator_flush_threshold", "allocator_bulk_deallocation_flush_threshold"):
+        for heavy in ("CREATE OR REPLACE TEMP TABLE _latest_snapshot", "COPY"):
+            index = next(i for i, sql in enumerate(statements) if sql.startswith(heavy))
+            last_set = max(
+                i for i, sql in enumerate(statements[:index]) if sql.startswith(f"SET {setting} =")
+            )
+            assert statements[last_set] == f"SET {setting} = '1TB'", (heavy, statements[last_set])
+    after = loaded_con.execute(
+        "SELECT current_setting('allocator_flush_threshold'), "
+        "current_setting('allocator_bulk_deallocation_flush_threshold')"
+    ).fetchone()
+    assert after == before

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_parses_all_articles_and_raw_dates(gz_fixture):
     from pubmed2db.parse import parse_file
@@ -241,7 +243,7 @@ def test_book_records_are_counted_not_dropped_silently(gz_fixture, caplog, tmp_p
     assert "skipped 1 PubmedBookArticle record(s)" in caplog.text
 
 
-def test_a_file_with_only_deletions_parses(tmp_path):
+def test_deletions_and_articles_each_parse_without_the_other(gz_fixture, tmp_path):
     """Streaming reads the three record kinds in one pass, so a file holding a
     DeleteCitation and no articles (a real shape for an update file) must still
     yield its deletions, and one with articles and no DeleteCitation none."""
@@ -263,19 +265,85 @@ def test_a_file_with_only_deletions_parses(tmp_path):
     assert parsed.deleted_pmids == [1002, 1003]
     assert parsed.n_failed == 0 and parsed.n_book_records == 0
 
+    # pubmed25n0001 has articles and no <DeleteCitation>.
+    articles_only = parse_file(gz_fixture("pubmed25n0001"))
+    assert articles_only.articles
+    assert articles_only.deleted_pmids == []
 
-def test_an_uncompressed_xml_file_parses_too(gz_fixture, tmp_path):
-    """`iterparse` does not decompress by path as `etree.parse` did; both
-    spellings go through the same opener choice."""
+
+@pytest.mark.parametrize("name", ["renamed.xml.GZ", "renamed.tmp", "plain.xml"])
+def test_compression_is_read_from_the_content_not_the_name(gz_fixture, tmp_path, name):
+    """`etree.parse` let libxml2 sniff for gzip, so a gzipped file parsed under
+    any name; `iterparse` on a file object decompresses nothing, and choosing by
+    extension would fail such a file at byte 0. `open_xml` sniffs the magic
+    bytes instead, so a renamed gzip file and a plain one both parse."""
     import gzip
+    import shutil
 
     from pubmed2db.parse import parse_file
 
     src = gz_fixture("pubmed25n0001")
-    plain = tmp_path / "pubmed25n0001.xml"
-    with gzip.open(src, "rb") as handle:
-        plain.write_bytes(handle.read())
+    dst = tmp_path / name
+    if name.startswith("plain"):
+        with gzip.open(src, "rb") as handle:
+            dst.write_bytes(handle.read())
+    else:
+        shutil.copyfile(src, dst)
 
-    assert [a.pubmed for a in parse_file(plain).articles] == [
+    assert [a.pubmed for a in parse_file(dst).articles] == [
         a.pubmed for a in parse_file(src).articles
     ]
+
+
+def test_iter_records_yields_direct_children_of_the_root_only():
+    """`iterparse`'s `tag=` matches at any depth, but `root.findall` (which the
+    streaming replaced) matched the root's children only. A nested match must
+    be neither yielded nor pruned: pruning its "earlier siblings" would delete
+    the start of the enclosing record before that record was read."""
+    import io
+
+    from pubmed2db.parse import iter_records
+
+    xml = b"<Set><R><a/><R><b/></R><c/></R><x/><R><d/></R></Set>"
+    seen = [[child.tag for child in el] for el in iter_records(io.BytesIO(xml), "R")]
+    assert seen == [["a", "R", "c"], ["d"]]
+
+
+def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog):
+    """Only the three tags the DTD allows are read as records. Anything else
+    directly under the root, before, between or after them, is skipped,
+    counted by tag and named in a warning, not mistaken for a deletion; and
+    the same tag nested inside a record is not counted at all."""
+    import gzip
+    import logging
+
+    from pubmed2db.parse import parse_file
+
+    xml = (
+        "<?xml version='1.0'?><PubmedArticleSet>"
+        "<!-- a comment is not a record -->"
+        "<Mystery><PMID>7</PMID></Mystery>"
+        "<DeleteCitation><PMID Version='1'>1002</PMID></DeleteCitation>"
+        "<Mystery/><Other/>"
+        "<DeleteCitation><PMID Version='1'>1003<Mystery/></PMID></DeleteCitation>"
+        "<Mystery/>"
+        "</PubmedArticleSet>"
+    )
+    dst = tmp_path / "pubmed25n0009.xml.gz"
+    with gzip.open(dst, "wt", encoding="utf-8") as handle:
+        handle.write(xml)
+
+    with caplog.at_level(logging.WARNING, logger="pubmed2db.parse"):
+        parsed = parse_file(dst)
+    assert parsed.deleted_pmids == [1002, 1003]
+    assert parsed.unrecognized_records == {"Mystery": 3, "Other": 1}
+    assert "skipped 4 top-level record(s)" in caplog.text
+    assert "Mystery ×3, Other ×1" in caplog.text
+
+
+def test_a_known_file_has_no_unrecognized_records(gz_fixture, caplog):
+    from pubmed2db.parse import parse_file
+
+    for stem in ("pubmed25n0001", "pubmed25n0002"):
+        assert parse_file(gz_fixture(stem)).unrecognized_records == {}
+    assert "does not know" not in caplog.text
