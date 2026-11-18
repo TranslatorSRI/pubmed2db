@@ -299,14 +299,39 @@ def test_iter_records_yields_direct_children_of_the_root_only():
     """`iterparse`'s `tag=` matches at any depth, but `root.findall` (which the
     streaming replaced) matched the root's children only. A nested match must
     be neither yielded nor pruned: pruning its "earlier siblings" would delete
-    the start of the enclosing record before that record was read."""
+    the start of the enclosing record before that record was read. It is
+    counted instead, so the caller can say so."""
     import io
+    from collections import Counter
 
     from pubmed2db.parse import iter_records
 
     xml = b"<Set><R><a/><R><b/></R><c/></R><x/><R><d/></R></Set>"
-    seen = [[child.tag for child in el] for el in iter_records(io.BytesIO(xml), "R")]
+    nested = Counter()
+    records = iter_records(io.BytesIO(xml), "R", nested=nested)
+    seen = [[child.tag for child in el] for el in records]
     assert seen == [["a", "R", "c"], ["d"]]
+    assert nested == {"R": 1}
+
+
+def test_iter_records_can_yield_nested_matches_for_a_recovered_parse():
+    """With `recover=True`, an unclosed element in one record puts every later
+    record inside it. `yield_nested` reads those too, and prunes nothing
+    around them, so the enclosing record keeps its own children: a loop that
+    pruned around them (as `main`'s serial-catalog parse did) read the nested
+    records and lost the enclosing one's ID."""
+    import io
+
+    from pubmed2db.parse import iter_records
+
+    xml = (
+        b"<Set><R><id>1</id><X></R>"  # <X> is never closed
+        b"<R><id>2</id></R><R><id>3</id></R></Set>"
+    )
+    strict = iter_records(io.BytesIO(xml), "R", recover=True)
+    assert [el.findtext("id") for el in strict] == ["1"]
+    recovered = iter_records(io.BytesIO(xml), "R", yield_nested=True, recover=True)
+    assert [el.findtext("id") for el in recovered] == ["2", "3", "1"]
 
 
 def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog):
@@ -341,9 +366,42 @@ def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog)
     assert "Mystery ×3, Other ×1" in caplog.text
 
 
+def test_nested_records_are_counted_and_logged(tmp_path, caplog):
+    """A record inside another element is skipped (pruning around it would
+    truncate the element holding it), but not silently: a wrapper PubMed
+    might add would otherwise hide every record inside it."""
+    import gzip
+    import logging
+
+    from pubmed2db.parse import parse_file
+
+    xml = (
+        "<?xml version='1.0'?><PubmedArticleSet>"
+        "<Wrapper><DeleteCitation><PMID Version='1'>1001</PMID></DeleteCitation>"
+        "<PubmedBookArticle/><PubmedBookArticle/></Wrapper>"
+        "<DeleteCitation><PMID Version='1'>1002</PMID></DeleteCitation>"
+        "</PubmedArticleSet>"
+    )
+    dst = tmp_path / "pubmed25n0009.xml.gz"
+    with gzip.open(dst, "wt", encoding="utf-8") as handle:
+        handle.write(xml)
+
+    with caplog.at_level(logging.WARNING, logger="pubmed2db.parse"):
+        parsed = parse_file(dst)
+    assert parsed.deleted_pmids == [1002]
+    assert parsed.n_book_records == 0
+    assert parsed.nested_records == {"PubmedBookArticle": 2, "DeleteCitation": 1}
+    assert parsed.unrecognized_records == {"Wrapper": 1}
+    assert "skipped 3 record(s) nested inside another element" in caplog.text
+    assert "PubmedBookArticle ×2, DeleteCitation ×1" in caplog.text
+
+
 def test_a_known_file_has_no_unrecognized_records(gz_fixture, caplog):
     from pubmed2db.parse import parse_file
 
     for stem in ("pubmed25n0001", "pubmed25n0002"):
-        assert parse_file(gz_fixture(stem)).unrecognized_records == {}
+        parsed = parse_file(gz_fixture(stem))
+        assert parsed.unrecognized_records == {}
+        assert parsed.nested_records == {}
     assert "does not know" not in caplog.text
+    assert "nested" not in caplog.text

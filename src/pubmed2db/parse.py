@@ -93,6 +93,11 @@ class ParsedFile:
     #: Top-level records ``parse_file`` does not know, by tag. The DTD allows
     #: none, so anything here means PubMed has changed its file format.
     unrecognized_records: dict[str, int] = field(default_factory=dict)
+    #: Known records found *inside* another element rather than directly under
+    #: the root, by tag. Skipped, because pruning around them would truncate
+    #: the record that encloses them; the DTD forbids them, so, as above, any
+    #: here means the format has changed.
+    nested_records: dict[str, int] = field(default_factory=dict)
 
 
 _PUBDATE_PATH = "MedlineCitation/Article/Journal/JournalIssue/PubDate"
@@ -271,6 +276,8 @@ def iter_records(
     tag: str | tuple[str, ...],
     *,
     unrecognized: Counter[str] | None = None,
+    nested: Counter[str] | None = None,
+    yield_nested: bool = False,
     **iterparse_kwargs: Any,
 ) -> Iterator[etree._Element]:
     """Stream the ``tag`` children of the document root, discarding each after use.
@@ -286,6 +293,15 @@ def iter_records(
     "earlier siblings" of a nested match would delete parts of the record
     enclosing it before that record was read. The DTDs forbid such nesting
     today; this keeps a future one from silently truncating records.
+    ``nested``, if given, counts the matches skipped this way, by tag, so the
+    caller can say so.
+
+    ``yield_nested=True`` is for a parse with ``recover=True``, where nesting
+    is libxml2's repair of a malformed file rather than a format change: an
+    unclosed element in one record puts every record after it inside that
+    one. Skipping them would lose the rest of the file without a word, so
+    they are yielded and cleared, but nothing around them is pruned; the
+    enclosing record is then read whole, minus its cleared nested records.
 
     ``unrecognized``, if given, counts the root's *other* element children by
     tag. ``tag=`` filters in C, so those never reach Python as events; they
@@ -303,8 +319,15 @@ def iter_records(
     context = etree.iterparse(source, events=("end",), tag=tag, **iterparse_kwargs)
     for _event, element in context:
         parent = element.getparent()
-        if parent is None or parent.getparent() is not None:
-            continue  # the root itself, or nested: left for its enclosing record
+        if parent is None:
+            continue  # the root itself
+        if parent.getparent() is not None:  # nested: left for its enclosing record
+            if yield_nested:
+                yield element
+                element.clear(keep_tail=True)
+            elif nested is not None:
+                nested[element.tag] += 1
+            continue
         yield element
         element.clear(keep_tail=True)
         while element.getprevious() is not None:
@@ -371,12 +394,15 @@ def parse_file(path: str | Path) -> ParsedFile:
     with a ``<DeleteCitation>`` and no articles, or the reverse, parses the
     same as before. Any other top-level element is skipped, counted in
     ``unrecognized_records`` and named in a warning, rather than read as one of
-    the three.
+    the three; one of the three nested inside another element is likewise
+    skipped, counted in ``nested_records`` and named in a warning.
     """
     result = ParsedFile()
     unrecognized: Counter[str] = Counter()
+    nested: Counter[str] = Counter()
     with open_xml(path) as handle:
-        for element in iter_records(handle, _RECORD_TAGS, unrecognized=unrecognized):
+        records = iter_records(handle, _RECORD_TAGS, unrecognized=unrecognized, nested=nested)
+        for element in records:
             if element.tag == "PubmedArticle":
                 _parse_article(element, path, result)
             elif element.tag == "PubmedBookArticle":
@@ -394,6 +420,7 @@ def parse_file(path: str | Path) -> ParsedFile:
                 # here; a tag not in it is counted by iter_records instead.
                 unrecognized[element.tag] += 1
     result.unrecognized_records = dict(unrecognized)
+    result.nested_records = dict(nested)
 
     if result.n_book_records:
         logger.warning(
@@ -410,6 +437,14 @@ def parse_file(path: str | Path) -> ParsedFile:
             path,
             unrecognized.total(),
             ", ".join(f"{tag} ×{n}" for tag, n in unrecognized.most_common()),
+        )
+    if nested:
+        logger.warning(
+            "%s: skipped %d record(s) nested inside another element rather than "
+            "directly under the root (%s); PubMed's file format may have changed",
+            path,
+            nested.total(),
+            ", ".join(f"{tag} ×{n}" for tag, n in nested.most_common()),
         )
 
     return result
