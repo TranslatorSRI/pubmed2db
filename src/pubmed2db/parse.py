@@ -21,6 +21,7 @@ We drive the XML iteration ourselves (rather than using
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import logging
 from collections import Counter
@@ -257,18 +258,29 @@ _RECORD_TAGS = ("PubmedArticle", "PubmedBookArticle", "DeleteCitation")
 _GZIP_MAGIC = b"\x1f\x8b"
 
 
-def open_xml(path: str | Path) -> BinaryIO:
+@contextlib.contextmanager
+def open_xml(path: str | Path) -> Iterator[BinaryIO]:
     """Open an XML file for reading, decompressing it if its *content* is gzip.
 
     ``etree.parse`` let libxml2 decide, and libxml2 sniffs the bytes, so a
     gzipped file parsed whatever its name. ``iterparse`` on a file object does
     no decompression at all, and choosing by extension would turn a renamed
     file (``.GZ``, a temp name in a script) into an ``XMLSyntaxError`` at byte
-    0. Reading the two magic bytes keeps the old behaviour.
+    0. Peeking at the two magic bytes keeps the old behaviour, with one open
+    of the file (each one a metadata round trip on a network filesystem).
+
+    A damaged gzip file now fails in Python's ``gzip`` (``EOFError`` for a
+    truncated one, ``gzip.BadGzipFile`` or ``zlib.error`` for a corrupt one)
+    rather than as libxml2's ``XMLSyntaxError``.
     """
-    with open(path, "rb") as probe:
-        magic = probe.read(len(_GZIP_MAGIC))
-    return gzip.open(path, "rb") if magic == _GZIP_MAGIC else open(path, "rb")
+    with open(path, "rb") as raw:
+        if raw.peek(len(_GZIP_MAGIC))[: len(_GZIP_MAGIC)] == _GZIP_MAGIC:
+            # GzipFile leaves a file object it was given open; `raw`'s `with`
+            # closes it.
+            with gzip.GzipFile(fileobj=raw, mode="rb") as unzipped:
+                yield unzipped
+        else:
+            yield raw
 
 
 def iter_records(
@@ -396,6 +408,9 @@ def parse_file(path: str | Path) -> ParsedFile:
     ``unrecognized_records`` and named in a warning, rather than read as one of
     the three; one of the three nested inside another element is likewise
     skipped, counted in ``nested_records`` and named in a warning.
+
+    A damaged file raises: ``XMLSyntaxError`` for bad XML, and the ``gzip``
+    errors :func:`open_xml` lists for a bad compressed stream.
     """
     result = ParsedFile()
     unrecognized: Counter[str] = Counter()

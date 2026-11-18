@@ -123,6 +123,21 @@ def test_bad_file_is_skipped_not_fatal(con, gz_fixture, tmp_path):
     assert needs_load(con, "pubmed25n0003.xml.gz") is True
 
 
+def test_truncated_gzip_file_is_skipped_not_fatal(con, gz_fixture, tmp_path):
+    """The gzip stream is read by Python, not libxml2, so a truncated download
+    fails as `EOFError` rather than `XMLSyntaxError`. It must still fail only
+    its own file."""
+    from pubmed2db.load import load_files, needs_load
+
+    good = gz_fixture("pubmed25n0001")
+    bad = tmp_path / "pubmed25n0003.xml.gz"
+    data = good.read_bytes()
+    bad.write_bytes(data[: len(data) // 2])
+
+    assert load_files(con, [(bad, "update"), (good, "baseline")]) == (1, ["pubmed25n0003.xml.gz"])
+    assert needs_load(con, "pubmed25n0003.xml.gz") is True
+
+
 def test_unparseable_filename_is_ignored_not_fatal(con, gz_fixture, tmp_path):
     """A stray file in the download directory must not abort the whole run."""
     from pubmed2db.load import load_files
