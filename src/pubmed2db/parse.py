@@ -92,7 +92,8 @@ class ParsedFile:
     n_failed: int = 0
     n_book_records: int = 0
     #: Top-level records ``parse_file`` does not know, by tag. The DTD allows
-    #: none, so anything here means PubMed has changed its file format.
+    #: none, so anything here means PubMed has changed its file format. Only
+    #: logged: a ``source_file`` count would be a data-model bump.
     unrecognized_records: dict[str, int] = field(default_factory=dict)
     #: Known records found *inside* another element rather than directly under
     #: the root, by tag. Skipped, because pruning around them would truncate
@@ -431,9 +432,10 @@ def parse_file(path: str | Path) -> ParsedFile:
                     if pmid_tag.text and pmid_tag.text.strip().isdigit():
                         result.deleted_pmids.append(int(pmid_tag.text.strip()))
             else:
-                # Reached only by a tag added to _RECORD_TAGS without a branch
-                # here; a tag not in it is counted by iter_records instead.
-                unrecognized[element.tag] += 1
+                # iter_records yields only _RECORD_TAGS, and counts every other
+                # tag itself, so this is a tag added there without a branch
+                # here: a bug to fix, not a record to count.
+                raise AssertionError(f"parse_file has no branch for <{element.tag}>")
     result.unrecognized_records = dict(unrecognized)
     result.nested_records = dict(nested)
 

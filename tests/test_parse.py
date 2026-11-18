@@ -396,6 +396,22 @@ def test_nested_records_are_counted_and_logged(tmp_path, caplog):
     assert "PubmedBookArticle ×2, DeleteCitation ×1" in caplog.text
 
 
+def test_a_record_tag_without_a_branch_fails_loudly(tmp_path, monkeypatch):
+    """`iter_records` counts every tag outside `_RECORD_TAGS` itself, so
+    `parse_file`'s last branch is reached only by a tag added to
+    `_RECORD_TAGS` and not handled: a bug, which must not pass as a count."""
+    import gzip
+
+    from pubmed2db import parse
+
+    monkeypatch.setattr(parse, "_RECORD_TAGS", (*parse._RECORD_TAGS, "NewKind"))
+    dst = tmp_path / "pubmed25n0009.xml.gz"
+    with gzip.open(dst, "wt", encoding="utf-8") as handle:
+        handle.write("<?xml version='1.0'?><PubmedArticleSet><NewKind/></PubmedArticleSet>")
+    with pytest.raises(AssertionError, match="no branch for <NewKind>"):
+        parse.parse_file(dst)
+
+
 def test_a_known_file_has_no_unrecognized_records(gz_fixture, caplog):
     from pubmed2db.parse import parse_file
 
