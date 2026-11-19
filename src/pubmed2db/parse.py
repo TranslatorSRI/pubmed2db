@@ -91,19 +91,27 @@ class ParsedFile:
     deleted_pmids: list[int] = field(default_factory=list)
     n_failed: int = 0
     n_book_records: int = 0
-    #: Top-level records ``parse_file`` does not know, by tag. The DTD allows
-    #: none, so anything here means PubMed has changed its file format.
+    #: Top-level records ``parse_file`` does not know, by tag, in a file that
+    #: also held records it does. The DTD allows none, so anything here means
+    #: PubMed has changed its file format. (A file holding *only* such
+    #: records, or known ones nested inside another element, is not returned
+    #: at all: :func:`parse_file` raises :class:`UnknownFileFormatError`.)
     unrecognized_records: dict[str, int] = field(default_factory=dict)
-    #: Known records found *inside* another element rather than directly under
-    #: the root, by tag. Skipped, because pruning around them would truncate
-    #: the record that encloses them; the DTD forbids them, so, as above, any
-    #: here means the format has changed.
-    nested_records: dict[str, int] = field(default_factory=dict)
 
     @property
     def n_unrecognized(self) -> int:
-        """Records skipped as unrecognized, of both kinds: ``source_file.n_unrecognized``."""
-        return sum(self.unrecognized_records.values()) + sum(self.nested_records.values())
+        """Top-level records skipped as unknown: ``source_file.n_unrecognized``."""
+        return sum(self.unrecognized_records.values())
+
+
+class UnknownFileFormatError(ValueError):
+    """A PubMed file whose records the parser cannot reach.
+
+    Raised rather than returning an empty or partial :class:`ParsedFile`,
+    because ``load`` would record that as the file's contents and mark it
+    processed: it would never be retried, and its records would never load.
+    Raising leaves it pending, like a damaged file, and fails the ``load`` run.
+    """
 
 
 _PUBDATE_PATH = "MedlineCitation/Article/Journal/JournalIssue/PubDate"
@@ -271,15 +279,24 @@ def open_xml(path: str | Path) -> Iterator[BinaryIO]:
     gzipped file parsed whatever its name. ``iterparse`` on a file object does
     no decompression at all, and choosing by extension would turn a renamed
     file (``.GZ``, a temp name in a script) into an ``XMLSyntaxError`` at byte
-    0. Peeking at the two magic bytes keeps the old behaviour, with one open
-    of the file (each one a metadata round trip on a network filesystem).
+    0. Reading the two magic bytes keeps the old behaviour, with one open of
+    the file (each one a metadata round trip on a network filesystem). They
+    are ``read`` and the file rewound, not ``peek``-ed: ``peek`` makes at most
+    one raw read and can return a single byte, and a gzip file mistaken for
+    plain XML fails at byte 0. ``read(n)`` keeps reading until it has ``n``.
 
     A damaged gzip file now fails in Python's ``gzip`` (``EOFError`` for a
     truncated one, ``gzip.BadGzipFile`` or ``zlib.error`` for a corrupt one)
-    rather than as libxml2's ``XMLSyntaxError``.
+    rather than as libxml2's ``XMLSyntaxError``. Python's reader is also
+    stricter than libxml2's: bytes after the gzip stream that are not another
+    gzip member raise ``gzip.BadGzipFile``, where libxml2 ignored them and
+    loaded the file. That is kept on purpose. Such a file is not the one NCBI
+    published (its MD5 would not match), so it is retried, not loaded.
     """
     with open(path, "rb") as raw:
-        if raw.peek(len(_GZIP_MAGIC))[: len(_GZIP_MAGIC)] == _GZIP_MAGIC:
+        magic = raw.read(len(_GZIP_MAGIC))
+        raw.seek(0)
+        if magic == _GZIP_MAGIC:
             # GzipFile leaves a file object it was given open; `raw`'s `with`
             # closes it.
             with gzip.GzipFile(fileobj=raw, mode="rb") as unzipped:
@@ -301,17 +318,24 @@ def iter_records(
 
     Each element is yielded complete (at its end event) and cleared once the
     caller resumes, along with any earlier siblings still under the root
-    (whitespace, comments, elements of other tags), so the tree never holds
-    more than the current record. Both the PubMed files and NLM's serial
+    (whitespace, comments, elements of other tags). So the tree holds the
+    current record, plus whatever top-level elements of other tags came since
+    the last one: those are removed only when the next record arrives, and
+    one that is never followed by a record (a wrapper round the rest of the
+    file) is held until the end. Both the PubMed files and NLM's serial
     catalog are read this way, which is why it lives in one place.
 
     Only **direct children of the root** are yielded, as ``root.findall(tag)``
     found them. ``iterparse``'s ``tag=`` matches at any depth, and pruning
     "earlier siblings" of a nested match would delete parts of the record
     enclosing it before that record was read. The DTDs forbid such nesting
-    today; this keeps a future one from silently truncating records.
-    ``nested``, if given, counts the matches skipped this way, by tag, so the
-    caller can say so.
+    today; this keeps a future one from silently truncating records. A nested
+    match inside a *record* is left whole, as part of that record; one inside
+    an element of another tag is cleared, since nothing will read it, so a
+    wrapper of records does not grow with the records it holds.
+
+    ``nested``, if given, counts nested matches by tag, whether skipped or,
+    with ``yield_nested``, yielded, so the caller can say so.
 
     ``yield_nested=True`` is for a parse with ``recover=True``, where nesting
     is libxml2's repair of a malformed file rather than a format change: an
@@ -338,12 +362,18 @@ def iter_records(
         parent = element.getparent()
         if parent is None:
             continue  # the root itself
-        if parent.getparent() is not None:  # nested: left for its enclosing record
+        if parent.getparent() is not None:  # nested
+            if nested is not None:
+                nested[element.tag] += 1
             if yield_nested:
                 yield element
                 element.clear(keep_tail=True)
-            elif nested is not None:
-                nested[element.tag] += 1
+            else:
+                top = parent
+                while top.getparent().getparent() is not None:
+                    top = top.getparent()
+                if top.tag not in tags:  # inside a record, it is that record's to read
+                    element.clear(keep_tail=True)
             continue
         yield element
         element.clear(keep_tail=True)
@@ -411,8 +441,15 @@ def parse_file(path: str | Path) -> ParsedFile:
     with a ``<DeleteCitation>`` and no articles, or the reverse, parses the
     same as before. Any other top-level element is skipped, counted in
     ``unrecognized_records`` and named in a warning, rather than read as one of
-    the three; one of the three nested inside another element is likewise
-    skipped, counted in ``nested_records`` and named in a warning.
+    the three.
+
+    Two shapes raise :class:`UnknownFileFormatError` instead, because the file
+    would otherwise load as fewer records than it holds, be marked processed,
+    and never be retried: one of the three kinds nested inside another element
+    (a wrapper PubMed has added), and a file of nothing but unknown top-level
+    elements (a record tag PubMed has renamed). An unknown element beside
+    records we do read stays a warning: those records load, and only the
+    unknown kind is missed.
 
     A damaged file raises: ``XMLSyntaxError`` for bad XML, and the ``gzip``
     errors :func:`open_xml` lists for a bad compressed stream.
@@ -420,9 +457,11 @@ def parse_file(path: str | Path) -> ParsedFile:
     result = ParsedFile()
     unrecognized: Counter[str] = Counter()
     nested: Counter[str] = Counter()
+    n_records = 0
     with open_xml(path) as handle:
         records = iter_records(handle, _RECORD_TAGS, unrecognized=unrecognized, nested=nested)
         for element in records:
+            n_records += 1
             if element.tag == "PubmedArticle":
                 _parse_article(element, path, result)
             elif element.tag == "PubmedBookArticle":
@@ -440,8 +479,28 @@ def parse_file(path: str | Path) -> ParsedFile:
                 # tag itself, so this is a tag added there without a branch
                 # here: a bug to fix, not a record to count.
                 raise AssertionError(f"parse_file has no branch for <{element.tag}>")
+
+    def tally(counts: Counter[str]) -> str:
+        return ", ".join(f"{tag} ×{n}" for tag, n in counts.most_common())
+
+    if nested or (unrecognized and not n_records):
+        found = []
+        if nested:
+            found.append(
+                f"{nested.total()} record(s) nested inside another element rather "
+                f"than directly under the root ({tally(nested)})"
+            )
+        if unrecognized:
+            found.append(
+                f"{unrecognized.total()} top-level element(s) of a kind the parser "
+                f"does not know ({tally(unrecognized)})"
+            )
+        raise UnknownFileFormatError(
+            f"{path}: {'; '.join(found)}, and {n_records} record(s) it can read. "
+            "PubMed's file format may have changed; the file is not loaded, so "
+            "it is retried once the parser reads the new format"
+        )
     result.unrecognized_records = dict(unrecognized)
-    result.nested_records = dict(nested)
 
     if result.n_book_records:
         logger.warning(
@@ -457,15 +516,7 @@ def parse_file(path: str | Path) -> ParsedFile:
             "PubMed's file format may have changed",
             path,
             unrecognized.total(),
-            ", ".join(f"{tag} ×{n}" for tag, n in unrecognized.most_common()),
-        )
-    if nested:
-        logger.warning(
-            "%s: skipped %d record(s) nested inside another element rather than "
-            "directly under the root (%s); PubMed's file format may have changed",
-            path,
-            nested.total(),
-            ", ".join(f"{tag} ×{n}" for tag, n in nested.most_common()),
+            tally(unrecognized),
         )
 
     return result

@@ -295,6 +295,60 @@ def test_compression_is_read_from_the_content_not_the_name(gz_fixture, tmp_path,
     ]
 
 
+def test_gzip_is_detected_when_the_filesystem_returns_short_reads(gz_fixture, monkeypatch):
+    """`BufferedReader.peek` makes at most one raw read, so on a filesystem
+    that returns a byte at a time it saw only `\\x1f` and fed the compressed
+    bytes to the XML parser. `open_xml` reads the magic bytes instead, which
+    keeps reading until it has both."""
+    import io
+
+    from pubmed2db import parse
+
+    class OneByteAtATime(io.RawIOBase):
+        def __init__(self, data):
+            self._data = io.BytesIO(data)
+
+        def readable(self):
+            return True
+
+        def seekable(self):
+            return True
+
+        def seek(self, offset, whence=io.SEEK_SET):
+            return self._data.seek(offset, whence)
+
+        def tell(self):
+            return self._data.tell()
+
+        def readinto(self, buffer):
+            chunk = self._data.read(min(1, len(buffer)))
+            buffer[: len(chunk)] = chunk
+            return len(chunk)
+
+    src = gz_fixture("pubmed25n0001")
+    data = src.read_bytes()
+    assert len(io.BufferedReader(OneByteAtATime(data)).peek(2)) == 1  # the trap
+
+    monkeypatch.setattr(
+        parse, "open", lambda path, mode: io.BufferedReader(OneByteAtATime(data)), raising=False
+    )
+    assert parse.parse_file(src).articles
+
+
+def test_bytes_after_the_gzip_stream_fail_the_file(gz_fixture, tmp_path):
+    """libxml2 ignored junk after the gzip stream and loaded the file; Python's
+    `gzip` raises. Kept on purpose (`open_xml` says why): such a file is not
+    the one NCBI published, so it is retried rather than loaded."""
+    import gzip
+
+    from pubmed2db.parse import parse_file
+
+    dst = tmp_path / "pubmed25n0009.xml.gz"
+    dst.write_bytes(gz_fixture("pubmed25n0001").read_bytes() + b"garbage!!")
+    with pytest.raises(gzip.BadGzipFile):
+        parse_file(dst)
+
+
 def test_iter_records_yields_direct_children_of_the_root_only():
     """`iterparse`'s `tag=` matches at any depth, but `root.findall` (which the
     streaming replaced) matched the root's children only. A nested match must
@@ -321,6 +375,7 @@ def test_iter_records_can_yield_nested_matches_for_a_recovered_parse():
     pruned around them (as `main`'s serial-catalog parse did) read the nested
     records and lost the enclosing one's ID."""
     import io
+    from collections import Counter
 
     from pubmed2db.parse import iter_records
 
@@ -330,8 +385,30 @@ def test_iter_records_can_yield_nested_matches_for_a_recovered_parse():
     )
     strict = iter_records(io.BytesIO(xml), "R", recover=True)
     assert [el.findtext("id") for el in strict] == ["1"]
-    recovered = iter_records(io.BytesIO(xml), "R", yield_nested=True, recover=True)
+    nested = Counter()
+    recovered = iter_records(io.BytesIO(xml), "R", nested=nested, yield_nested=True, recover=True)
     assert [el.findtext("id") for el in recovered] == ["2", "3", "1"]
+    assert nested == {"R": 2}  # counted though read, so the caller can say it was repaired
+
+
+def test_iter_records_frees_nested_matches_only_outside_a_record():
+    """A nested match inside an element of another tag is cleared once counted,
+    so a wrapper round a file's records does not hold them all; one inside a
+    record is part of that record and is left whole for the caller."""
+    import io
+    from collections import Counter
+
+    from pubmed2db.parse import iter_records
+
+    xml = b"<Set><W><R><a/></R></W><R><b/><R><c/></R></R></Set>"
+    nested = Counter()
+    record = next(iter_records(io.BytesIO(xml), "R", nested=nested))
+    wrapper = record.getparent()[0]  # not pruned until the caller resumes
+    assert wrapper.tag == "W"
+    assert len(wrapper[0]) == 0  # the <R> under <W> was cleared
+    assert [child.tag for child in record] == ["b", "R"]
+    assert record[1][0].tag == "c"  # the <R> inside a record was not
+    assert nested == {"R": 2}
 
 
 def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog):
@@ -366,34 +443,41 @@ def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog)
     assert "Mystery ×3, Other ×1" in caplog.text
 
 
-def test_nested_records_are_counted_and_logged(tmp_path, caplog):
-    """A record inside another element is skipped (pruning around it would
-    truncate the element holding it), but not silently: a wrapper PubMed
-    might add would otherwise hide every record inside it."""
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        pytest.param(
+            "<Wrapper><DeleteCitation><PMID Version='1'>1001</PMID></DeleteCitation>"
+            "<PubmedBookArticle/><PubmedBookArticle/></Wrapper>"
+            "<DeleteCitation><PMID Version='1'>1002</PMID></DeleteCitation>",
+            r"3 record\(s\) nested inside another element rather than directly under "
+            r"the root \(PubmedBookArticle ×2, DeleteCitation ×1\); 1 top-level "
+            r"element\(s\) of a kind the parser does not know \(Wrapper ×1\), and 1 "
+            r"record\(s\) it can read",
+            id="a wrapper, beside a record it can read",
+        ),
+        pytest.param(
+            "<PubmedArticleV2><PMID>1</PMID></PubmedArticleV2>"
+            "<PubmedArticleV2><PMID>2</PMID></PubmedArticleV2>",
+            r"2 top-level element\(s\) of a kind the parser does not know "
+            r"\(PubmedArticleV2 ×2\), and 0 record\(s\) it can read",
+            id="only records it does not know",
+        ),
+    ],
+)
+def test_a_file_whose_records_cannot_be_reached_fails(tmp_path, body, message):
+    """Records nested inside a new wrapper, or under a renamed tag, would load
+    as an empty (or short) file, be marked processed and never be retried.
+    So the file fails instead, naming what it found, and stays pending."""
     import gzip
-    import logging
 
-    from pubmed2db.parse import parse_file
+    from pubmed2db.parse import UnknownFileFormatError, parse_file
 
-    xml = (
-        "<?xml version='1.0'?><PubmedArticleSet>"
-        "<Wrapper><DeleteCitation><PMID Version='1'>1001</PMID></DeleteCitation>"
-        "<PubmedBookArticle/><PubmedBookArticle/></Wrapper>"
-        "<DeleteCitation><PMID Version='1'>1002</PMID></DeleteCitation>"
-        "</PubmedArticleSet>"
-    )
     dst = tmp_path / "pubmed25n0009.xml.gz"
     with gzip.open(dst, "wt", encoding="utf-8") as handle:
-        handle.write(xml)
-
-    with caplog.at_level(logging.WARNING, logger="pubmed2db.parse"):
-        parsed = parse_file(dst)
-    assert parsed.deleted_pmids == [1002]
-    assert parsed.n_book_records == 0
-    assert parsed.nested_records == {"PubmedBookArticle": 2, "DeleteCitation": 1}
-    assert parsed.unrecognized_records == {"Wrapper": 1}
-    assert "skipped 3 record(s) nested inside another element" in caplog.text
-    assert "PubmedBookArticle ×2, DeleteCitation ×1" in caplog.text
+        handle.write(f"<?xml version='1.0'?><PubmedArticleSet>{body}</PubmedArticleSet>")
+    with pytest.raises(UnknownFileFormatError, match=message):
+        parse_file(dst)
 
 
 def test_a_record_tag_without_a_branch_fails_loudly(tmp_path, monkeypatch):
@@ -418,6 +502,4 @@ def test_a_known_file_has_no_unrecognized_records(gz_fixture, caplog):
     for stem in ("pubmed25n0001", "pubmed25n0002"):
         parsed = parse_file(gz_fixture(stem))
         assert parsed.unrecognized_records == {}
-        assert parsed.nested_records == {}
     assert "does not know" not in caplog.text
-    assert "nested" not in caplog.text
