@@ -593,10 +593,13 @@ def test_parse_serfile_skips_a_file_it_cannot_parse():
     assert _parse_serfile([empty]) == {}  # and alone it is empty, not an error
 
 
-def test_parse_serfile_reads_records_that_recovery_nested(tmp_path):
+def test_parse_serfile_reads_records_that_recovery_nested(tmp_path, caplog):
     """The catalog is parsed with `recover=True`, and recovering from an
     unclosed element puts every later record inside the one holding it.
-    Those records must still be read, and the enclosing one with them."""
+    Those records must still be read, and the enclosing one with them, and
+    the repair is logged: it can misread the enclosing record."""
+    import logging
+
     from pubmed2db.load import _parse_serfile
 
     def record(nlm_id, first, end, *, broken=False):
@@ -616,11 +619,18 @@ def test_parse_serfile_reads_records_that_recovery_nested(tmp_path):
         + record("3", 1903, 9999)
         + "</NLMCatalogRecordSet>"
     )
-    assert _parse_serfile([update]) == {
+    with caplog.at_level(logging.WARNING, logger="pubmed2db.load"):
+        years = _parse_serfile([update])
+    assert years == {
         "1": (1901, None, True),
         "2": (1902, 1950, False),
         "3": (1903, None, True),
     }
+    assert "read 2 catalog record(s) that XML recovery had nested" in caplog.text
+
+    caplog.clear()
+    _parse_serfile([FIXTURES / "serfile_sample.xml"])
+    assert "recovery had nested" not in caplog.text
 
 
 def test_parse_serfile_raises_when_the_baseline_will_not_parse(tmp_path):

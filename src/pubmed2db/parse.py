@@ -306,17 +306,24 @@ def iter_records(
 
     Each element is yielded complete (at its end event) and cleared once the
     caller resumes, along with any earlier siblings still under the root
-    (whitespace, comments, elements of other tags), so the tree never holds
-    more than the current record. Both the PubMed files and NLM's serial
+    (whitespace, comments, elements of other tags). So the tree holds the
+    current record, plus whatever top-level elements of other tags came since
+    the last one: those are removed only when the next record arrives, and
+    one that is never followed by a record (a wrapper round the rest of the
+    file) is held until the end. Both the PubMed files and NLM's serial
     catalog are read this way, which is why it lives in one place.
 
     Only **direct children of the root** are yielded, as ``root.findall(tag)``
     found them. ``iterparse``'s ``tag=`` matches at any depth, and pruning
     "earlier siblings" of a nested match would delete parts of the record
     enclosing it before that record was read. The DTDs forbid such nesting
-    today; this keeps a future one from silently truncating records.
-    ``nested``, if given, counts the matches skipped this way, by tag, so the
-    caller can say so.
+    today; this keeps a future one from silently truncating records. A nested
+    match inside a *record* is left whole, as part of that record; one inside
+    an element of another tag is cleared, since nothing will read it, so a
+    wrapper of records does not grow with the records it holds.
+
+    ``nested``, if given, counts nested matches by tag, whether skipped or,
+    with ``yield_nested``, yielded, so the caller can say so.
 
     ``yield_nested=True`` is for a parse with ``recover=True``, where nesting
     is libxml2's repair of a malformed file rather than a format change: an
@@ -343,12 +350,18 @@ def iter_records(
         parent = element.getparent()
         if parent is None:
             continue  # the root itself
-        if parent.getparent() is not None:  # nested: left for its enclosing record
+        if parent.getparent() is not None:  # nested
+            if nested is not None:
+                nested[element.tag] += 1
             if yield_nested:
                 yield element
                 element.clear(keep_tail=True)
-            elif nested is not None:
-                nested[element.tag] += 1
+            else:
+                top = parent
+                while top.getparent().getparent() is not None:
+                    top = top.getparent()
+                if top.tag not in tags:  # inside a record, it is that record's to read
+                    element.clear(keep_tail=True)
             continue
         yield element
         element.clear(keep_tail=True)

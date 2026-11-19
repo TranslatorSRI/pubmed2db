@@ -375,6 +375,7 @@ def test_iter_records_can_yield_nested_matches_for_a_recovered_parse():
     pruned around them (as `main`'s serial-catalog parse did) read the nested
     records and lost the enclosing one's ID."""
     import io
+    from collections import Counter
 
     from pubmed2db.parse import iter_records
 
@@ -384,8 +385,30 @@ def test_iter_records_can_yield_nested_matches_for_a_recovered_parse():
     )
     strict = iter_records(io.BytesIO(xml), "R", recover=True)
     assert [el.findtext("id") for el in strict] == ["1"]
-    recovered = iter_records(io.BytesIO(xml), "R", yield_nested=True, recover=True)
+    nested = Counter()
+    recovered = iter_records(io.BytesIO(xml), "R", nested=nested, yield_nested=True, recover=True)
     assert [el.findtext("id") for el in recovered] == ["2", "3", "1"]
+    assert nested == {"R": 2}  # counted though read, so the caller can say it was repaired
+
+
+def test_iter_records_frees_nested_matches_only_outside_a_record():
+    """A nested match inside an element of another tag is cleared once counted,
+    so a wrapper round a file's records does not hold them all; one inside a
+    record is part of that record and is left whole for the caller."""
+    import io
+    from collections import Counter
+
+    from pubmed2db.parse import iter_records
+
+    xml = b"<Set><W><R><a/></R></W><R><b/><R><c/></R></R></Set>"
+    nested = Counter()
+    record = next(iter_records(io.BytesIO(xml), "R", nested=nested))
+    wrapper = record.getparent()[0]  # not pruned until the caller resumes
+    assert wrapper.tag == "W"
+    assert len(wrapper[0]) == 0  # the <R> under <W> was cleared
+    assert [child.tag for child in record] == ["b", "R"]
+    assert record[1][0].tag == "c"  # the <R> inside a record was not
+    assert nested == {"R": 2}
 
 
 def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog):
