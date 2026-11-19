@@ -138,6 +138,30 @@ def test_truncated_gzip_file_is_skipped_not_fatal(con, gz_fixture, tmp_path):
     assert needs_load(con, "pubmed25n0003.xml.gz") is True
 
 
+def test_a_file_in_an_unknown_format_fails_and_stays_pending(con, gz_fixture, tmp_path):
+    """A file whose records sit under a wrapper the parser does not know would
+    otherwise load as empty, be marked processed, and never be retried."""
+    import gzip
+
+    from pubmed2db.load import load_files, needs_load
+
+    wrapped = tmp_path / "pubmed25n0003.xml.gz"
+    with gzip.open(gz_fixture("pubmed25n0001"), "rt", encoding="utf-8") as handle:
+        xml = handle.read()
+    xml = xml.replace("<PubmedArticleSet>", "<PubmedArticleSet><Articles>", 1).replace(
+        "</PubmedArticleSet>", "</Articles></PubmedArticleSet>", 1
+    )
+    with gzip.open(wrapped, "wt", encoding="utf-8") as handle:
+        handle.write(xml)
+
+    good = gz_fixture("pubmed25n0002")
+    assert load_files(con, [(wrapped, "update"), (good, "baseline")]) == (
+        1,
+        ["pubmed25n0003.xml.gz"],
+    )
+    assert needs_load(con, "pubmed25n0003.xml.gz") is True
+
+
 def test_unparseable_filename_is_ignored_not_fatal(con, gz_fixture, tmp_path):
     """A stray file in the download directory must not abort the whole run."""
     from pubmed2db.load import load_files

@@ -443,34 +443,41 @@ def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog)
     assert "Mystery ×3, Other ×1" in caplog.text
 
 
-def test_nested_records_are_counted_and_logged(tmp_path, caplog):
-    """A record inside another element is skipped (pruning around it would
-    truncate the element holding it), but not silently: a wrapper PubMed
-    might add would otherwise hide every record inside it."""
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        pytest.param(
+            "<Wrapper><DeleteCitation><PMID Version='1'>1001</PMID></DeleteCitation>"
+            "<PubmedBookArticle/><PubmedBookArticle/></Wrapper>"
+            "<DeleteCitation><PMID Version='1'>1002</PMID></DeleteCitation>",
+            r"3 record\(s\) nested inside another element rather than directly under "
+            r"the root \(PubmedBookArticle ×2, DeleteCitation ×1\); 1 top-level "
+            r"element\(s\) of a kind the parser does not know \(Wrapper ×1\), and 1 "
+            r"record\(s\) it can read",
+            id="a wrapper, beside a record it can read",
+        ),
+        pytest.param(
+            "<PubmedArticleV2><PMID>1</PMID></PubmedArticleV2>"
+            "<PubmedArticleV2><PMID>2</PMID></PubmedArticleV2>",
+            r"2 top-level element\(s\) of a kind the parser does not know "
+            r"\(PubmedArticleV2 ×2\), and 0 record\(s\) it can read",
+            id="only records it does not know",
+        ),
+    ],
+)
+def test_a_file_whose_records_cannot_be_reached_fails(tmp_path, body, message):
+    """Records nested inside a new wrapper, or under a renamed tag, would load
+    as an empty (or short) file, be marked processed and never be retried.
+    So the file fails instead, naming what it found, and stays pending."""
     import gzip
-    import logging
 
-    from pubmed2db.parse import parse_file
+    from pubmed2db.parse import UnknownFileFormatError, parse_file
 
-    xml = (
-        "<?xml version='1.0'?><PubmedArticleSet>"
-        "<Wrapper><DeleteCitation><PMID Version='1'>1001</PMID></DeleteCitation>"
-        "<PubmedBookArticle/><PubmedBookArticle/></Wrapper>"
-        "<DeleteCitation><PMID Version='1'>1002</PMID></DeleteCitation>"
-        "</PubmedArticleSet>"
-    )
     dst = tmp_path / "pubmed25n0009.xml.gz"
     with gzip.open(dst, "wt", encoding="utf-8") as handle:
-        handle.write(xml)
-
-    with caplog.at_level(logging.WARNING, logger="pubmed2db.parse"):
-        parsed = parse_file(dst)
-    assert parsed.deleted_pmids == [1002]
-    assert parsed.n_book_records == 0
-    assert parsed.nested_records == {"PubmedBookArticle": 2, "DeleteCitation": 1}
-    assert parsed.unrecognized_records == {"Wrapper": 1}
-    assert "skipped 3 record(s) nested inside another element" in caplog.text
-    assert "PubmedBookArticle ×2, DeleteCitation ×1" in caplog.text
+        handle.write(f"<?xml version='1.0'?><PubmedArticleSet>{body}</PubmedArticleSet>")
+    with pytest.raises(UnknownFileFormatError, match=message):
+        parse_file(dst)
 
 
 def test_a_record_tag_without_a_branch_fails_loudly(tmp_path, monkeypatch):
@@ -495,6 +502,4 @@ def test_a_known_file_has_no_unrecognized_records(gz_fixture, caplog):
     for stem in ("pubmed25n0001", "pubmed25n0002"):
         parsed = parse_file(gz_fixture(stem))
         assert parsed.unrecognized_records == {}
-        assert parsed.nested_records == {}
     assert "does not know" not in caplog.text
-    assert "nested" not in caplog.text
