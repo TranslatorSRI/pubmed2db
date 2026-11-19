@@ -1,4 +1,4 @@
--- pubmed2db DuckDB schema: data model 1.0 (`datamodel.DATA_MODEL_VERSION`).
+-- pubmed2db DuckDB schema: data model 1.1 (`datamodel.DATA_MODEL_VERSION`).
 --
 -- Fully normalized, full-version-history. Field names follow PubMed's own
 -- naming (DocumentMetadataAPI names are only applied at JSON export time).
@@ -62,8 +62,11 @@ CREATE TABLE IF NOT EXISTS source_file (
     n_articles     INTEGER,
     n_deletions    INTEGER,
     n_failed       INTEGER,                    -- records the extractor rejected
-    n_book_records INTEGER                     -- <PubmedBookArticle>, not parsed
+    n_book_records INTEGER,                    -- <PubmedBookArticle>, not parsed
+    n_unrecognized INTEGER                     -- unknown top-level elements (1.1)
 );
+-- 1.1. A file loaded before this reads NULL here until `load --force` re-parses it.
+ALTER TABLE source_file ADD COLUMN IF NOT EXISTS n_unrecognized INTEGER;
 COMMENT ON TABLE source_file IS 'Provenance. One row per PubMed XML file known to this database, loaded or not. The loaded file with the highest file_order_key is the build''s cutoff: the next file belongs to the next build.';
 COMMENT ON COLUMN source_file.file_name IS 'PubMed''s file name, e.g. pubmed26n1636.xml.gz. Every per-version row''s source_file joins here.';
 COMMENT ON COLUMN source_file.kind IS '''baseline'' (the annual full re-issue) or ''update'' (a daily updatefile).';
@@ -78,6 +81,7 @@ COMMENT ON COLUMN source_file.n_articles IS 'PubmedArticle records stored from t
 COMMENT ON COLUMN source_file.n_deletions IS 'PMIDs listed in the file''s DeleteCitation element.';
 COMMENT ON COLUMN source_file.n_failed IS 'PubmedArticle records the parser rejected and did not store (a missing title, journal ID or other required element).';
 COMMENT ON COLUMN source_file.n_book_records IS 'PubmedBookArticle records (Bookshelf citations) in the file. They are counted but not parsed: no table holds them.';
+COMMENT ON COLUMN source_file.n_unrecognized IS 'Elements skipped because the parser does not know them: one directly under PubmedArticleSet other than PubmedArticle, PubmedBookArticle and DeleteCitation, in a file that also held records it reads. PubMed''s DTD allows none, so anything but 0 means its file format has changed. A file the parser cannot read at all (only unknown elements, or records nested inside another element) is not loaded, and has no count here. NULL for a file loaded before data model 1.1, until load --force re-parses it.';
 
 -- Records when steps that leave no other timestamp were last run (currently just
 -- `journals`, whose tables are replaced wholesale). Download/load recency is

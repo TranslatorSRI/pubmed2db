@@ -1,4 +1,4 @@
-# The pubmed2db data model, version 1.0
+# The pubmed2db data model, version 1.1
 
 pubmed2db turns PubMed's XML distribution into a local copy of PubMed that can be
 queried and redistributed:
@@ -23,8 +23,8 @@ companions, each linked by absolute URL like everything else outside this file:
 SELECT table_name, column_name, comment FROM duckdb_columns() WHERE schema_name = 'main';
 ```
 
-**Version.** This is data model **1.0.0**, first produced by the data build after
-`2026sep26`. Earlier builds (`2026aug21`, `2026sep26`) predate the data model:
+**Version.** This is data model **1.1.0**, which adds one column to 1.0.0
+(first produced by the data build after `2026sep26`). Earlier builds (`2026aug21`, `2026sep26`) predate the data model:
 current code refuses their databases, and their tables differ in the ways
 [listed in the changelog](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/Changelog.md).
 
@@ -352,7 +352,7 @@ has the measurements behind that split.
 - **`source_file`** is the registry of every file this database knows about:
   - which files were loaded (`processed_at` is not NULL);
   - what each contributed (`n_articles`, `n_deletions`);
-  - what was skipped (`n_failed`, `n_book_records`);
+  - what was skipped (`n_failed`, `n_book_records`, `n_unrecognized`);
   - when NCBI published it (`published_at`).
 
   The skip counts are the only trace of records that never became rows (see
@@ -407,6 +407,8 @@ fetch them that way is [#27](https://github.com/TranslatorSRI/pubmed2db/issues/2
 | --- | --- | --- |
 | `<PubmedBookArticle>`, if a file ever carries one | Only journal citations are parsed; none occurred in the 2026 files (above) | `source_file.n_book_records` |
 | Records the parser rejects: no `ArticleTitle`, no `MedlineJournalInfo`/`NlmUniqueID`, a `<Grant>` without `Agency` or `Country`, a non-numeric date, an unexpected `Y`/`N` flag | The upstream parser requires these | `source_file.n_failed` |
+| An unknown element directly under `PubmedArticleSet`, beside records the parser reads | It would mean PubMed has changed its file format, which the parser cannot guess at; none has occurred | `source_file.n_unrecognized` (from 1.1) |
+| A whole file the parser cannot read: records inside another element, or nothing but unknown elements | Loading it would record it as empty, and it would never be retried; none has occurred | Not loaded: `load` fails naming it, and it stays pending |
 | An earlier copy of a PMID repeated within one file | The last copy wins | — |
 
 **Parts of records that are not stored:**

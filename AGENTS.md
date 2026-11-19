@@ -40,7 +40,7 @@ explains its part; this table is only a map.
 
 - **The outputs follow a versioned data model, separate from the code
   version.** The code version (`v1.2`) says how the code changed;
-  `datamodel.DATA_MODEL_VERSION` (1.0.0, standard semver) says how consumers
+  `datamodel.DATA_MODEL_VERSION` (1.1.0, standard semver) says how consumers
   are affected, and `docs/Releases.md` defines both. It covers the database
   and the NDJSON record together. One number, because the
   NDJSON fields are SQL over the tables, so documenting one documents the other.
