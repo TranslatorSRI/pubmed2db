@@ -295,6 +295,60 @@ def test_compression_is_read_from_the_content_not_the_name(gz_fixture, tmp_path,
     ]
 
 
+def test_gzip_is_detected_when_the_filesystem_returns_short_reads(gz_fixture, monkeypatch):
+    """`BufferedReader.peek` makes at most one raw read, so on a filesystem
+    that returns a byte at a time it saw only `\\x1f` and fed the compressed
+    bytes to the XML parser. `open_xml` reads the magic bytes instead, which
+    keeps reading until it has both."""
+    import io
+
+    from pubmed2db import parse
+
+    class OneByteAtATime(io.RawIOBase):
+        def __init__(self, data):
+            self._data = io.BytesIO(data)
+
+        def readable(self):
+            return True
+
+        def seekable(self):
+            return True
+
+        def seek(self, offset, whence=io.SEEK_SET):
+            return self._data.seek(offset, whence)
+
+        def tell(self):
+            return self._data.tell()
+
+        def readinto(self, buffer):
+            chunk = self._data.read(min(1, len(buffer)))
+            buffer[: len(chunk)] = chunk
+            return len(chunk)
+
+    src = gz_fixture("pubmed25n0001")
+    data = src.read_bytes()
+    assert len(io.BufferedReader(OneByteAtATime(data)).peek(2)) == 1  # the trap
+
+    monkeypatch.setattr(
+        parse, "open", lambda path, mode: io.BufferedReader(OneByteAtATime(data)), raising=False
+    )
+    assert parse.parse_file(src).articles
+
+
+def test_bytes_after_the_gzip_stream_fail_the_file(gz_fixture, tmp_path):
+    """libxml2 ignored junk after the gzip stream and loaded the file; Python's
+    `gzip` raises. Kept on purpose (`open_xml` says why): such a file is not
+    the one NCBI published, so it is retried rather than loaded."""
+    import gzip
+
+    from pubmed2db.parse import parse_file
+
+    dst = tmp_path / "pubmed25n0009.xml.gz"
+    dst.write_bytes(gz_fixture("pubmed25n0001").read_bytes() + b"garbage!!")
+    with pytest.raises(gzip.BadGzipFile):
+        parse_file(dst)
+
+
 def test_iter_records_yields_direct_children_of_the_root_only():
     """`iterparse`'s `tag=` matches at any depth, but `root.findall` (which the
     streaming replaced) matched the root's children only. A nested match must

@@ -267,15 +267,24 @@ def open_xml(path: str | Path) -> Iterator[BinaryIO]:
     gzipped file parsed whatever its name. ``iterparse`` on a file object does
     no decompression at all, and choosing by extension would turn a renamed
     file (``.GZ``, a temp name in a script) into an ``XMLSyntaxError`` at byte
-    0. Peeking at the two magic bytes keeps the old behaviour, with one open
-    of the file (each one a metadata round trip on a network filesystem).
+    0. Reading the two magic bytes keeps the old behaviour, with one open of
+    the file (each one a metadata round trip on a network filesystem). They
+    are ``read`` and the file rewound, not ``peek``-ed: ``peek`` makes at most
+    one raw read and can return a single byte, and a gzip file mistaken for
+    plain XML fails at byte 0. ``read(n)`` keeps reading until it has ``n``.
 
     A damaged gzip file now fails in Python's ``gzip`` (``EOFError`` for a
     truncated one, ``gzip.BadGzipFile`` or ``zlib.error`` for a corrupt one)
-    rather than as libxml2's ``XMLSyntaxError``.
+    rather than as libxml2's ``XMLSyntaxError``. Python's reader is also
+    stricter than libxml2's: bytes after the gzip stream that are not another
+    gzip member raise ``gzip.BadGzipFile``, where libxml2 ignored them and
+    loaded the file. That is kept on purpose. Such a file is not the one NCBI
+    published (its MD5 would not match), so it is retried, not loaded.
     """
     with open(path, "rb") as raw:
-        if raw.peek(len(_GZIP_MAGIC))[: len(_GZIP_MAGIC)] == _GZIP_MAGIC:
+        magic = raw.read(len(_GZIP_MAGIC))
+        raw.seek(0)
+        if magic == _GZIP_MAGIC:
             # GzipFile leaves a file object it was given open; `raw`'s `with`
             # closes it.
             with gzip.GzipFile(fileobj=raw, mode="rb") as unzipped:
