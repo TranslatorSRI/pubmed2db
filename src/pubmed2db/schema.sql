@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS source_file (
     n_deletions    INTEGER,
     n_failed       INTEGER,                    -- records the extractor rejected
     n_book_records INTEGER,                    -- <PubmedBookArticle>, not parsed
-    n_unrecognized INTEGER                     -- records not where the DTD puts them (1.1)
+    n_unrecognized INTEGER                     -- unknown top-level elements (1.1)
 );
 -- 1.1. A file loaded before this reads NULL here until `load --force` re-parses it.
 ALTER TABLE source_file ADD COLUMN IF NOT EXISTS n_unrecognized INTEGER;
@@ -81,7 +81,7 @@ COMMENT ON COLUMN source_file.n_articles IS 'PubmedArticle records stored from t
 COMMENT ON COLUMN source_file.n_deletions IS 'PMIDs listed in the file''s DeleteCitation element.';
 COMMENT ON COLUMN source_file.n_failed IS 'PubmedArticle records the parser rejected and did not store (a missing title, journal ID or other required element).';
 COMMENT ON COLUMN source_file.n_book_records IS 'PubmedBookArticle records (Bookshelf citations) in the file. They are counted but not parsed: no table holds them.';
-COMMENT ON COLUMN source_file.n_unrecognized IS 'Records skipped because the parser does not recognize them where they are: an element directly under PubmedArticleSet other than PubmedArticle, PubmedBookArticle and DeleteCitation, or one of those three inside another element. PubMed''s DTD allows neither, so anything but 0 means its file format has changed. NULL for a file loaded before data model 1.1, until load --force re-parses it.';
+COMMENT ON COLUMN source_file.n_unrecognized IS 'Elements skipped because the parser does not know them: one directly under PubmedArticleSet other than PubmedArticle, PubmedBookArticle and DeleteCitation, in a file that also held records it reads. PubMed''s DTD allows none, so anything but 0 means its file format has changed. A file the parser cannot read at all (only unknown elements, or records nested inside another element) is not loaded, and has no count here. NULL for a file loaded before data model 1.1, until load --force re-parses it.';
 
 -- Records when steps that leave no other timestamp were last run (currently just
 -- `journals`, whose tables are replaced wholesale). Download/load recency is

@@ -204,7 +204,7 @@ Provenance. One row per PubMed XML file known to this database, loaded or not. T
 | `n_deletions` | INTEGER | PMIDs listed in the file's DeleteCitation element. |
 | `n_failed` | INTEGER | PubmedArticle records the parser rejected and did not store (a missing title, journal ID or other required element). |
 | `n_book_records` | INTEGER | PubmedBookArticle records (Bookshelf citations) in the file. They are counted but not parsed: no table holds them. |
-| `n_unrecognized` | INTEGER | Records skipped because the parser does not recognize them where they are: an element directly under PubmedArticleSet other than PubmedArticle, PubmedBookArticle and DeleteCitation, or one of those three inside another element. PubMed's DTD allows neither, so anything but 0 means its file format has changed. NULL for a file loaded before data model 1.1, until load --force re-parses it. |
+| `n_unrecognized` | INTEGER | Elements skipped because the parser does not know them: one directly under PubmedArticleSet other than PubmedArticle, PubmedBookArticle and DeleteCitation, in a file that also held records it reads. PubMed's DTD allows none, so anything but 0 means its file format has changed. A file the parser cannot read at all (only unknown elements, or records nested inside another element) is not loaded, and has no count here. NULL for a file loaded before data model 1.1, until load --force re-parses it. |
 
 ## `pipeline_run`
 

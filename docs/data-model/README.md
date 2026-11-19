@@ -407,7 +407,8 @@ fetch them that way is [#27](https://github.com/TranslatorSRI/pubmed2db/issues/2
 | --- | --- | --- |
 | `<PubmedBookArticle>`, if a file ever carries one | Only journal citations are parsed; none occurred in the 2026 files (above) | `source_file.n_book_records` |
 | Records the parser rejects: no `ArticleTitle`, no `MedlineJournalInfo`/`NlmUniqueID`, a `<Grant>` without `Agency` or `Country`, a non-numeric date, an unexpected `Y`/`N` flag | The upstream parser requires these | `source_file.n_failed` |
-| Anything the DTD does not allow where it is: an unknown element directly under `PubmedArticleSet`, or a record inside another element | It would mean PubMed has changed its file format, which the parser cannot guess at; none has occurred | `source_file.n_unrecognized` (from 1.1) |
+| An unknown element directly under `PubmedArticleSet`, beside records the parser reads | It would mean PubMed has changed its file format, which the parser cannot guess at; none has occurred | `source_file.n_unrecognized` (from 1.1) |
+| A whole file the parser cannot read: records inside another element, or nothing but unknown elements | Loading it would record it as empty, and it would never be retried; none has occurred | Not loaded: `load` fails naming it, and it stays pending |
 | An earlier copy of a PMID repeated within one file | The last copy wins | — |
 
 **Parts of records that are not stored:**
