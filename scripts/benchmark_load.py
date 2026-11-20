@@ -41,11 +41,12 @@ against it:
     Needs ``--db``: in memory every file gets its own database. It also holds
     N files' parses, and DuckDB holds their Arrow copies, until the COMMIT,
     so ``peakRSS`` rises with N.
-``--skip-delete``
-    Skip the per-file ``DELETE ... WHERE source_file = ?`` entirely: the upper
-    bound on what skipping it for a never-loaded file could save. Refused for a
-    file the ``--db`` has already loaded, or one named twice in the run, whose
-    rows it would duplicate (the versioned tables have no key to stop it).
+
+A synthetic file is never in the registry, so the load skips its DELETEs as a
+fresh corpus load does, and its ``delete_s`` is the registry lookup alone. To
+time the DELETEs themselves, load real files, without ``--synthetic``, into a
+``--db`` that already holds them. (``--skip-delete`` measured what skipping them saves, and was retired once
+the loader did it for every never-loaded file.)
 """
 
 from __future__ import annotations
@@ -54,7 +55,6 @@ import argparse
 import itertools
 import os
 import time
-from collections import Counter
 from pathlib import Path
 
 
@@ -85,7 +85,6 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--checkpoint-threshold", metavar="SIZE", help="e.g. 4GB.")
     parser.add_argument("--no-preserve-insertion-order", action="store_true")
-    parser.add_argument("--skip-delete", action="store_true")
     parser.add_argument("--memory-limit", metavar="SIZE", help="DuckDB buffer-pool cap.")
     parser.add_argument("--threads", type=int)
     args = parser.parse_args()
@@ -103,14 +102,10 @@ def main() -> None:
     # Imported after PYSTOW_HOME is set, mirroring the CLI.
     import duckdb
 
-    from pubmed2db import load
     from pubmed2db.db import connect
     from pubmed2db.load import LoadTiming, _load_parsed_rows, rollback
     from pubmed2db.parse import parse_file
     from pubmed2db.util import peak_rss_gib
-
-    if args.skip_delete:
-        load.delete_file_rows = lambda con, source_file: None
 
     def open_db() -> duckdb.DuckDBPyConnection:
         con = connect(args.db, memory_limit=args.memory_limit, threads=args.threads)
@@ -178,7 +173,7 @@ def main() -> None:
         # A rerun grows the same database: the real files it already holds
         # are parsed (the synthetic files reuse them) but not loaded again,
         # and the numbering carries on from the last synthetic file there,
-        # so a rerun neither reloads nor, with --skip-delete, duplicates.
+        # so a rerun reloads nothing.
         names = [path.name for path in paths]
         already_loaded = {
             name
@@ -188,22 +183,6 @@ def main() -> None:
         }
         last = con.execute("SELECT max(file_number) FROM source_file WHERE year_yy = 90")
         first_synthetic = (last.fetchone()[0] or 0) + 1
-    if args.skip_delete and con is not None:
-        # Synthetic names are fresh by construction; the real ones are not.
-        names = [path.name for path in paths if path.name not in already_loaded]
-        repeated = sorted(name for name, n in Counter(names).items() if n > 1)
-        if repeated:
-            raise SystemExit(
-                f"--skip-delete would load {repeated[0]} twice in this run, duplicating its rows"
-            )
-        loaded = con.execute(
-            "SELECT file_name FROM source_file WHERE list_contains(?, file_name)", [names]
-        ).fetchall()
-        if loaded:
-            raise SystemExit(
-                f"--skip-delete would duplicate the rows of {len(loaded)} file(s) "
-                f"{args.db} has already loaded, e.g. {loaded[0][0]}"
-            )
     jobs = itertools.chain(real_jobs(), synthetic_jobs(first_synthetic) if args.synthetic else ())
 
     print(header)

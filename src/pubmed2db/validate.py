@@ -2252,7 +2252,7 @@ def run_validation(
     # reports what disappeared. Writing one from a failed run poisons that
     # comparison — a truncated or half-written export yields a short PMID set,
     # and the next run reports the recovered corpus as "N added" while the real
-    # drops go unnoticed. Since 05-validate.sbatch passes --manifest on every
+    # drops go unnoticed. Since 06-validate.sbatch passes --manifest on every
     # cluster run, that is now the default path rather than an explicit choice.
     #
     # WARN still writes, deliberately: the common warning is "Entrez was
@@ -2294,7 +2294,7 @@ def run_validation(
             export_metadata.get("data_model_version") if export_metadata else None
         ),
         # Absolute, so scripts/archive_build.py can match a report to its
-        # export from any working directory: 05-validate.sbatch passes paths
+        # export from any working directory: 06-validate.sbatch passes paths
         # relative to SLURM_SUBMIT_DIR.
         "inputs": {
             "export_dir": str(export_dir.resolve()),
