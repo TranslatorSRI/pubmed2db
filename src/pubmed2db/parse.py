@@ -21,11 +21,14 @@ We drive the XML iteration ourselves (rather than using
 
 from __future__ import annotations
 
+import contextlib
+import gzip
 import logging
-import os
+from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, BinaryIO, NamedTuple
 
 from lxml import etree
 from pubmed_downloader.api import Article, _extract_article
@@ -88,6 +91,23 @@ class ParsedFile:
     deleted_pmids: list[int] = field(default_factory=list)
     n_failed: int = 0
     n_book_records: int = 0
+    #: Top-level records ``parse_file`` does not know, by tag, in a file that
+    #: also held records it does. The DTD allows none, so anything here means
+    #: PubMed has changed its file format. Only logged: a ``source_file``
+    #: count would be a data-model bump. (A file holding *only* such records,
+    #: or known ones nested inside another element, is not returned at all:
+    #: :func:`parse_file` raises :class:`UnknownFileFormatError`.)
+    unrecognized_records: dict[str, int] = field(default_factory=dict)
+
+
+class UnknownFileFormatError(ValueError):
+    """A PubMed file whose records the parser cannot reach.
+
+    Raised rather than returning an empty or partial :class:`ParsedFile`,
+    because ``load`` would record that as the file's contents and mark it
+    processed: it would never be retried, and its records would never load.
+    Raising leaves it pending, like a damaged file, and fails the ``load`` run.
+    """
 
 
 _PUBDATE_PATH = "MedlineCitation/Article/Journal/JournalIssue/PubDate"
@@ -240,67 +260,266 @@ def _pmid_version(element: etree._Element) -> int | None:
     return int(version) if version else None
 
 
+#: The top-level children of ``PubmedArticleSet`` that `parse_file` reads. The
+#: DTD is ``((PubmedArticle | PubmedBookArticle)+, DeleteCitation?)``.
+_RECORD_TAGS = ("PubmedArticle", "PubmedBookArticle", "DeleteCitation")
+
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+@contextlib.contextmanager
+def open_xml(path: str | Path) -> Iterator[BinaryIO]:
+    """Open an XML file for reading, decompressing it if its *content* is gzip.
+
+    ``etree.parse`` let libxml2 decide, and libxml2 sniffs the bytes, so a
+    gzipped file parsed whatever its name. ``iterparse`` on a file object does
+    no decompression at all, and choosing by extension would turn a renamed
+    file (``.GZ``, a temp name in a script) into an ``XMLSyntaxError`` at byte
+    0. Reading the two magic bytes keeps the old behaviour, with one open of
+    the file (each one a metadata round trip on a network filesystem). They
+    are ``read`` and the file rewound, not ``peek``-ed: ``peek`` makes at most
+    one raw read and can return a single byte, and a gzip file mistaken for
+    plain XML fails at byte 0. ``read(n)`` keeps reading until it has ``n``.
+
+    A damaged gzip file now fails in Python's ``gzip`` (``EOFError`` for a
+    truncated one, ``gzip.BadGzipFile`` or ``zlib.error`` for a corrupt one)
+    rather than as libxml2's ``XMLSyntaxError``. Python's reader is also
+    stricter than libxml2's: bytes after the gzip stream that are not another
+    gzip member raise ``gzip.BadGzipFile``, where libxml2 ignored them and
+    loaded the file. That is kept on purpose. Such a file is not the one NCBI
+    published (its MD5 would not match), so it is retried, not loaded.
+    """
+    with open(path, "rb") as raw:
+        magic = raw.read(len(_GZIP_MAGIC))
+        raw.seek(0)
+        if magic == _GZIP_MAGIC:
+            # GzipFile leaves a file object it was given open; `raw`'s `with`
+            # closes it.
+            with gzip.GzipFile(fileobj=raw, mode="rb") as unzipped:
+                yield unzipped
+        else:
+            yield raw
+
+
+def iter_records(
+    source: str | BinaryIO,
+    tag: str | tuple[str, ...],
+    *,
+    unrecognized: Counter[str] | None = None,
+    nested: Counter[str] | None = None,
+    yield_nested: bool = False,
+    **iterparse_kwargs: Any,
+) -> Iterator[etree._Element]:
+    """Stream the ``tag`` children of the document root, discarding each after use.
+
+    Each element is yielded complete (at its end event) and cleared once the
+    caller resumes, along with any earlier siblings still under the root
+    (whitespace, comments, elements of other tags). So the tree holds the
+    current record, plus whatever top-level elements of other tags came since
+    the last one: those are removed only when the next record arrives, and
+    one that is never followed by a record (a wrapper round the rest of the
+    file) is held until the end. Both the PubMed files and NLM's serial
+    catalog are read this way, which is why it lives in one place.
+
+    Only **direct children of the root** are yielded, as ``root.findall(tag)``
+    found them. ``iterparse``'s ``tag=`` matches at any depth, and pruning
+    "earlier siblings" of a nested match would delete parts of the record
+    enclosing it before that record was read. The DTDs forbid such nesting
+    today; this keeps a future one from silently truncating records. A nested
+    match inside a *record* is left whole, as part of that record; one inside
+    an element of another tag is cleared, since nothing will read it, so a
+    wrapper of records does not grow with the records it holds.
+
+    ``nested``, if given, counts nested matches by tag, whether skipped or,
+    with ``yield_nested``, yielded, so the caller can say so.
+
+    ``yield_nested=True`` is for a parse with ``recover=True``, where nesting
+    is libxml2's repair of a malformed file rather than a format change: an
+    unclosed element in one record puts every record after it inside that
+    one. Skipping them would lose the rest of the file without a word, so
+    they are yielded and cleared, but nothing around them is pruned; the
+    enclosing record is then read whole, minus its cleared nested records.
+
+    ``unrecognized``, if given, counts the root's *other* element children by
+    tag. ``tag=`` filters in C, so those never reach Python as events; they
+    are counted as the pruning removes them, and at the end for any after the
+    last record, which costs nothing per record. Filtering in Python instead
+    would mean an event for each of a file's millions of elements.
+    """
+    tags = {tag} if isinstance(tag, str) else set(tag)
+
+    def note(node: etree._Element) -> None:
+        # Comments and processing instructions have a non-str tag.
+        if unrecognized is not None and isinstance(node.tag, str) and node.tag not in tags:
+            unrecognized[node.tag] += 1
+
+    context = etree.iterparse(source, events=("end",), tag=tag, **iterparse_kwargs)
+    for _event, element in context:
+        parent = element.getparent()
+        if parent is None:
+            continue  # the root itself
+        if parent.getparent() is not None:  # nested
+            if nested is not None:
+                nested[element.tag] += 1
+            if yield_nested:
+                yield element
+                element.clear(keep_tail=True)
+            else:
+                top = parent
+                while top.getparent().getparent() is not None:
+                    top = top.getparent()
+                if top.tag not in tags:  # inside a record, it is that record's to read
+                    element.clear(keep_tail=True)
+            continue
+        yield element
+        element.clear(keep_tail=True)
+        while element.getprevious() is not None:
+            note(parent[0])
+            del parent[0]
+    if context.root is not None:
+        for child in context.root:
+            note(child)
+
+
+def _parse_article(element: etree._Element, path: str | Path, result: ParsedFile) -> None:
+    """Read one ``<PubmedArticle>`` into ``result``, counting one that is rejected."""
+    try:
+        article = _extract_article(
+            element,
+            ror_grounder=None,
+            mesh_grounder=None,
+            author_grounder=None,
+        )
+    except (ValueError, KeyError) as exc:
+        logger.warning("skipping article in %s: %s", path, exc)
+        result.n_failed += 1
+        return
+    if article is None:
+        # Upstream returns None rather than raising for an empty
+        # <ArticleTitle> or a missing <MedlineJournalInfo> — both real in
+        # PubMed. Count them, or they vanish from n_articles unremarked.
+        logger.warning("skipping article in %s: extractor returned None", path)
+        result.n_failed += 1
+        return
+    year, month, day, medline_date = _raw_pubdate(element)
+    result.articles.append(
+        ParsedArticle(
+            article=article,
+            pmid_version=_pmid_version(element),
+            pub_year=year,
+            pub_month=month,
+            pub_day=day,
+            medline_date=medline_date,
+            article_ids=_article_ids(element),
+            publication_types=_publication_types(element),
+            mesh_headings=_mesh_headings(element),
+        )
+    )
+
+
 def parse_file(path: str | Path) -> ParsedFile:
     """Parse a (gzipped) PubMed XML file into a :class:`ParsedFile`.
 
-    lxml transparently decompresses ``.xml.gz`` files given a path.
+    The file is streamed with :func:`iter_records`, so the process holds the
+    parsed records but never the document tree. ``etree.parse`` kept the whole
+    tree alive while every record was built, though every extractor works on
+    one ``<PubmedArticle>`` at a time (#25). Measured on pubmed26n1333
+    (30,000 articles), the file ``slurm/README.md`` cites, first on
+    2026-10-21 and again on 2026-11-17 against this code: peak RSS 3.66 GiB
+    holding the tree and 1.07 GiB streaming, and the parse 6.4 s holding the
+    tree and 6.2 s streaming, so reading the gzip through Python rather
+    than libxml2's zlib costs nothing visible. #25's own figures (a ~1.2 GiB
+    tree in a ~2.2 GiB peak) came from pubmed26n0005, whose older records are
+    smaller: the tree grows with the records, not only with their count. The
+    saving is paid once per process today, and would be once per *worker* if
+    files were parsed in parallel (#68).
+
+    The three record kinds are read in one pass, in document order, so a file
+    with a ``<DeleteCitation>`` and no articles, or the reverse, parses the
+    same as before. Any other top-level element is skipped, counted in
+    ``unrecognized_records`` and named in a warning, rather than read as one of
+    the three.
+
+    Two shapes raise :class:`UnknownFileFormatError` instead, because the file
+    would otherwise load as fewer records than it holds, be marked processed,
+    and never be retried: one of the three kinds nested inside another element
+    (a wrapper PubMed has added), and unknown top-level elements in a file with
+    no ``<PubmedArticle>`` or ``<PubmedBookArticle>`` (an article tag PubMed has
+    renamed). A ``<DeleteCitation>`` does not count towards the second: update
+    files usually carry some, so one beside 30,000 renamed articles would
+    otherwise turn the format change into a warning. An unknown element beside
+    articles we do read stays a warning: those articles load, and only the
+    unknown kind is missed.
+
+    A damaged file raises: ``XMLSyntaxError`` for bad XML, and the ``gzip``
+    errors :func:`open_xml` lists for a bad compressed stream.
     """
-    tree = etree.parse(os.fspath(path))
-    root = tree.getroot()
-
     result = ParsedFile()
+    unrecognized: Counter[str] = Counter()
+    nested: Counter[str] = Counter()
+    n_records = 0
+    n_articles = 0  # PubmedArticle and PubmedBookArticle, not DeleteCitation
+    with open_xml(path) as handle:
+        records = iter_records(handle, _RECORD_TAGS, unrecognized=unrecognized, nested=nested)
+        for element in records:
+            n_records += 1
+            if element.tag == "PubmedArticle":
+                n_articles += 1
+                _parse_article(element, path, result)
+            elif element.tag == "PubmedBookArticle":
+                # Bookshelf citations share these files per the DTD. We parse
+                # journal citations only; say how many records that skipped
+                # rather than dropping them silently — the count is what
+                # issue #27 needs to decide whether to support them.
+                n_articles += 1
+                result.n_book_records += 1
+            elif element.tag == "DeleteCitation":
+                for pmid_tag in element.findall("PMID"):
+                    if pmid_tag.text and pmid_tag.text.strip().isdigit():
+                        result.deleted_pmids.append(int(pmid_tag.text.strip()))
+            else:
+                # iter_records yields only _RECORD_TAGS, and counts every other
+                # tag itself, so this is a tag added there without a branch
+                # here: a bug to fix, not a record to count.
+                raise AssertionError(f"parse_file has no branch for <{element.tag}>")
 
-    for element in root.findall("PubmedArticle"):
-        try:
-            article = _extract_article(
-                element,
-                ror_grounder=None,
-                mesh_grounder=None,
-                author_grounder=None,
+    def tally(counts: Counter[str]) -> str:
+        return ", ".join(f"{tag} ×{n}" for tag, n in counts.most_common())
+
+    if nested or (unrecognized and not n_articles):
+        found = []
+        if nested:
+            found.append(
+                f"{nested.total()} record(s) nested inside another element rather "
+                f"than directly under the root ({tally(nested)})"
             )
-        except (ValueError, KeyError) as exc:
-            logger.warning("skipping article in %s: %s", path, exc)
-            result.n_failed += 1
-            continue
-        if article is None:
-            # Upstream returns None rather than raising for an empty
-            # <ArticleTitle> or a missing <MedlineJournalInfo> — both real in
-            # PubMed. Count them, or they vanish from n_articles unremarked.
-            logger.warning("skipping article in %s: extractor returned None", path)
-            result.n_failed += 1
-            continue
-        year, month, day, medline_date = _raw_pubdate(element)
-        result.articles.append(
-            ParsedArticle(
-                article=article,
-                pmid_version=_pmid_version(element),
-                pub_year=year,
-                pub_month=month,
-                pub_day=day,
-                medline_date=medline_date,
-                article_ids=_article_ids(element),
-                publication_types=_publication_types(element),
-                mesh_headings=_mesh_headings(element),
+        if unrecognized:
+            found.append(
+                f"{unrecognized.total()} top-level element(s) of a kind the parser "
+                f"does not know ({tally(unrecognized)})"
             )
+        raise UnknownFileFormatError(
+            f"{path}: {'; '.join(found)}, and {n_records} record(s) it can read. "
+            "PubMed's file format may have changed; the file is not loaded, so "
+            "it is retried once the parser reads the new format"
         )
+    result.unrecognized_records = dict(unrecognized)
 
-    # The DTD is `PubmedArticleSet ((PubmedArticle | PubmedBookArticle)+, ...)`,
-    # so Bookshelf citations can share these files. We parse journal citations
-    # only; say how many records that skipped rather than dropping them silently
-    # — the count is what issue #27 needs to decide whether to support them.
-    result.n_book_records = len(root.findall("PubmedBookArticle"))
     if result.n_book_records:
         logger.warning(
             "%s: skipped %d PubmedBookArticle record(s); book citations are not parsed (see #27)",
             path,
             result.n_book_records,
         )
-
-    for pmid_tag in root.findall("DeleteCitation/PMID"):
-        if pmid_tag.text and pmid_tag.text.strip().isdigit():
-            result.deleted_pmids.append(int(pmid_tag.text.strip()))
-
     if result.n_failed:
         logger.warning("%s: %d article(s) failed to parse and were skipped", path, result.n_failed)
+    if unrecognized:
+        logger.warning(
+            "%s: skipped %d top-level record(s) of a kind the parser does not know (%s); "
+            "PubMed's file format may have changed",
+            path,
+            unrecognized.total(),
+            tally(unrecognized),
+        )
 
     return result

@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,7 +26,7 @@ from pubmed_downloader.utils import Collective
 
 from .datamodel import record_load
 from .db import NEEDS_LOAD_SQL, parse_file_name, record_run
-from .parse import ParsedArticle, ParsedFile, parse_file
+from .parse import ParsedArticle, ParsedFile, iter_records, parse_file
 from .util import current_rss_gib, download_file, eta_str, fmt_duration, peak_rss_gib
 
 logger = logging.getLogger(__name__)
@@ -772,9 +773,18 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
     """Map ``nlm_catalog_id -> (start_year, end_year, active)`` from serfile XML.
 
     Files are read in the order given, so a later monthly update wins over the
-    baseline. This uses ``iterparse`` rather than the whole-tree ``etree.parse``
-    that :mod:`pubmed2db.parse` uses for the much smaller PubMed files: the
-    baseline is ~450 MB, and streaming it costs ~5 s and ~50 MiB.
+    baseline. The XML is streamed with :func:`pubmed2db.parse.iter_records`,
+    as the PubMed files are: the baseline is ~450 MB, and streaming it costs
+    ~5 s and ~50 MiB. Unlike them it is parsed with ``recover=True``, and
+    with ``yield_nested``: recovering from an unclosed element moves every
+    later record inside the one that holds it, and those must still be read.
+    Such a file is logged with the count, since a repair can also misread
+    the record holding the unclosed element (its ``PublicationInfo`` too may
+    have been moved inside it, leaving its years NULL). In such a file the
+    nested records are read before the record holding them, which ends only
+    at the end of the file, so within that file "later wins" follows the
+    order read, not document order: the damaged enclosing record overwrites
+    a nested entry for the same ``NlmUniqueID``. The warning names the file.
 
     A monthly update that will not parse is skipped, but a baseline that will
     not parse, or holds no records, raises. The updates only amend it, so
@@ -786,10 +796,12 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
     for path in paths:
         is_baseline = bool(_SERFILE_BASELINE_RE.fullmatch(path.name))
         n_before = len(years)
+        nested: Counter[str] = Counter()
         try:
-            for _, element in etree.iterparse(
-                os.fspath(path), tag="NLMCatalogRecord", recover=True
-            ):
+            records = iter_records(
+                os.fspath(path), "NLMCatalogRecord", nested=nested, yield_nested=True, recover=True
+            )
+            for element in records:
                 nlm_id = element.findtext("NlmUniqueID")
                 if nlm_id:
                     end_raw = element.findtext("PublicationInfo/PublicationEndYear")
@@ -799,9 +811,6 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
                         None if end_raw == "9999" else _catalog_year(end_raw),
                         _catalog_active(end_raw),
                     )
-                element.clear()
-                while element.getprevious() is not None:
-                    del element.getparent()[0]
         except etree.XMLSyntaxError as exc:
             # NLM really does publish empty files -- serfile.20240903.xml is
             # Content-Length: 0 -- and `recover=True` does not save an empty
@@ -811,6 +820,14 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
             if is_baseline:
                 raise
             logger.warning("%s failed to parse (%s); skipping it", path, exc)
+        if nested:
+            logger.warning(
+                "%s: read %d catalog record(s) that XML recovery had nested inside "
+                "another; the file is malformed, and the record(s) around them may "
+                "have lost their years",
+                path,
+                nested.total(),
+            )
         if is_baseline and len(years) == n_before:
             raise ValueError(f"{path} parsed to no catalog records")
     return years
