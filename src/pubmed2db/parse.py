@@ -424,9 +424,10 @@ def parse_file(path: str | Path) -> ParsedFile:
     parsed records but never the document tree. ``etree.parse`` kept the whole
     tree alive while every record was built, though every extractor works on
     one ``<PubmedArticle>`` at a time (#25). Measured on pubmed26n1333
-    (30,000 articles) on 2026-11-17, the file ``slurm/README.md`` cites: peak
-    RSS 3.66 GiB holding the tree, 1.07 GiB streaming, and the parse slightly
-    faster (6.4 s against 6.2 s), so reading the gzip through Python rather
+    (30,000 articles), the file ``slurm/README.md`` cites, first on
+    2026-10-21 and again on 2026-11-17 against this code: peak RSS 3.66 GiB
+    holding the tree and 1.07 GiB streaming, and the parse 6.4 s holding the
+    tree and 6.2 s streaming, so reading the gzip through Python rather
     than libxml2's zlib costs nothing visible. #25's own figures (a ~1.2 GiB
     tree in a ~2.2 GiB peak) came from pubmed26n0005, whose older records are
     smaller: the tree grows with the records, not only with their count. The

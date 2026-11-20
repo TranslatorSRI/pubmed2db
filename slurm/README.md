@@ -129,7 +129,7 @@ the file instead took the parse of a 30,000-article baseline file from a
 2026-11-17), so the "~5–6 GiB on top" below, measured before that change, is
 now an overestimate. All three full-load rows in the table predate it.
 
-DuckDB's does. It runs in the same process and caches ever more of a growing
+DuckDB's footprint does grow. It runs in the same process and caches ever more of a growing
 database, so its buffer pool is what makes a long load's RSS climb run-long —
 until the pool is full, after which RSS is flat:
 
