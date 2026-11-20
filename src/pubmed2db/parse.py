@@ -442,9 +442,12 @@ def parse_file(path: str | Path) -> ParsedFile:
     Two shapes raise :class:`UnknownFileFormatError` instead, because the file
     would otherwise load as fewer records than it holds, be marked processed,
     and never be retried: one of the three kinds nested inside another element
-    (a wrapper PubMed has added), and a file of nothing but unknown top-level
-    elements (a record tag PubMed has renamed). An unknown element beside
-    records we do read stays a warning: those records load, and only the
+    (a wrapper PubMed has added), and unknown top-level elements in a file with
+    no ``<PubmedArticle>`` or ``<PubmedBookArticle>`` (an article tag PubMed has
+    renamed). A ``<DeleteCitation>`` does not count towards the second: update
+    files usually carry some, so one beside 30,000 renamed articles would
+    otherwise turn the format change into a warning. An unknown element beside
+    articles we do read stays a warning: those articles load, and only the
     unknown kind is missed.
 
     A damaged file raises: ``XMLSyntaxError`` for bad XML, and the ``gzip``
@@ -454,17 +457,20 @@ def parse_file(path: str | Path) -> ParsedFile:
     unrecognized: Counter[str] = Counter()
     nested: Counter[str] = Counter()
     n_records = 0
+    n_articles = 0  # PubmedArticle and PubmedBookArticle, not DeleteCitation
     with open_xml(path) as handle:
         records = iter_records(handle, _RECORD_TAGS, unrecognized=unrecognized, nested=nested)
         for element in records:
             n_records += 1
             if element.tag == "PubmedArticle":
+                n_articles += 1
                 _parse_article(element, path, result)
             elif element.tag == "PubmedBookArticle":
                 # Bookshelf citations share these files per the DTD. We parse
                 # journal citations only; say how many records that skipped
                 # rather than dropping them silently — the count is what
                 # issue #27 needs to decide whether to support them.
+                n_articles += 1
                 result.n_book_records += 1
             elif element.tag == "DeleteCitation":
                 for pmid_tag in element.findall("PMID"):
@@ -479,7 +485,7 @@ def parse_file(path: str | Path) -> ParsedFile:
     def tally(counts: Counter[str]) -> str:
         return ", ".join(f"{tag} ×{n}" for tag, n in counts.most_common())
 
-    if nested or (unrecognized and not n_records):
+    if nested or (unrecognized and not n_articles):
         found = []
         if nested:
             found.append(

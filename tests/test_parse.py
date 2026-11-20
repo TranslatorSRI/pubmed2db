@@ -415,7 +415,8 @@ def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog)
     """Only the three tags the DTD allows are read as records. Anything else
     directly under the root, before, between or after them, is skipped,
     counted by tag and named in a warning, not mistaken for a deletion; and
-    the same tag nested inside a record is not counted at all."""
+    the same tag nested inside a record is not counted at all. The file holds
+    an article, since unknown elements beside deletions alone fail."""
     import gzip
     import logging
 
@@ -426,7 +427,7 @@ def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog)
         "<!-- a comment is not a record -->"
         "<Mystery><PMID>7</PMID></Mystery>"
         "<DeleteCitation><PMID Version='1'>1002</PMID></DeleteCitation>"
-        "<Mystery/><Other/>"
+        "<Mystery/><PubmedBookArticle/><Other/>"
         "<DeleteCitation><PMID Version='1'>1003<Mystery/></PMID></DeleteCitation>"
         "<Mystery/>"
         "</PubmedArticleSet>"
@@ -438,6 +439,7 @@ def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog)
     with caplog.at_level(logging.WARNING, logger="pubmed2db.parse"):
         parsed = parse_file(dst)
     assert parsed.deleted_pmids == [1002, 1003]
+    assert parsed.n_book_records == 1
     assert parsed.unrecognized_records == {"Mystery": 3, "Other": 1}
     assert "skipped 4 top-level record(s)" in caplog.text
     assert "Mystery ×3, Other ×1" in caplog.text
@@ -462,6 +464,13 @@ def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog)
             r"2 top-level element\(s\) of a kind the parser does not know "
             r"\(PubmedArticleV2 ×2\), and 0 record\(s\) it can read",
             id="only records it does not know",
+        ),
+        pytest.param(
+            "<PubmedArticleV2><PMID>1</PMID></PubmedArticleV2>"
+            "<DeleteCitation><PMID Version='1'>1002</PMID></DeleteCitation>",
+            r"1 top-level element\(s\) of a kind the parser does not know "
+            r"\(PubmedArticleV2 ×1\), and 1 record\(s\) it can read",
+            id="renamed articles beside a deletion",
         ),
     ],
 )
