@@ -780,7 +780,11 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
     later record inside the one that holds it, and those must still be read.
     Such a file is logged with the count, since a repair can also misread
     the record holding the unclosed element (its ``PublicationInfo`` too may
-    have been moved inside it, leaving its years NULL).
+    have been moved inside it, leaving its years NULL). In such a file the
+    nested records are read before the record holding them, which ends only
+    at the end of the file, so within that file "later wins" follows the
+    order read, not document order: the damaged enclosing record overwrites
+    a nested entry for the same ``NlmUniqueID``. The warning names the file.
 
     A monthly update that will not parse is skipped, but a baseline that will
     not parse, or holds no records, raises. The updates only amend it, so
