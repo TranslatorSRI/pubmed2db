@@ -822,9 +822,9 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
             logger.warning("%s failed to parse (%s); skipping it", path, exc)
         if nested:
             logger.warning(
-                "%s: read %d catalog record(s) that XML recovery had nested inside "
-                "another; the file is malformed, and the record(s) around them may "
-                "have lost their years",
+                "%s: read %d catalog record(s) nested inside another element. Either "
+                "XML recovery repaired a malformed file, and the record(s) around them "
+                "may have lost their years, or NLM has changed the file's format",
                 path,
                 nested.total(),
             )
