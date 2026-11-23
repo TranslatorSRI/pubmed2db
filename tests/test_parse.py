@@ -353,8 +353,9 @@ def test_iter_records_yields_direct_children_of_the_root_only():
     """`iterparse`'s `tag=` matches at any depth, but `root.findall` (which the
     streaming replaced) matched the root's children only. A nested match must
     be neither yielded nor pruned: pruning its "earlier siblings" would delete
-    the start of the enclosing record before that record was read. It is
-    counted instead, so the caller can say so."""
+    the start of the enclosing record before that record was read. Inside a
+    record it is that record's content, so it is not counted either; only one
+    no record will read is (the next test)."""
     import io
     from collections import Counter
 
@@ -365,7 +366,7 @@ def test_iter_records_yields_direct_children_of_the_root_only():
     records = iter_records(io.BytesIO(xml), "R", nested=nested)
     seen = [[child.tag for child in el] for el in records]
     assert seen == [["a", "R", "c"], ["d"]]
-    assert nested == {"R": 1}
+    assert nested == {}
 
 
 def test_iter_records_can_yield_nested_matches_for_a_recovered_parse():
@@ -394,7 +395,8 @@ def test_iter_records_can_yield_nested_matches_for_a_recovered_parse():
 def test_iter_records_frees_nested_matches_only_outside_a_record():
     """A nested match inside an element of another tag is cleared once counted,
     so a wrapper round a file's records does not hold them all; one inside a
-    record is part of that record and is left whole for the caller."""
+    record is part of that record and is left whole for the caller, and is
+    not counted: no record is lost, so the caller has nothing to report."""
     import io
     from collections import Counter
 
@@ -408,15 +410,17 @@ def test_iter_records_frees_nested_matches_only_outside_a_record():
     assert len(wrapper[0]) == 0  # the <R> under <W> was cleared
     assert [child.tag for child in record] == ["b", "R"]
     assert record[1][0].tag == "c"  # the <R> inside a record was not
-    assert nested == {"R": 2}
+    assert nested == {"R": 1}
 
 
 def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog):
     """Only the three tags the DTD allows are read as records. Anything else
     directly under the root, before, between or after them, is skipped,
     counted by tag and named in a warning, not mistaken for a deletion; and
-    the same tag nested inside a record is not counted at all. The file holds
-    an article, since unknown elements beside deletions alone fail."""
+    the same tag nested inside a record is not counted at all, nor is a
+    record tag there, which does not fail the file. The file holds an article
+    (empty, so it fails to parse, but it is one), since unknown elements beside
+    deletions or book records alone fail."""
     import gzip
     import logging
 
@@ -427,7 +431,8 @@ def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog)
         "<!-- a comment is not a record -->"
         "<Mystery><PMID>7</PMID></Mystery>"
         "<DeleteCitation><PMID Version='1'>1002</PMID></DeleteCitation>"
-        "<Mystery/><PubmedBookArticle/><Other/>"
+        "<Mystery/><PubmedArticle><DeleteCitation><PMID>9</PMID></DeleteCitation>"
+        "</PubmedArticle><PubmedBookArticle/><Other/>"
         "<DeleteCitation><PMID Version='1'>1003<Mystery/></PMID></DeleteCitation>"
         "<Mystery/>"
         "</PubmedArticleSet>"
@@ -471,6 +476,19 @@ def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog)
             r"1 top-level element\(s\) of a kind the parser does not know "
             r"\(PubmedArticleV2 ×1\), and 1 record\(s\) it can read",
             id="renamed articles beside a deletion",
+        ),
+        pytest.param(
+            "<PubmedArticleV2><PMID>1</PMID></PubmedArticleV2>"
+            "<PubmedArticleV2><PMID>2</PMID></PubmedArticleV2>"
+            "<PubmedBookArticle/>",
+            r"2 top-level element\(s\) of a kind the parser does not know "
+            r"\(PubmedArticleV2 ×2\), and 1 record\(s\) it can read",
+            id="renamed articles beside a book record",
+        ),
+        pytest.param(
+            "<PubmedArticleV2><PMID>1</PMID></PubmedArticleV2>",
+            r"1 top-level element\(s\) of a kind the parser does not know",
+            id="renamed articles alone",
         ),
     ],
 )

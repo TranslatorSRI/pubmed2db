@@ -94,9 +94,10 @@ class ParsedFile:
     #: Top-level records ``parse_file`` does not know, by tag, in a file that
     #: also held records it does. The DTD allows none, so anything here means
     #: PubMed has changed its file format. Only logged: a ``source_file``
-    #: count would be a data-model bump. (A file holding *only* such records,
-    #: or known ones nested inside another element, is not returned at all:
-    #: :func:`parse_file` raises :class:`UnknownFileFormatError`.)
+    #: count would be a data-model bump. (A file holding such records and no
+    #: ``<PubmedArticle>``, or known ones nested inside an element that is not
+    #: a record, is not returned at all: :func:`parse_file` raises
+    #: :class:`UnknownFileFormatError`.)
     unrecognized_records: dict[str, int] = field(default_factory=dict)
 
 
@@ -330,8 +331,11 @@ def iter_records(
     an element of another tag is cleared, since nothing will read it, so a
     wrapper of records does not grow with the records it holds.
 
-    ``nested``, if given, counts nested matches by tag, whether skipped or,
-    with ``yield_nested``, yielded, so the caller can say so.
+    ``nested``, if given, counts by tag the nested matches no record will
+    read, so the caller can say so: those inside an element of another tag
+    and, with ``yield_nested``, every nested match, since each is yielded as
+    a record of its own. One inside a record, without ``yield_nested``, is
+    that record's content and is not counted.
 
     ``yield_nested=True`` is for a parse with ``recover=True``, where nesting
     is libxml2's repair of a malformed file rather than a format change: an
@@ -359,9 +363,9 @@ def iter_records(
         if parent is None:
             continue  # the root itself
         if parent.getparent() is not None:  # nested
-            if nested is not None:
-                nested[element.tag] += 1
             if yield_nested:
+                if nested is not None:
+                    nested[element.tag] += 1
                 yield element
                 element.clear(keep_tail=True)
             else:
@@ -369,6 +373,8 @@ def iter_records(
                 while top.getparent().getparent() is not None:
                     top = top.getparent()
                 if top.tag not in tags:  # inside a record, it is that record's to read
+                    if nested is not None:
+                        nested[element.tag] += 1
                     element.clear(keep_tail=True)
             continue
         yield element
@@ -442,14 +448,16 @@ def parse_file(path: str | Path) -> ParsedFile:
 
     Two shapes raise :class:`UnknownFileFormatError` instead, because the file
     would otherwise load as fewer records than it holds, be marked processed,
-    and never be retried: one of the three kinds nested inside another element
-    (a wrapper PubMed has added), and unknown top-level elements in a file with
-    no ``<PubmedArticle>`` or ``<PubmedBookArticle>`` (an article tag PubMed has
-    renamed). A ``<DeleteCitation>`` does not count towards the second: update
-    files usually carry some, so one beside 30,000 renamed articles would
-    otherwise turn the format change into a warning. An unknown element beside
-    articles we do read stays a warning: those articles load, and only the
-    unknown kind is missed.
+    and never be retried: one of the three kinds nested inside an element that
+    is not a record (a wrapper PubMed has added), and unknown top-level
+    elements in a file with no ``<PubmedArticle>`` (an article tag PubMed has
+    renamed). One of the three inside a record is that record's content, and
+    raises nothing. Only a ``<PubmedArticle>`` counts against the second:
+    update files usually carry a ``<DeleteCitation>``, and a few files a
+    ``<PubmedBookArticle>``, which this parser skips, so either beside 30,000
+    renamed articles would otherwise turn the format change into a warning. An
+    unknown element beside articles we do read stays a warning: those articles
+    load, and only the unknown kind is missed.
 
     A damaged file raises: ``XMLSyntaxError`` for bad XML, and the ``gzip``
     errors :func:`open_xml` lists for a bad compressed stream.
@@ -458,7 +466,7 @@ def parse_file(path: str | Path) -> ParsedFile:
     unrecognized: Counter[str] = Counter()
     nested: Counter[str] = Counter()
     n_records = 0
-    n_articles = 0  # PubmedArticle and PubmedBookArticle, not DeleteCitation
+    n_articles = 0  # PubmedArticle only: the one kind this parser loads
     with open_xml(path) as handle:
         records = iter_records(handle, _RECORD_TAGS, unrecognized=unrecognized, nested=nested)
         for element in records:
@@ -471,7 +479,6 @@ def parse_file(path: str | Path) -> ParsedFile:
                 # journal citations only; say how many records that skipped
                 # rather than dropping them silently — the count is what
                 # issue #27 needs to decide whether to support them.
-                n_articles += 1
                 result.n_book_records += 1
             elif element.tag == "DeleteCitation":
                 for pmid_tag in element.findall("PMID"):
