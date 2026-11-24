@@ -514,7 +514,12 @@ def _load_group(con: duckdb.DuckDBPyConnection, group: list[Shard]) -> LoadTimin
         for table in _VERSIONED_TABLES:
             paths = [str(shard.parquet(table)) for shard in group]
             started = time.perf_counter()
-            _insert_from(con, table, "read_parquet($paths)", {"paths": paths})
+            # hive_partitioning off: DuckDB otherwise turns any `key=value`
+            # folder above the stage directory into an extra column, and the
+            # positional INSERT then fails for every shard.
+            _insert_from(
+                con, table, "read_parquet($paths, hive_partitioning = false)", {"paths": paths}
+            )
             timing.inserts[table] = time.perf_counter() - started
         started = time.perf_counter()
         for shard in group:

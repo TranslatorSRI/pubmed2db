@@ -132,6 +132,15 @@ def test_a_group_of_shards_is_one_transaction(two_files, tmp_path, con, monkeypa
     )
 
 
+def test_a_key_value_folder_above_the_stage_is_not_a_column(two_files, tmp_path, con):
+    """DuckDB reads a `key=value` path component as a Hive partition by
+    default, which would add a column and fail every positional INSERT."""
+    stage_dir = tmp_path / "run=2026" / "stage"
+    stage_files(two_files, stage_dir=stage_dir, workers=1)
+    shards = find_shards(stage_dir, [p for p, _ in two_files])
+    assert load_staged(con, list(shards.values())) == (2, [])
+
+
 def test_stage_skips_what_is_fresh_and_restages_what_changed(two_files, tmp_path, caplog):
     stage_dir = tmp_path / "stage"
     assert stage_files(two_files, stage_dir=stage_dir, workers=1)[0] == 2
