@@ -50,8 +50,11 @@ def _registry(con) -> list[tuple]:
 
 
 @pytest.fixture
-def two_files(gz_fixture):
-    return [(gz_fixture("pubmed25n0001"), "baseline"), (gz_fixture("pubmed25n0002"), "update")]
+def two_files(write_pubmed_gz):
+    return [
+        (write_pubmed_gz("pubmed25n0001"), "baseline"),
+        (write_pubmed_gz("pubmed25n0002"), "update"),
+    ]
 
 
 def test_stage_file_writes_every_table_and_a_manifest(two_files, tmp_path):

@@ -28,20 +28,20 @@ def test_deleted_pmid_excluded_from_latest(loaded_con):
     assert loaded_con.execute("SELECT count(*) FROM article WHERE pmid = 1002").fetchone()[0] == 1
 
 
-def test_reload_is_idempotent(con, gz_fixture):
+def test_reload_is_idempotent(con, write_pubmed_gz):
     from pubmed2db.load import load_file
 
-    load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
+    load_file(con, write_pubmed_gz("pubmed25n0001"), kind="baseline")
     first = con.execute("SELECT count(*) FROM article").fetchone()[0]
-    load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
+    load_file(con, write_pubmed_gz("pubmed25n0001"), kind="baseline")
     second = con.execute("SELECT count(*) FROM article").fetchone()[0]
     assert first == second == 3
 
 
-def test_needs_load_and_md5_change(con, gz_fixture):
+def test_needs_load_and_md5_change(con, write_pubmed_gz):
     from pubmed2db.load import load_files, needs_load
 
-    files = [(gz_fixture("pubmed25n0001"), "baseline")]
+    files = [(write_pubmed_gz("pubmed25n0001"), "baseline")]
     assert load_files(con, files) == (1, [])
     # Already processed and not re-downloaded -> skipped.
     assert needs_load(con, "pubmed25n0001.xml.gz") is False
@@ -99,11 +99,11 @@ def test_no_reference_citation_table(con):
     )
 
 
-def test_bad_file_is_skipped_not_fatal(con, gz_fixture, tmp_path):
+def test_bad_file_is_skipped_not_fatal(con, write_pubmed_gz, tmp_path):
     """One corrupt file must not abort a run over the other ~1,300."""
     from pubmed2db.load import load_files, needs_load
 
-    good = gz_fixture("pubmed25n0001")
+    good = write_pubmed_gz("pubmed25n0001")
     bad = tmp_path / "pubmed25n0003.xml.gz"
     bad.write_bytes(b"not gzipped XML at all")
 
@@ -123,13 +123,13 @@ def test_bad_file_is_skipped_not_fatal(con, gz_fixture, tmp_path):
     assert needs_load(con, "pubmed25n0003.xml.gz") is True
 
 
-def test_truncated_gzip_file_is_skipped_not_fatal(con, gz_fixture, tmp_path):
+def test_truncated_gzip_file_is_skipped_not_fatal(con, write_pubmed_gz, tmp_path):
     """The gzip stream is read by Python, not libxml2, so a truncated download
     fails as `EOFError` rather than `XMLSyntaxError`. It must still fail only
     its own file."""
     from pubmed2db.load import load_files, needs_load
 
-    good = gz_fixture("pubmed25n0001")
+    good = write_pubmed_gz("pubmed25n0001")
     bad = tmp_path / "pubmed25n0003.xml.gz"
     data = good.read_bytes()
     bad.write_bytes(data[: len(data) // 2])
@@ -138,38 +138,62 @@ def test_truncated_gzip_file_is_skipped_not_fatal(con, gz_fixture, tmp_path):
     assert needs_load(con, "pubmed25n0003.xml.gz") is True
 
 
-def test_unparseable_filename_is_ignored_not_fatal(con, gz_fixture, tmp_path):
+def test_a_file_in_an_unknown_format_fails_and_stays_pending(con, write_pubmed_gz, tmp_path):
+    """A file whose records sit under a wrapper the parser does not know would
+    otherwise load as empty, be marked processed, and never be retried."""
+    import gzip
+
+    from pubmed2db.load import load_files, needs_load
+
+    wrapped = tmp_path / "pubmed25n0003.xml.gz"
+    with gzip.open(write_pubmed_gz("pubmed25n0001"), "rt", encoding="utf-8") as handle:
+        xml = handle.read()
+    xml = xml.replace("<PubmedArticleSet>", "<PubmedArticleSet><Articles>", 1).replace(
+        "</PubmedArticleSet>", "</Articles></PubmedArticleSet>", 1
+    )
+    with gzip.open(wrapped, "wt", encoding="utf-8") as handle:
+        handle.write(xml)
+
+    good = write_pubmed_gz("pubmed25n0002")
+    assert load_files(con, [(wrapped, "update"), (good, "baseline")]) == (
+        1,
+        ["pubmed25n0003.xml.gz"],
+    )
+    assert needs_load(con, "pubmed25n0003.xml.gz") is True
+
+
+def test_unparseable_filename_is_ignored_not_fatal(con, write_pubmed_gz, tmp_path):
     """A stray file in the download directory must not abort the whole run."""
     from pubmed2db.load import load_files
 
     stray = tmp_path / "notes.xml.gz"
     stray.write_bytes(b"")
 
-    assert load_files(con, [(stray, "update"), (gz_fixture("pubmed25n0001"), "baseline")]) == (
+    assert load_files(con, [(stray, "update"), (write_pubmed_gz("pubmed25n0001"), "baseline")]) == (
         1,
         [],
     )
     assert con.execute("SELECT count(*) FROM article").fetchone()[0] == 3
 
 
-def test_load_stamps_downloaded_at(con, gz_fixture):
+def test_load_stamps_downloaded_at(con, write_pubmed_gz):
     """Files obtained outside `download` (rsync/FTP) still get a downloaded_at,
     which the status arithmetic and needs_load both depend on."""
     from pubmed2db.load import load_file, needs_load
     from pubmed2db.status import summarize
 
-    load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
+    load_file(con, write_pubmed_gz("pubmed25n0001"), kind="baseline")
 
     assert summarize(con)["downloaded_files"] == 1
     assert needs_load(con, "pubmed25n0001.xml.gz") is False
 
 
-def test_load_does_not_overwrite_a_real_downloaded_at(con, gz_fixture):
+def test_load_does_not_overwrite_a_real_downloaded_at(con, write_pubmed_gz):
     """A re-download pending a load stays pending after an unrelated reload."""
     from pubmed2db.db import register_source_file
     from pubmed2db.load import load_file
 
-    path = gz_fixture("pubmed25n0001")
+    path = write_pubmed_gz("pubmed25n0001")
     load_file(con, path, kind="baseline")
     register_source_file(con, "pubmed25n0001.xml.gz", kind="baseline", published_md5="changed")
     before = con.execute(
@@ -203,14 +227,14 @@ def test_status_latest_count_matches_the_view(loaded_con):
     assert summarize(loaded_con)["latest_documents"] == expected
 
 
-def test_registry_records_the_skip_counts(con, gz_fixture, tmp_path):
+def test_registry_records_the_skip_counts(con, write_pubmed_gz, tmp_path):
     """Skipped records never become rows, so no downstream count is short --
     the registry is the only place they can be queried from."""
     import gzip
 
     from pubmed2db.load import load_file
 
-    src = gz_fixture("pubmed25n0001")
+    src = write_pubmed_gz("pubmed25n0001")
     with gzip.open(src, "rt", encoding="utf-8") as handle:
         xml = handle.read()
     book = (
@@ -248,7 +272,7 @@ def test_publication_types_are_stored_with_names_and_order(loaded_con):
     ]
 
 
-def test_load_progress_line_reports_rate_and_elapsed(con, gz_fixture, caplog):
+def test_load_progress_line_reports_rate_and_elapsed(con, write_pubmed_gz, caplog):
     """The progress line must carry what sizes the next srun, not just an ETA.
 
     Also pins the last line ending in a bare "done": eta_str returns the literal
@@ -259,7 +283,10 @@ def test_load_progress_line_reports_rate_and_elapsed(con, gz_fixture, caplog):
 
     from pubmed2db.load import load_files
 
-    files = [(gz_fixture("pubmed25n0001"), "baseline"), (gz_fixture("pubmed25n0002"), "update")]
+    files = [
+        (write_pubmed_gz("pubmed25n0001"), "baseline"),
+        (write_pubmed_gz("pubmed25n0002"), "update"),
+    ]
     with caplog.at_level(logging.INFO, logger="pubmed2db.load"):
         load_files(con, files)
 
@@ -271,14 +298,14 @@ def test_load_progress_line_reports_rate_and_elapsed(con, gz_fixture, caplog):
     assert progress[-1].endswith("done") and "~done" not in progress[-1]
 
 
-def test_load_logs_current_rss_alongside_the_peak(con, gz_fixture, caplog):
+def test_load_logs_current_rss_alongside_the_peak(con, write_pubmed_gz, caplog):
     """Both figures are logged: the high-water peak, and RSS as it stands now."""
     import logging
 
     from pubmed2db.load import load_file
 
     with caplog.at_level(logging.INFO, logger="pubmed2db.load"):
-        load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
+        load_file(con, write_pubmed_gz("pubmed25n0001"), kind="baseline")
 
     line = next(m for m in (r.getMessage() for r in caplog.records) if "loaded " in m)
     assert "RSS " in line and "peak " in line, line
@@ -340,7 +367,7 @@ def test_build_name_is_the_utc_posting_date_of_the_cutoff():
     assert build_name(None) is None
 
 
-def test_load_logs_phase_timings(con, gz_fixture, caplog):
+def test_load_logs_phase_timings(con, write_pubmed_gz, caplog):
     """Each phase is timed on its own, because the per-file total grows with
     the database (#68) and the total cannot say which phase is growing."""
     import logging
@@ -350,7 +377,7 @@ def test_load_logs_phase_timings(con, gz_fixture, caplog):
     from pubmed2db.parse import parse_file
 
     with caplog.at_level(logging.DEBUG, logger="pubmed2db.load"):
-        load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
+        load_file(con, write_pubmed_gz("pubmed25n0001"), kind="baseline")
 
     messages = [r.getMessage() for r in caplog.records]
     loaded = next(m for m in messages if m.startswith("loaded "))
@@ -365,7 +392,7 @@ def test_load_logs_phase_timings(con, gz_fixture, caplog):
     # load of a few milliseconds, a GC pause or a busy CI runner in the untimed
     # glue would fail any ratio at random.
     record = LoadTiming()
-    parsed = parse_file(gz_fixture("pubmed25n0001"))
+    parsed = parse_file(write_pubmed_gz("pubmed25n0001"))
     started = time.perf_counter()
     load_parsed(con, parsed, "pubmed25n0001.xml.gz", kind="baseline", timing=record)
     wall = time.perf_counter() - started
@@ -383,7 +410,7 @@ def test_load_logs_phase_timings(con, gz_fixture, caplog):
     assert record.total <= wall
 
 
-def test_build_batches_types_every_column_from_the_schema(gz_fixture):
+def test_build_batches_types_every_column_from_the_schema(write_pubmed_gz):
     """Types come from schema.sql, never from inference: a column that is NULL
     throughout one file must still carry the table's type, or its Parquet
     shard could not be read beside the others (stage), and DATE and BOOLEAN
@@ -395,7 +422,7 @@ def test_build_batches_types_every_column_from_the_schema(gz_fixture):
     from pubmed2db.parse import ParsedFile, parse_file
 
     name = "pubmed25n0001.xml.gz"
-    parsed = parse_file(gz_fixture("pubmed25n0001"))
+    parsed = parse_file(write_pubmed_gz("pubmed25n0001"))
     batches, n_articles = build_batches(parsed, name, parse_file_name(name)[2])
 
     assert n_articles == len(parsed.articles)
@@ -413,7 +440,7 @@ def test_build_batches_types_every_column_from_the_schema(gz_fixture):
     assert empty["deleted_pmid"].schema.field("pmid").type == pa.int64()
 
 
-def test_build_batches_keeps_the_last_occurrence_of_a_repeated_pmid(gz_fixture):
+def test_build_batches_keeps_the_last_occurrence_of_a_repeated_pmid(write_pubmed_gz):
     """A PMID repeated within one file is stored once, from its last occurrence,
     so (pmid, source_file) identifies a version."""
     from pubmed2db.db import parse_file_name
@@ -421,7 +448,7 @@ def test_build_batches_keeps_the_last_occurrence_of_a_repeated_pmid(gz_fixture):
     from pubmed2db.parse import parse_file
 
     name = "pubmed25n0001.xml.gz"
-    parsed = parse_file(gz_fixture("pubmed25n0001"))
+    parsed = parse_file(write_pubmed_gz("pubmed25n0001"))
     first = parsed.articles[0]
     first.article.title = "an earlier version of the same record"
     parsed.articles.append(parsed.articles.pop(0))  # same PMID now last
@@ -440,7 +467,7 @@ def test_build_batches_keeps_the_last_occurrence_of_a_repeated_pmid(gz_fixture):
     assert titles[first.pubmed] == "an earlier version of the same record"
 
 
-def test_a_never_loaded_file_skips_the_delete(con, gz_fixture, monkeypatch):
+def test_a_never_loaded_file_skips_the_delete(con, write_pubmed_gz, monkeypatch):
     """A file with no processed_at has no rows, so its DELETEs are skipped (they
     make the inserts after them slower); a reload still deletes."""
     from pubmed2db import load as load_module
@@ -451,9 +478,9 @@ def test_a_never_loaded_file_skips_the_delete(con, gz_fixture, monkeypatch):
     monkeypatch.setattr(
         load_module, "delete_file_rows", lambda c, f: (deleted.append(f), real(c, f))
     )
-    load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
+    load_file(con, write_pubmed_gz("pubmed25n0001"), kind="baseline")
     assert deleted == []
-    load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
+    load_file(con, write_pubmed_gz("pubmed25n0001"), kind="baseline")
     assert deleted == ["pubmed25n0001.xml.gz"]
     assert con.execute("SELECT count(*) FROM article").fetchone()[0] == 3
 

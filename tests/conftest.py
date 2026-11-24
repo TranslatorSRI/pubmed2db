@@ -34,8 +34,10 @@ def gzip_fixture(stem: str, dst_dir: Path) -> Path:
 
 
 @pytest.fixture
-def gz_fixture(tmp_path):
-    """Return a factory that gzips a fixture ``.xml`` into ``<stem>.xml.gz``."""
+def write_pubmed_gz(tmp_path):
+    """Return ``write(stem) -> Path``, which gzips ``tests/fixtures/<stem>.xml``
+    into ``<tmp_path>/<stem>.xml.gz`` and returns that path, for code that
+    reads PubMed files by their real names and compression."""
     return partial(gzip_fixture, dst_dir=tmp_path)
 
 
@@ -60,12 +62,12 @@ def con(tmp_path):
 
 
 @pytest.fixture
-def loaded_con(con, gz_fixture):
+def loaded_con(con, write_pubmed_gz):
     """A connection with both fixtures loaded and the journal dimension seeded."""
     from pubmed2db.load import load_file
 
-    load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
-    load_file(con, gz_fixture("pubmed25n0002"), kind="update")
+    load_file(con, write_pubmed_gz("pubmed25n0001"), kind="baseline")
+    load_file(con, write_pubmed_gz("pubmed25n0002"), kind="update")
     con.executemany("INSERT INTO journal VALUES (?,?,?,?,?,?)", SAMPLE_JOURNALS)
     return con
 
