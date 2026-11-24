@@ -114,6 +114,40 @@ def test_an_older_minor_version_is_raised_to_ours(tmp_path, monkeypatch):
         con.close()
 
 
+def test_a_1_0_database_gains_n_unrecognized(tmp_path):
+    """1.1's one addition, migrated for real: a 1.0 database (simulated by
+    dropping the column and lowering the version) gains the column, its
+    files already loaded read NULL there, and every rollup reports that file
+    as uncounted rather than as having none: a 0 has to mean "checked"."""
+    from pubmed2db.status import corpus_provenance, summarize
+
+    path = tmp_path / "db.duckdb"
+    connect(path).close()
+    raw = duckdb.connect(str(path))
+    raw.execute(
+        "INSERT INTO source_file (file_name, kind, year_yy, file_number, file_order_key,"
+        " processed_at, n_articles, n_failed, n_book_records)"
+        " VALUES ('pubmed25n0001.xml.gz', 'baseline', 25, 1, 25000001, now(), 3, 0, 0)"
+    )
+    raw.execute("ALTER TABLE source_file DROP COLUMN n_unrecognized")
+    raw.execute("UPDATE pubmed2db_metadata SET value = '1.0.0' WHERE key = 'data_model_version'")
+    raw.close()
+
+    con = connect(path)
+    try:
+        assert datamodel.stored_version(con) == "1.1.0"
+        assert con.execute("SELECT n_articles, n_unrecognized FROM source_file").fetchall() == [
+            (3, None)
+        ]
+        assert summarize(con)["skipped_records"] == 0
+        assert summarize(con)["files_without_unrecognized_count"] == 1
+        provenance = corpus_provenance(con)
+        assert provenance["unrecognized_records_skipped"] == 0
+        assert provenance["files_without_unrecognized_count"] == 1
+    finally:
+        con.close()
+
+
 def test_a_migration_missing_a_column_is_refused_and_not_stamped(tmp_path, monkeypatch):
     """A minor version whose CREATE TABLE gained a column without the matching
     ALTER TABLE leaves a migrated database short of it; `load` inserts by

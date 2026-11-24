@@ -539,10 +539,20 @@ def status(ctx: click.Context) -> None:
                 )
             )
         if s["skipped_records"]:
-            # Records the loader could not store: extractor rejections plus book
-            # citations. Kept visible because they are otherwise invisible —
+            # Records the loader could not store: extractor rejections, book
+            # citations and unknown top-level elements (n_failed,
+            # n_book_records, n_unrecognized; the last means PubMed changed its
+            # format). Kept visible because they are otherwise invisible —
             # they never become rows, so no count downstream is short.
             click.echo(f"           {s['skipped_records']} record(s) skipped while parsing")
+        if s["files_without_unrecognized_count"]:
+            # Loaded before data model 1.1: the count above cannot include
+            # their unknown elements, so don't let it read as a full check.
+            click.echo(
+                f"           {s['files_without_unrecognized_count']} file(s) loaded before "
+                "data model 1.1 not checked for unrecognized elements "
+                "(`load --force` re-parses them)"
+            )
         click.echo(
             f"           {s['article_versions']} article version(s); "
             f"{s['latest_documents']} latest document(s)"

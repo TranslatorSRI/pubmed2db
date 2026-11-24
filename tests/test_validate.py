@@ -1534,7 +1534,9 @@ def test_export_metadata_catches_a_changed_or_missing_shard(loaded_con, tmp_path
         report = validate.run_validation(out, online=False)
     check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
     assert check["status"] == "pass", check
-    assert report["data_model_version"] == "1.0.0"
+    from pubmed2db.datamodel import DATA_MODEL_VERSION
+
+    assert report["data_model_version"] == DATA_MODEL_VERSION
 
     original = shards[0].read_bytes()
     lines = gzip.decompress(original).splitlines(keepends=True)

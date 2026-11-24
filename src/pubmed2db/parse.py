@@ -93,12 +93,16 @@ class ParsedFile:
     n_book_records: int = 0
     #: Top-level records ``parse_file`` does not know, by tag, in a file that
     #: also held records it does. The DTD allows none, so anything here means
-    #: PubMed has changed its file format. Only logged: a ``source_file``
-    #: count would be a data-model bump. (A file holding such records and no
+    #: PubMed has changed its file format. (A file holding such records and no
     #: ``<PubmedArticle>``, or known ones nested inside an element that is not
     #: a record, is not returned at all: :func:`parse_file` raises
     #: :class:`UnknownFileFormatError`.)
     unrecognized_records: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def n_unrecognized(self) -> int:
+        """Top-level records skipped as unknown: ``source_file.n_unrecognized``."""
+        return sum(self.unrecognized_records.values())
 
 
 class UnknownFileFormatError(ValueError):
