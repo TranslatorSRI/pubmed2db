@@ -194,6 +194,71 @@ def test_a_key_value_folder_above_the_stage_is_not_a_column(two_files, tmp_path,
     assert load_staged(con, list(shards.values())) == (2, [])
 
 
+def _staged(two_files, tmp_path):
+    stage_files(two_files, stage_dir=tmp_path / "stage", workers=1)
+    return find_shards(tmp_path / "stage", [p for p, _ in two_files])
+
+
+def test_a_database_failure_sets_no_shard_aside(two_files, tmp_path, con, monkeypatch):
+    """One `(bad allocation)` used to condemn every remaining shard to `.bad`."""
+    import duckdb
+
+    from pubmed2db import load as load_module
+
+    shards = _staged(two_files, tmp_path)
+
+    def out_of_memory(*args, **kwargs):
+        raise duckdb.OutOfMemoryException("Failed to allocate block (bad allocation)")
+
+    monkeypatch.setattr(load_module, "_insert_from", out_of_memory)
+    with pytest.raises(load_module.StagedLoadAborted, match="bad allocation"):
+        load_staged(con, list(shards.values()), files_per_txn=1)
+    assert all(s.path.is_dir() for s in shards.values())
+    assert not list((tmp_path / "stage").glob("*" + BAD))
+
+
+def test_a_connection_that_stops_answering_sets_no_shard_aside(two_files, tmp_path, con):
+    from pubmed2db import load as load_module
+
+    shards = _staged(two_files, tmp_path)
+    con.close()  # any later statement raises, the `SELECT 1` probe included
+    with pytest.raises(load_module.StagedLoadAborted, match="stopped answering"):
+        load_staged(con, list(shards.values()), files_per_txn=2)
+    assert all(s.path.is_dir() for s in shards.values())
+
+
+def test_a_group_that_fails_file_by_file_sets_no_shard_aside(two_files, tmp_path, con):
+    """Every file of a group refused on its own is the machine (a full disk
+    raises the IOException a missing Parquet file does), not N bad shards."""
+    from pubmed2db import load as load_module
+
+    shards = _staged(two_files, tmp_path)
+    for shard in shards.values():
+        (shard.path / "author.parquet").unlink()
+    with pytest.raises(load_module.StagedLoadAborted, match="all 2 files"):
+        load_staged(con, list(shards.values()), files_per_txn=2)
+    assert all(s.path.is_dir() for s in shards.values())
+    assert con.execute("SELECT count(*) FROM article").fetchone()[0] == 0
+
+
+def test_a_shard_that_cannot_be_moved_aside_is_still_reported(
+    two_files, tmp_path, con, monkeypatch
+):
+    from pathlib import Path
+
+    shards = _staged(two_files, tmp_path)
+    bad = shards["pubmed25n0002.xml.gz"]
+    (bad.path / "author.parquet").write_bytes(b"not parquet")
+
+    def refuse(self, target):
+        raise PermissionError("read-only stage directory")
+
+    monkeypatch.setattr(Path, "rename", refuse)
+    loaded, failed = load_staged(con, list(shards.values()), files_per_txn=2)
+    assert (loaded, failed) == (1, ["pubmed25n0002.xml.gz"])
+    assert bad.path.is_dir()
+
+
 def test_stage_skips_what_is_fresh_and_restages_what_changed(two_files, tmp_path, caplog):
     stage_dir = tmp_path / "stage"
     assert stage_files(two_files, stage_dir=stage_dir, workers=1)[0] == 2

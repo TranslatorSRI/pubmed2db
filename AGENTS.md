@@ -190,7 +190,12 @@ explains its part; this table is only a map.
     the corpus.** Per table breaks "no child row without its article
     version"; one for everything loses hours to one bad shard. A failed
     group is retried file by file, and a shard that fails alone is renamed
-    `.bad` so the next `load` parses its XML. Shards are deleted *after*
+    `.bad` so the next `load` parses its XML. But a failure that is not a
+    shard's (an out-of-memory or fatal DuckDB error, a connection that no
+    longer answers, every file of a group refused alone) stops the load
+    with `StagedLoadAborted` and renames nothing: before that rule, one
+    `(bad allocation)` set aside every remaining shard of the run, and the
+    next `load` parsed them all serially. Shards are deleted *after*
     their COMMIT, so a crash between the two can only leave a shard whose
     rows are already in.
   - **`update` stages too**, so a daily run and a rebuild go through the

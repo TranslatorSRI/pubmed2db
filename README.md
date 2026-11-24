@@ -427,6 +427,10 @@ the files that are new or changed, and it cannot introduce duplicate data.
   covers a group of files (`--files-per-txn`, default 50): a group that fails
   is rolled back and retried one file at a time, and a shard that fails on its
   own is set aside as `<name>.bad` so the next `load` parses its XML instead.
+  A failure that is the database's or the machine's (out of memory, a fatal
+  DuckDB error, every file of a group failing alone) stops `load` instead and
+  sets nothing aside; once the cause is fixed, the next `load` carries on from
+  the shards still there.
 - **Several versions of a PMID are the design, not duplication.** A row's
   identity is `(pmid, source_file)`; the `latest_article` view returns the
   version with the highest `file_order_key` per PMID, and drops the PMID if a
