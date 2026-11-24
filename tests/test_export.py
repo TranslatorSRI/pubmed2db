@@ -322,7 +322,7 @@ def test_writing_progress_line_renders(tmp_path, caplog):
         assert fragment in line, line
 
 
-def test_placeholder_looking_fields_survive_to_the_export(con, gz_fixture, tmp_path):
+def test_placeholder_looking_fields_survive_to_the_export(con, write_pubmed_gz, tmp_path):
     """A validation run flagged two records as exporting blank where Entrez has a
     value: a non-numeric `<Issue>Suppl</Issue>` and an `<ArticleTitle>` of the
     literal "[Not Available].". Neither is dropped anywhere in the pipeline."""
@@ -330,7 +330,7 @@ def test_placeholder_looking_fields_survive_to_the_export(con, gz_fixture, tmp_p
     from pubmed2db.export import export_json
     from pubmed2db.load import load_file
 
-    load_file(con, gz_fixture("pubmed25n0004"), kind="baseline")
+    load_file(con, write_pubmed_gz("pubmed25n0004"), kind="baseline")
     out = tmp_path / "json"
     export_json(con, out, shards=1)
 

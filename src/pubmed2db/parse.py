@@ -93,9 +93,10 @@ class ParsedFile:
     n_book_records: int = 0
     #: Top-level records ``parse_file`` does not know, by tag, in a file that
     #: also held records it does. The DTD allows none, so anything here means
-    #: PubMed has changed its file format. (A file holding *only* such
-    #: records, or known ones nested inside another element, is not returned
-    #: at all: :func:`parse_file` raises :class:`UnknownFileFormatError`.)
+    #: PubMed has changed its file format. (A file holding such records and no
+    #: ``<PubmedArticle>``, or known ones nested inside an element that is not
+    #: a record, is not returned at all: :func:`parse_file` raises
+    #: :class:`UnknownFileFormatError`.)
     unrecognized_records: dict[str, int] = field(default_factory=dict)
 
     @property
@@ -334,8 +335,11 @@ def iter_records(
     an element of another tag is cleared, since nothing will read it, so a
     wrapper of records does not grow with the records it holds.
 
-    ``nested``, if given, counts nested matches by tag, whether skipped or,
-    with ``yield_nested``, yielded, so the caller can say so.
+    ``nested``, if given, counts by tag the nested matches no record will
+    read, so the caller can say so: those inside an element of another tag
+    and, with ``yield_nested``, every nested match, since each is yielded as
+    a record of its own. One inside a record, without ``yield_nested``, is
+    that record's content and is not counted.
 
     ``yield_nested=True`` is for a parse with ``recover=True``, where nesting
     is libxml2's repair of a malformed file rather than a format change: an
@@ -363,9 +367,9 @@ def iter_records(
         if parent is None:
             continue  # the root itself
         if parent.getparent() is not None:  # nested
-            if nested is not None:
-                nested[element.tag] += 1
             if yield_nested:
+                if nested is not None:
+                    nested[element.tag] += 1
                 yield element
                 element.clear(keep_tail=True)
             else:
@@ -373,6 +377,8 @@ def iter_records(
                 while top.getparent().getparent() is not None:
                     top = top.getparent()
                 if top.tag not in tags:  # inside a record, it is that record's to read
+                    if nested is not None:
+                        nested[element.tag] += 1
                     element.clear(keep_tail=True)
             continue
         yield element
@@ -428,9 +434,10 @@ def parse_file(path: str | Path) -> ParsedFile:
     parsed records but never the document tree. ``etree.parse`` kept the whole
     tree alive while every record was built, though every extractor works on
     one ``<PubmedArticle>`` at a time (#25). Measured on pubmed26n1333
-    (30,000 articles) on 2026-11-17, the file ``slurm/README.md`` cites: peak
-    RSS 3.66 GiB holding the tree, 1.07 GiB streaming, and the parse slightly
-    faster (6.4 s against 6.2 s), so reading the gzip through Python rather
+    (30,000 articles), the file ``slurm/README.md`` cites, first on
+    2026-10-21 and again on 2026-11-17 against this code: peak RSS 3.66 GiB
+    holding the tree and 1.07 GiB streaming, and the parse 6.4 s holding the
+    tree and 6.2 s streaming, so reading the gzip through Python rather
     than libxml2's zlib costs nothing visible. #25's own figures (a ~1.2 GiB
     tree in a ~2.2 GiB peak) came from pubmed26n0005, whose older records are
     smaller: the tree grows with the records, not only with their count. The
@@ -445,11 +452,16 @@ def parse_file(path: str | Path) -> ParsedFile:
 
     Two shapes raise :class:`UnknownFileFormatError` instead, because the file
     would otherwise load as fewer records than it holds, be marked processed,
-    and never be retried: one of the three kinds nested inside another element
-    (a wrapper PubMed has added), and a file of nothing but unknown top-level
-    elements (a record tag PubMed has renamed). An unknown element beside
-    records we do read stays a warning: those records load, and only the
-    unknown kind is missed.
+    and never be retried: one of the three kinds nested inside an element that
+    is not a record (a wrapper PubMed has added), and unknown top-level
+    elements in a file with no ``<PubmedArticle>`` (an article tag PubMed has
+    renamed). One of the three inside a record is that record's content, and
+    raises nothing. Only a ``<PubmedArticle>`` counts against the second:
+    update files usually carry a ``<DeleteCitation>``, and a few files a
+    ``<PubmedBookArticle>``, which this parser skips, so either beside 30,000
+    renamed articles would otherwise turn the format change into a warning. An
+    unknown element beside articles we do read stays a warning: those articles
+    load, and only the unknown kind is missed.
 
     A damaged file raises: ``XMLSyntaxError`` for bad XML, and the ``gzip``
     errors :func:`open_xml` lists for a bad compressed stream.
@@ -458,11 +470,13 @@ def parse_file(path: str | Path) -> ParsedFile:
     unrecognized: Counter[str] = Counter()
     nested: Counter[str] = Counter()
     n_records = 0
+    n_articles = 0  # PubmedArticle only: the one kind this parser loads
     with open_xml(path) as handle:
         records = iter_records(handle, _RECORD_TAGS, unrecognized=unrecognized, nested=nested)
         for element in records:
             n_records += 1
             if element.tag == "PubmedArticle":
+                n_articles += 1
                 _parse_article(element, path, result)
             elif element.tag == "PubmedBookArticle":
                 # Bookshelf citations share these files per the DTD. We parse
@@ -483,7 +497,7 @@ def parse_file(path: str | Path) -> ParsedFile:
     def tally(counts: Counter[str]) -> str:
         return ", ".join(f"{tag} ×{n}" for tag, n in counts.most_common())
 
-    if nested or (unrecognized and not n_records):
+    if nested or (unrecognized and not n_articles):
         found = []
         if nested:
             found.append(

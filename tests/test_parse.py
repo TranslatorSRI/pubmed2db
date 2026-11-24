@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 
 
-def test_parses_all_articles_and_raw_dates(gz_fixture):
+def test_parses_all_articles_and_raw_dates(write_pubmed_gz):
     from pubmed2db.parse import parse_file
 
-    parsed = parse_file(gz_fixture("pubmed25n0001"))
+    parsed = parse_file(write_pubmed_gz("pubmed25n0001"))
     by_pmid = {pa.pubmed: pa for pa in parsed.articles}
     assert set(by_pmid) == {1001, 1002, 1003}
 
@@ -48,10 +48,10 @@ def test_season_is_read_as_the_month():
     assert _raw_pubdate(element) == ("1994", "Sep-Dec", None, None)
 
 
-def test_extracts_rich_fields(gz_fixture):
+def test_extracts_rich_fields(write_pubmed_gz):
     from pubmed2db.parse import parse_file
 
-    parsed = parse_file(gz_fixture("pubmed25n0001"))
+    parsed = parse_file(write_pubmed_gz("pubmed25n0001"))
     article = next(pa.article for pa in parsed.articles if pa.pubmed == 1001)
 
     assert [(t.label, t.text) for t in article.abstract] == [
@@ -61,11 +61,11 @@ def test_extracts_rich_fields(gz_fixture):
     assert article.journal.nlm_catalog_id == "0410462"
 
 
-def test_mesh_headings_are_read_from_the_xml(gz_fixture):
+def test_mesh_headings_are_read_from_the_xml(write_pubmed_gz):
     """UI, PubMed's own name, major flag and qualifiers, in document order."""
     from pubmed2db.parse import MeshHeading, MeshQualifier, parse_file
 
-    parsed = parse_file(gz_fixture("pubmed25n0001"))
+    parsed = parse_file(write_pubmed_gz("pubmed25n0001"))
     article = next(pa for pa in parsed.articles if pa.pubmed == 1001)
     assert article.mesh_headings == [
         MeshHeading("D000818", "Animals", False, []),
@@ -96,10 +96,10 @@ def test_mesh_headings_keep_pubmeds_text_and_skip_a_descriptor_without_a_ui():
     ]
 
 
-def test_article_ids_exclude_reference_ids(gz_fixture):
+def test_article_ids_exclude_reference_ids(write_pubmed_gz):
     from pubmed2db.parse import parse_file
 
-    parsed = parse_file(gz_fixture("pubmed25n0001"))
+    parsed = parse_file(write_pubmed_gz("pubmed25n0001"))
     article = next(pa for pa in parsed.articles if pa.pubmed == 1001)
 
     # The article's own IDs only -- not the DOI of the reference it cites, and
@@ -114,13 +114,13 @@ def test_article_ids_exclude_reference_ids(gz_fixture):
     assert ("doi", "10.1000/nopmid") in {(x.prefix, x.identifier) for x in article.article.xrefs}
 
 
-def test_publication_types_keep_names_and_pubmed_order(gz_fixture):
+def test_publication_types_keep_names_and_pubmed_order(write_pubmed_gz):
     """Upstream's `type_mesh_ids` sorts the UIs and drops the names; ours keeps
     both in document order, which is the order esummary's `pubtype` serves --
     here deliberately not alphabetical by name or by UI."""
     from pubmed2db.parse import parse_file
 
-    parsed = parse_file(gz_fixture("pubmed25n0002"))
+    parsed = parse_file(write_pubmed_gz("pubmed25n0002"))
     article = next(pa for pa in parsed.articles if pa.pubmed == 1001)
 
     assert article.publication_types == [
@@ -145,7 +145,7 @@ def test_publication_types_skip_an_entry_without_a_ui():
     assert _publication_types(element) == [("D016454", "Review")]
 
 
-def test_cited_pmids_is_parked_but_works(gz_fixture):
+def test_cited_pmids_is_parked_but_works(write_pubmed_gz):
     """`_cited_pmids` is not wired into parse_file -- the citation graph is not
     stored. Kept working so re-enabling it is a one-line change, and because it
     is the counter-example to the upstream bug tracked in FUTURE.md.
@@ -156,7 +156,7 @@ def test_cited_pmids_is_parked_but_works(gz_fixture):
 
     from pubmed2db.parse import _cited_pmids, parse_file
 
-    with gzip.open(gz_fixture("pubmed25n0001"), "rb") as handle:
+    with gzip.open(write_pubmed_gz("pubmed25n0001"), "rb") as handle:
         root = etree.parse(handle).getroot()
     element = next(
         e for e in root.findall("PubmedArticle") if e.findtext("MedlineCitation/PMID") == "1001"
@@ -165,7 +165,7 @@ def test_cited_pmids_is_parked_but_works(gz_fixture):
     assert _cited_pmids(element) == [9001]
 
     # Nothing populates a cited_pmids field any more...
-    parsed = parse_file(gz_fixture("pubmed25n0001"))
+    parsed = parse_file(write_pubmed_gz("pubmed25n0001"))
     article = next(pa for pa in parsed.articles if pa.pubmed == 1001)
     assert not hasattr(article, "cited_pmids")
     # ...and upstream still finds nothing, because it searches MedlineCitation
@@ -174,7 +174,7 @@ def test_cited_pmids_is_parked_but_works(gz_fixture):
     assert article.article.cites_pubmed_ids == []
 
 
-def test_article_ids_exclude_cited_references(gz_fixture):
+def test_article_ids_exclude_cited_references(write_pubmed_gz):
     """A cited reference's ArticleIdList must not become the article's own.
 
     Upstream's `_extract_article` searches `.//ArticleIdList/ArticleId` under
@@ -184,7 +184,7 @@ def test_article_ids_exclude_cited_references(gz_fixture):
     """
     from pubmed2db.parse import parse_file
 
-    parsed = parse_file(gz_fixture("pubmed25n0002"))
+    parsed = parse_file(write_pubmed_gz("pubmed25n0002"))
     article = next(pa for pa in parsed.articles if pa.pubmed == 1001)
 
     assert set(article.article_ids) == {
@@ -197,35 +197,35 @@ def test_article_ids_exclude_cited_references(gz_fixture):
     assert not any(id_type == "pubmed" for id_type, _ in article.article_ids)
 
 
-def test_collects_delete_citation(gz_fixture):
+def test_collects_delete_citation(write_pubmed_gz):
     from pubmed2db.parse import parse_file
 
-    parsed = parse_file(gz_fixture("pubmed25n0002"))
+    parsed = parse_file(write_pubmed_gz("pubmed25n0002"))
     assert parsed.deleted_pmids == [1002]
     assert [pa.pubmed for pa in parsed.articles] == [1001]
     assert parsed.articles[0].pmid_version == 2
 
 
-def test_articles_dropped_by_the_extractor_are_counted(gz_fixture, monkeypatch):
+def test_articles_dropped_by_the_extractor_are_counted(write_pubmed_gz, monkeypatch):
     """Upstream returns None (rather than raising) for e.g. an empty
     <ArticleTitle>; those must show up in n_failed, not vanish silently."""
     from pubmed2db import parse
 
     monkeypatch.setattr(parse, "_extract_article", lambda *a, **k: None)
-    parsed = parse.parse_file(gz_fixture("pubmed25n0001"))
+    parsed = parse.parse_file(write_pubmed_gz("pubmed25n0001"))
 
     assert parsed.articles == []
     assert parsed.n_failed > 0
 
 
-def test_book_records_are_counted_not_dropped_silently(gz_fixture, caplog, tmp_path):
+def test_book_records_are_counted_not_dropped_silently(write_pubmed_gz, caplog, tmp_path):
     """PubmedBookArticle shares the file per the DTD; we parse journal citations
     only, so the skip has to be visible (see issue #27)."""
     import gzip
 
     from pubmed2db.parse import parse_file
 
-    src = gz_fixture("pubmed25n0001")
+    src = write_pubmed_gz("pubmed25n0001")
     with gzip.open(src, "rt", encoding="utf-8") as handle:
         xml = handle.read()
     book = (
@@ -243,7 +243,7 @@ def test_book_records_are_counted_not_dropped_silently(gz_fixture, caplog, tmp_p
     assert "skipped 1 PubmedBookArticle record(s)" in caplog.text
 
 
-def test_deletions_and_articles_each_parse_without_the_other(gz_fixture, tmp_path):
+def test_deletions_and_articles_each_parse_without_the_other(write_pubmed_gz, tmp_path):
     """Streaming reads the three record kinds in one pass, so a file holding a
     DeleteCitation and no articles (a real shape for an update file) must still
     yield its deletions, and one with articles and no DeleteCitation none."""
@@ -266,13 +266,13 @@ def test_deletions_and_articles_each_parse_without_the_other(gz_fixture, tmp_pat
     assert parsed.n_failed == 0 and parsed.n_book_records == 0
 
     # pubmed25n0001 has articles and no <DeleteCitation>.
-    articles_only = parse_file(gz_fixture("pubmed25n0001"))
+    articles_only = parse_file(write_pubmed_gz("pubmed25n0001"))
     assert articles_only.articles
     assert articles_only.deleted_pmids == []
 
 
 @pytest.mark.parametrize("name", ["renamed.xml.GZ", "renamed.tmp", "plain.xml"])
-def test_compression_is_read_from_the_content_not_the_name(gz_fixture, tmp_path, name):
+def test_compression_is_read_from_the_content_not_the_name(write_pubmed_gz, tmp_path, name):
     """`etree.parse` let libxml2 sniff for gzip, so a gzipped file parsed under
     any name; `iterparse` on a file object decompresses nothing, and choosing by
     extension would fail such a file at byte 0. `open_xml` sniffs the magic
@@ -282,7 +282,7 @@ def test_compression_is_read_from_the_content_not_the_name(gz_fixture, tmp_path,
 
     from pubmed2db.parse import parse_file
 
-    src = gz_fixture("pubmed25n0001")
+    src = write_pubmed_gz("pubmed25n0001")
     dst = tmp_path / name
     if name.startswith("plain"):
         with gzip.open(src, "rb") as handle:
@@ -295,7 +295,7 @@ def test_compression_is_read_from_the_content_not_the_name(gz_fixture, tmp_path,
     ]
 
 
-def test_gzip_is_detected_when_the_filesystem_returns_short_reads(gz_fixture, monkeypatch):
+def test_gzip_is_detected_when_the_filesystem_returns_short_reads(write_pubmed_gz, monkeypatch):
     """`BufferedReader.peek` makes at most one raw read, so on a filesystem
     that returns a byte at a time it saw only `\\x1f` and fed the compressed
     bytes to the XML parser. `open_xml` reads the magic bytes instead, which
@@ -325,7 +325,7 @@ def test_gzip_is_detected_when_the_filesystem_returns_short_reads(gz_fixture, mo
             buffer[: len(chunk)] = chunk
             return len(chunk)
 
-    src = gz_fixture("pubmed25n0001")
+    src = write_pubmed_gz("pubmed25n0001")
     data = src.read_bytes()
     assert len(io.BufferedReader(OneByteAtATime(data)).peek(2)) == 1  # the trap
 
@@ -335,7 +335,7 @@ def test_gzip_is_detected_when_the_filesystem_returns_short_reads(gz_fixture, mo
     assert parse.parse_file(src).articles
 
 
-def test_bytes_after_the_gzip_stream_fail_the_file(gz_fixture, tmp_path):
+def test_bytes_after_the_gzip_stream_fail_the_file(write_pubmed_gz, tmp_path):
     """libxml2 ignored junk after the gzip stream and loaded the file; Python's
     `gzip` raises. Kept on purpose (`open_xml` says why): such a file is not
     the one NCBI published, so it is retried rather than loaded."""
@@ -344,7 +344,7 @@ def test_bytes_after_the_gzip_stream_fail_the_file(gz_fixture, tmp_path):
     from pubmed2db.parse import parse_file
 
     dst = tmp_path / "pubmed25n0009.xml.gz"
-    dst.write_bytes(gz_fixture("pubmed25n0001").read_bytes() + b"garbage!!")
+    dst.write_bytes(write_pubmed_gz("pubmed25n0001").read_bytes() + b"garbage!!")
     with pytest.raises(gzip.BadGzipFile):
         parse_file(dst)
 
@@ -353,8 +353,9 @@ def test_iter_records_yields_direct_children_of_the_root_only():
     """`iterparse`'s `tag=` matches at any depth, but `root.findall` (which the
     streaming replaced) matched the root's children only. A nested match must
     be neither yielded nor pruned: pruning its "earlier siblings" would delete
-    the start of the enclosing record before that record was read. It is
-    counted instead, so the caller can say so."""
+    the start of the enclosing record before that record was read. Inside a
+    record it is that record's content, so it is not counted either; only one
+    no record will read is (the next test)."""
     import io
     from collections import Counter
 
@@ -365,7 +366,7 @@ def test_iter_records_yields_direct_children_of_the_root_only():
     records = iter_records(io.BytesIO(xml), "R", nested=nested)
     seen = [[child.tag for child in el] for el in records]
     assert seen == [["a", "R", "c"], ["d"]]
-    assert nested == {"R": 1}
+    assert nested == {}
 
 
 def test_iter_records_can_yield_nested_matches_for_a_recovered_parse():
@@ -394,7 +395,8 @@ def test_iter_records_can_yield_nested_matches_for_a_recovered_parse():
 def test_iter_records_frees_nested_matches_only_outside_a_record():
     """A nested match inside an element of another tag is cleared once counted,
     so a wrapper round a file's records does not hold them all; one inside a
-    record is part of that record and is left whole for the caller."""
+    record is part of that record and is left whole for the caller, and is
+    not counted: no record is lost, so the caller has nothing to report."""
     import io
     from collections import Counter
 
@@ -408,14 +410,17 @@ def test_iter_records_frees_nested_matches_only_outside_a_record():
     assert len(wrapper[0]) == 0  # the <R> under <W> was cleared
     assert [child.tag for child in record] == ["b", "R"]
     assert record[1][0].tag == "c"  # the <R> inside a record was not
-    assert nested == {"R": 2}
+    assert nested == {"R": 1}
 
 
 def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog):
     """Only the three tags the DTD allows are read as records. Anything else
     directly under the root, before, between or after them, is skipped,
     counted by tag and named in a warning, not mistaken for a deletion; and
-    the same tag nested inside a record is not counted at all."""
+    the same tag nested inside a record is not counted at all, nor is a
+    record tag there, which does not fail the file. The file holds an article
+    (empty, so it fails to parse, but it is one), since unknown elements beside
+    deletions or book records alone fail."""
     import gzip
     import logging
 
@@ -426,7 +431,8 @@ def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog)
         "<!-- a comment is not a record -->"
         "<Mystery><PMID>7</PMID></Mystery>"
         "<DeleteCitation><PMID Version='1'>1002</PMID></DeleteCitation>"
-        "<Mystery/><Other/>"
+        "<Mystery/><PubmedArticle><DeleteCitation><PMID>9</PMID></DeleteCitation>"
+        "</PubmedArticle><PubmedBookArticle/><Other/>"
         "<DeleteCitation><PMID Version='1'>1003<Mystery/></PMID></DeleteCitation>"
         "<Mystery/>"
         "</PubmedArticleSet>"
@@ -438,6 +444,7 @@ def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog)
     with caplog.at_level(logging.WARNING, logger="pubmed2db.parse"):
         parsed = parse_file(dst)
     assert parsed.deleted_pmids == [1002, 1003]
+    assert parsed.n_book_records == 1
     assert parsed.unrecognized_records == {"Mystery": 3, "Other": 1}
     assert "skipped 4 top-level record(s)" in caplog.text
     assert "Mystery ×3, Other ×1" in caplog.text
@@ -462,6 +469,26 @@ def test_unrecognized_top_level_records_are_counted_and_logged(tmp_path, caplog)
             r"2 top-level element\(s\) of a kind the parser does not know "
             r"\(PubmedArticleV2 ×2\), and 0 record\(s\) it can read",
             id="only records it does not know",
+        ),
+        pytest.param(
+            "<PubmedArticleV2><PMID>1</PMID></PubmedArticleV2>"
+            "<DeleteCitation><PMID Version='1'>1002</PMID></DeleteCitation>",
+            r"1 top-level element\(s\) of a kind the parser does not know "
+            r"\(PubmedArticleV2 ×1\), and 1 record\(s\) it can read",
+            id="renamed articles beside a deletion",
+        ),
+        pytest.param(
+            "<PubmedArticleV2><PMID>1</PMID></PubmedArticleV2>"
+            "<PubmedArticleV2><PMID>2</PMID></PubmedArticleV2>"
+            "<PubmedBookArticle/>",
+            r"2 top-level element\(s\) of a kind the parser does not know "
+            r"\(PubmedArticleV2 ×2\), and 1 record\(s\) it can read",
+            id="renamed articles beside a book record",
+        ),
+        pytest.param(
+            "<PubmedArticleV2><PMID>1</PMID></PubmedArticleV2>",
+            r"1 top-level element\(s\) of a kind the parser does not know",
+            id="renamed articles alone",
         ),
     ],
 )
@@ -496,10 +523,10 @@ def test_a_record_tag_without_a_branch_fails_loudly(tmp_path, monkeypatch):
         parse.parse_file(dst)
 
 
-def test_a_known_file_has_no_unrecognized_records(gz_fixture, caplog):
+def test_a_known_file_has_no_unrecognized_records(write_pubmed_gz, caplog):
     from pubmed2db.parse import parse_file
 
     for stem in ("pubmed25n0001", "pubmed25n0002"):
-        parsed = parse_file(gz_fixture(stem))
+        parsed = parse_file(write_pubmed_gz(stem))
         assert parsed.unrecognized_records == {}
     assert "does not know" not in caplog.text

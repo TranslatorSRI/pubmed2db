@@ -626,11 +626,11 @@ def test_parse_serfile_reads_records_that_recovery_nested(tmp_path, caplog):
         "2": (1902, 1950, False),
         "3": (1903, None, True),
     }
-    assert "read 2 catalog record(s) that XML recovery had nested" in caplog.text
+    assert "read 2 catalog record(s) nested inside another element" in caplog.text
 
     caplog.clear()
     _parse_serfile([FIXTURES / "serfile_sample.xml"])
-    assert "recovery had nested" not in caplog.text
+    assert "nested inside another element" not in caplog.text
 
 
 def test_parse_serfile_raises_when_the_baseline_will_not_parse(tmp_path):
