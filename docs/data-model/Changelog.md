@@ -15,7 +15,7 @@ Adds `source_file.n_unrecognized`. Not yet in a release.
 
 | Output | What a consumer must do |
 | --- | --- |
-| NDJSON | Nothing: the records are unchanged. `metadata.json`'s `corpus` block gains `unrecognized_records_skipped`. |
+| NDJSON | Nothing: the records are unchanged. `metadata.json`'s `corpus` block gains `unrecognized_records_skipped`, and `files_without_unrecognized_count` beside it: the loaded files that were never counted, because a database loaded them before 1.1. Read a 0 as "none found" only when both are 0. |
 | DuckDB | Nothing. `source_file.n_unrecognized` counts unknown elements the parser skipped directly under `PubmedArticleSet`, in a file it otherwise read; anything but 0 means PubMed changed its file format. A 1.0 database gains the column when 1.1 code first opens it, NULL for the files already loaded. |
 
 ## 1.0.0

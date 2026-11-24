@@ -116,6 +116,7 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         loaded_files,
         last_load,
         skipped_records,
+        unrecognized_uncounted,
         baseline_years,
     ) = con.execute(
         """
@@ -131,6 +132,10 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
             max(processed_at),
             coalesce(sum(n_failed), 0) + coalesce(sum(n_book_records), 0)
                 + coalesce(sum(n_unrecognized), 0),
+            -- Loaded before data model 1.1, so never checked for unknown
+            -- elements: the sum above skips them, and this keeps its 0 from
+            -- reading as "checked, none found".
+            count(*) FILTER (WHERE processed_at IS NOT NULL AND n_unrecognized IS NULL),
             -- More than one baseline year on disk means a new baseline landed:
             -- every PMID is stored twice and only the newest year is exported.
             list_sort(list(DISTINCT year_yy) FILTER (
@@ -168,6 +173,7 @@ def summarize(con: duckdb.DuckDBPyConnection) -> dict:
         "pending_files": pending_files,
         "last_load": last_load,
         "skipped_records": skipped_records,
+        "files_without_unrecognized_count": unrecognized_uncounted,
         "article_versions": article_versions,
         "latest_documents": latest_documents,
         "journals": journals,
@@ -217,6 +223,7 @@ def corpus_provenance(con: duckdb.DuckDBPyConnection) -> dict:
         failed,
         books,
         unrecognized,
+        unrecognized_uncounted,
     ) = con.execute(
         """
         SELECT
@@ -229,7 +236,8 @@ def corpus_provenance(con: duckdb.DuckDBPyConnection) -> dict:
             sum(n_deletions),
             sum(n_failed),
             sum(n_book_records),
-            sum(n_unrecognized)
+            sum(n_unrecognized),
+            count(*) FILTER (WHERE n_unrecognized IS NULL)
         FROM source_file
         WHERE processed_at IS NOT NULL
         """
@@ -248,5 +256,12 @@ def corpus_provenance(con: duckdb.DuckDBPyConnection) -> dict:
         "deletions_loaded": deletions or 0,
         "records_failed": failed or 0,
         "book_records_skipped": books or 0,
+        # A sum over the files that were counted, so a 0 means "none found"
+        # only when the next field is 0 too. Files loaded before data model
+        # 1.1 have no count until `load --force`; reporting them as 0 told
+        # consumers a migrated corpus had been checked when only its newest
+        # files had. The total is kept rather than nulled, because a non-zero
+        # count from the newest files is the format-change signal it exists for.
         "unrecognized_records_skipped": unrecognized or 0,
+        "files_without_unrecognized_count": unrecognized_uncounted,
     }

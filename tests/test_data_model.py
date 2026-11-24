@@ -117,9 +117,9 @@ def test_an_older_minor_version_is_raised_to_ours(tmp_path, monkeypatch):
 def test_a_1_0_database_gains_n_unrecognized(tmp_path):
     """1.1's one addition, migrated for real: a 1.0 database (simulated by
     dropping the column and lowering the version) gains the column, its
-    files already loaded read NULL there, and the status rollup takes that
-    NULL as nothing skipped."""
-    from pubmed2db.status import summarize
+    files already loaded read NULL there, and every rollup reports that file
+    as uncounted rather than as having none: a 0 has to mean "checked"."""
+    from pubmed2db.status import corpus_provenance, summarize
 
     path = tmp_path / "db.duckdb"
     connect(path).close()
@@ -140,6 +140,10 @@ def test_a_1_0_database_gains_n_unrecognized(tmp_path):
             (3, None)
         ]
         assert summarize(con)["skipped_records"] == 0
+        assert summarize(con)["files_without_unrecognized_count"] == 1
+        provenance = corpus_provenance(con)
+        assert provenance["unrecognized_records_skipped"] == 0
+        assert provenance["files_without_unrecognized_count"] == 1
     finally:
         con.close()
 

@@ -363,6 +363,7 @@ def test_corpus_provenance_names_the_cutoff(loaded_con):
         "records_failed": 0,
         "book_records_skipped": 0,
         "unrecognized_records_skipped": 0,
+        "files_without_unrecognized_count": 0,
     }
 
 

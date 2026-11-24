@@ -105,6 +105,30 @@ def test_cli_status_reports_pipeline_state(loaded_db):
     assert "Export:    ready" in result.output
 
 
+def test_cli_status_flags_files_never_checked_for_unknown_elements(loaded_db):
+    """A file loaded before data model 1.1 has no `n_unrecognized`, so the
+    skip count beside it cannot cover it; `status` says so instead of
+    letting the count read as a check of the whole corpus."""
+    from pubmed2db.db import connect
+
+    db_path = loaded_db
+    result = CliRunner().invoke(main, ["--db", str(db_path), "status"])
+    assert "not checked for unrecognized elements" not in result.output
+
+    con = connect(db_path)
+    con.execute(
+        "UPDATE source_file SET n_unrecognized = NULL WHERE file_name = 'pubmed25n0001.xml.gz'"
+    )
+    con.close()
+
+    result = CliRunner().invoke(main, ["--db", str(db_path), "status"])
+    assert result.exit_code == 0, result.output
+    assert (
+        "1 file(s) loaded before data model 1.1 not checked for unrecognized elements"
+        in result.output
+    )
+
+
 def test_cli_status_flags_a_second_baseline_year(loaded_db):
     """A new baseline year stores every PMID twice; `status` should say so."""
     from pubmed2db.db import connect, register_source_file
