@@ -539,8 +539,10 @@ def status(ctx: click.Context) -> None:
                 )
             )
         if s["skipped_records"]:
-            # Records the loader could not store: extractor rejections plus book
-            # citations. Kept visible because they are otherwise invisible —
+            # Records the loader could not store: extractor rejections, book
+            # citations and unknown top-level elements (n_failed,
+            # n_book_records, n_unrecognized; the last means PubMed changed its
+            # format). Kept visible because they are otherwise invisible —
             # they never become rows, so no count downstream is short.
             click.echo(f"           {s['skipped_records']} record(s) skipped while parsing")
         if s["files_without_unrecognized_count"]:
