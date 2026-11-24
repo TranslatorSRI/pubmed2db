@@ -257,7 +257,7 @@ def test_registry_records_the_skip_counts(con, write_pubmed_gz, tmp_path):
     assert summarize(con)["skipped_records"] == 1
 
 
-def test_registry_records_unrecognized_records(con, gz_fixture, tmp_path):
+def test_registry_records_unrecognized_records(con, write_pubmed_gz, tmp_path):
     """Unknown top-level elements beside records the parser reads are counted
     in the registry and in every rollup of the skip counts. (A file whose
     records the parser cannot reach is not loaded at all, so it has no count:
@@ -267,7 +267,7 @@ def test_registry_records_unrecognized_records(con, gz_fixture, tmp_path):
     from pubmed2db.load import load_file
     from pubmed2db.status import corpus_provenance, summarize
 
-    with gzip.open(gz_fixture("pubmed25n0001"), "rt", encoding="utf-8") as handle:
+    with gzip.open(write_pubmed_gz("pubmed25n0001"), "rt", encoding="utf-8") as handle:
         xml = handle.read()
     extra = "<Mystery/><Other><PMID>1001</PMID></Other><Mystery/>"
     path = tmp_path / "pubmed25n0007.xml.gz"
