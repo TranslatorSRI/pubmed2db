@@ -18,7 +18,7 @@ Layout, under ``<data-dir>/stage/`` by default::
     pubmed26n0001.bad/        a shard `load` could not insert: inspect, then delete
 
 A shard is identified by the XML it came from (size and mtime) and the code
-that wrote it (`datamodel.code_version`). Anything else is not a shard and
+that wrote it (`code_identity`). Anything else is not a shard and
 is re-staged, so a changed download or a parsing change is never served from
 a stale shard -- which is what keeps ``load --force``'s promise, that it
 applies the current parse to the whole corpus, true.
@@ -26,6 +26,8 @@ applies the current parse to the whole corpus, true.
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import json
 import logging
 import multiprocessing
@@ -105,13 +107,55 @@ class Shard:
         return self.path / f"{table}.parquet"
 
 
+@functools.cache
+def code_identity() -> str:
+    """The code a shard is cut by: `datamodel.code_version`, plus a source hash when dirty.
+
+    ``git describe --dirty`` names a commit, so two different uncommitted
+    edits of the same commit both read ``v1.3-4-gabc-dirty``, and a shard cut
+    before a parser fix would pass as fresh after it. A dirty checkout is
+    therefore told apart by a hash of what the parse runs: the package's
+    source and the files that pin its dependencies. Between two dirty
+    states, an edit anywhere else (a test, a doc) leaves the hash alone.
+
+    Cached, so a process runs ``git describe`` once rather than once or twice
+    per file: thousands of subprocesses on a cluster filesystem were slow,
+    and any one that timed out fell back to ``__version__`` and misjudged
+    that shard. `stage_files` passes the parent's value to its workers, so a
+    run's manifests and the freshness check read the same string.
+    """
+    version = code_version()
+    if not version.endswith("-dirty"):
+        return version
+    return f"{version}+{_source_digest()}"
+
+
+def _source_digest(package: Path | None = None) -> str:
+    """A short SHA-256 of the package's ``.py``/``.sql`` files and the
+    repository's ``pyproject.toml`` and ``uv.lock``, path and content alike."""
+    package = package or Path(__file__).resolve().parent
+    repo = package.parents[1]
+    paths = sorted(p for p in package.rglob("*") if p.suffix in {".py", ".sql"})
+    paths += [p for p in (repo / "pyproject.toml", repo / "uv.lock") if p.is_file()]
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(path.relative_to(repo).as_posix().encode() + b"\0")
+        digest.update(path.read_bytes() + b"\0")
+    return digest.hexdigest()[:12]
+
+
 def shard_dir(stage_dir: Path, file_name: str) -> Path:
     """Where ``file_name``'s complete shard lives."""
     return Path(stage_dir) / file_name.removesuffix(_SUFFIX)
 
 
-def stage_file(path: str | Path, kind: str, stage_dir: str | Path) -> Manifest:
+def stage_file(
+    path: str | Path, kind: str, stage_dir: str | Path, code: str | None = None
+) -> Manifest:
     """Parse one file and write its shard; returns the manifest written.
+
+    ``code`` is recorded as the shard's ``code_version``; it defaults to
+    this process's `code_identity`, and a pool worker is handed its parent's.
 
     Everything goes into a ``.part`` directory first and is renamed into
     place last, so a complete directory is the only thing a reader can find
@@ -142,7 +186,7 @@ def stage_file(path: str | Path, kind: str, stage_dir: str | Path) -> Manifest:
         rows={table: batch.num_rows for table, batch in batches.items()},
         xml_size=stat.st_size,
         xml_mtime_ns=stat.st_mtime_ns,
-        code_version=code_version(),
+        code_version=code or code_identity(),
         data_model_version=DATA_MODEL_VERSION,
         staged_at=datetime.now(UTC).isoformat(timespec="seconds"),
         peak_rss_gib=peak_rss_gib(),
@@ -177,8 +221,8 @@ def find_shard(stage_dir: str | Path, xml_path: str | Path) -> Shard | str:
     stat = xml_path.stat()
     if (stat.st_size, stat.st_mtime_ns) != (manifest.xml_size, manifest.xml_mtime_ns):
         return "XML changed since it was staged"
-    if manifest.code_version != code_version():
-        return f"staged by {manifest.code_version}, this is {code_version()}"
+    if manifest.code_version != code_identity():
+        return f"staged by {manifest.code_version}, this is {code_identity()}"
     if not all((path / f"{table}.parquet").is_file() for table in manifest.rows):
         return "a table's Parquet file is missing"
     return Shard(path, manifest)
@@ -236,11 +280,13 @@ def _init_worker(level: int) -> None:
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
-def _stage_worker(job: tuple[str, str, str]) -> tuple[str, Manifest | None, str | None]:
-    """Pool entry point: ``(path, kind, stage_dir)`` -> ``(file_name, manifest, error)``."""
-    path, kind, stage_dir = job
+def _stage_worker(
+    job: tuple[str, str, str, str],
+) -> tuple[str, Manifest | None, str | None]:
+    """Pool entry point: ``(path, kind, stage_dir, code)`` -> ``(file_name, manifest, error)``."""
+    path, kind, stage_dir, code = job
     try:
-        return Path(path).name, stage_file(path, kind, stage_dir), None
+        return Path(path).name, stage_file(path, kind, stage_dir, code), None
     except Exception as exc:  # noqa: BLE001 - reported by name; the rest carry on
         return Path(path).name, None, f"{type(exc).__name__}: {exc}"
 
@@ -286,14 +332,15 @@ def stage_files(
             logger.warning("ignoring %s: not a PubMed XML filename", path.name)
     keyed.sort(key=lambda t: t[0])
 
-    jobs: list[tuple[str, str, str]] = []
+    code = code_identity()
+    jobs: list[tuple[str, str, str, str]] = []
     for _, path, kind in keyed:
         if not force:
             if con is not None and not needs_load(con, path.name):
                 continue
             if isinstance(find_shard(stage_dir, path), Shard):
                 continue
-        jobs.append((str(path), kind, str(stage_dir)))
+        jobs.append((str(path), kind, str(stage_dir), code))
     total = len(jobs)
     if total == 0:
         return 0, []

@@ -132,6 +132,59 @@ def test_a_group_of_shards_is_one_transaction(two_files, tmp_path, con, monkeypa
     )
 
 
+@pytest.fixture
+def fresh_identity():
+    """`code_identity` is cached per process; clear it around a test that fakes it."""
+    from pubmed2db import stage as stage_module
+
+    stage_module.code_identity.cache_clear()
+    yield stage_module
+    stage_module.code_identity.cache_clear()
+
+
+def test_the_code_identity_is_asked_of_git_once(fresh_identity, monkeypatch):
+    calls = []
+    monkeypatch.setattr(fresh_identity, "code_version", lambda: calls.append(1) or "v1.3-4-gabc")
+    assert fresh_identity.code_identity() == "v1.3-4-gabc"
+    assert fresh_identity.code_identity() == "v1.3-4-gabc"
+    assert len(calls) == 1
+
+
+def test_two_dirty_states_of_one_commit_are_different_code(fresh_identity, monkeypatch, tmp_path):
+    """`git describe --dirty` reads the same for any uncommitted edit, so a
+    dirty identity carries a hash of the package source as well."""
+    package = tmp_path / "src" / "pkg"
+    package.mkdir(parents=True)
+    (package / "parse.py").write_text("one parse\n")
+    (tmp_path / "uv.lock").write_text("pins\n")
+    before = fresh_identity._source_digest(package)
+    (package / "parse.py").write_text("another parse\n")
+    after = fresh_identity._source_digest(package)
+    assert before != after
+    (package / "notes.md").write_text("not code\n")
+    assert fresh_identity._source_digest(package) == after
+    (tmp_path / "uv.lock").write_text("other pins\n")
+    assert fresh_identity._source_digest(package) != after
+
+    monkeypatch.setattr(fresh_identity, "code_version", lambda: "v1.3-4-gabc-dirty")
+    monkeypatch.setattr(fresh_identity, "_source_digest", lambda: "1a2b3c")
+    assert fresh_identity.code_identity() == "v1.3-4-gabc-dirty+1a2b3c"
+
+
+def test_a_shard_from_another_dirty_state_is_stale(
+    two_files, tmp_path, fresh_identity, monkeypatch
+):
+    monkeypatch.setattr(fresh_identity, "code_version", lambda: "v1.3-4-gabc-dirty")
+    digest = iter(["before", "after"])
+    monkeypatch.setattr(fresh_identity, "_source_digest", lambda: next(digest))
+    path, kind = two_files[0]
+    stage_file(path, kind, tmp_path / "stage")
+    assert isinstance(find_shard(tmp_path / "stage", path), Shard)
+    fresh_identity.code_identity.cache_clear()  # a new process, after another edit
+    reason = find_shard(tmp_path / "stage", path)
+    assert reason == "staged by v1.3-4-gabc-dirty+before, this is v1.3-4-gabc-dirty+after"
+
+
 def test_a_key_value_folder_above_the_stage_is_not_a_column(two_files, tmp_path, con):
     """DuckDB reads a `key=value` path component as a Hive partition by
     default, which would add a column and fail every positional INSERT."""

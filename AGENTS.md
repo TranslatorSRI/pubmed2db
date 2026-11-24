@@ -176,8 +176,14 @@ explains its part; this table is only a map.
   - **A shard is fresh only if the XML on disk (size and mtime) and the
     `code_version` match its manifest.** Without the code check, `load
     --force` after a parsing fix would quietly reuse shards cut by the old
-    parse; with it, `stage --force` is the way to apply the fix. A `-dirty`
-    checkout between `stage` and `load` stales every shard, loudly.
+    parse; with it, `stage --force` is the way to apply the fix. The code
+    is `stage.code_identity`, not bare `git describe --dirty`: that reads
+    the same for every uncommitted edit of a commit, so a dirty identity
+    adds a hash of the package source and `uv.lock`. Any change to either
+    between `stage` and `load` stales every shard, loudly. It is cached per
+    process and handed to the workers, because one `git describe` per
+    shard check was thousands of subprocesses, and any one that timed out
+    misjudged its shard.
   - **Groups of files per transaction, not one per table and not one for
     the corpus.** Per table breaks "no child row without its article
     version"; one for everything loses hours to one bad shard. A failed
