@@ -201,9 +201,14 @@ def build_batches(
 
     tables = {}
     for table, schema in table_schemas().items():
-        columns = list(zip(*rows[table])) if rows[table] else [[] for _ in schema]
+        # Both zips are strict: a row tuple that disagrees with the schema in
+        # length (a value added to `_article_rows` before its column reached
+        # schema.sql) must raise, as the positional INSERT once did, rather
+        # than lose its trailing values.
+        columns = list(zip(*rows[table], strict=True)) if rows[table] else [[] for _ in schema]
         tables[table] = pa.Table.from_arrays(
-            [pa.array(column, type=f.type) for column, f in zip(columns, schema)], schema=schema
+            [pa.array(column, type=f.type) for column, f in zip(columns, schema, strict=True)],
+            schema=schema,
         )
     return tables, len(deduped)
 
