@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
@@ -952,6 +953,13 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
     ~5 s and ~50 MiB. Unlike them it is parsed with ``recover=True``, and
     with ``yield_nested``: recovering from an unclosed element moves every
     later record inside the one that holds it, and those must still be read.
+    Such a file is logged with the count, since a repair can also misread
+    the record holding the unclosed element (its ``PublicationInfo`` too may
+    have been moved inside it, leaving its years NULL). In such a file the
+    nested records are read before the record holding them, which ends only
+    at the end of the file, so within that file "later wins" follows the
+    order read, not document order: the damaged enclosing record overwrites
+    a nested entry for the same ``NlmUniqueID``. The warning names the file.
 
     A monthly update that will not parse is skipped, but a baseline that will
     not parse, or holds no records, raises. The updates only amend it, so
@@ -963,9 +971,10 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
     for path in paths:
         is_baseline = bool(_SERFILE_BASELINE_RE.fullmatch(path.name))
         n_before = len(years)
+        nested: Counter[str] = Counter()
         try:
             records = iter_records(
-                os.fspath(path), "NLMCatalogRecord", yield_nested=True, recover=True
+                os.fspath(path), "NLMCatalogRecord", nested=nested, yield_nested=True, recover=True
             )
             for element in records:
                 nlm_id = element.findtext("NlmUniqueID")
@@ -986,6 +995,14 @@ def _parse_serfile(paths: list[Path]) -> dict[str, tuple[int | None, int | None,
             if is_baseline:
                 raise
             logger.warning("%s failed to parse (%s); skipping it", path, exc)
+        if nested:
+            logger.warning(
+                "%s: read %d catalog record(s) nested inside another element. Either "
+                "XML recovery repaired a malformed file, and the record(s) around them "
+                "may have lost their years, or NLM has changed the file's format",
+                path,
+                nested.total(),
+            )
         if is_baseline and len(years) == n_before:
             raise ValueError(f"{path} parsed to no catalog records")
     return years
