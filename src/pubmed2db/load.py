@@ -406,13 +406,15 @@ def load_file(
     # DEBUG line has it apart, with the slowest tables.
     logger.info(
         "loaded %s: %d articles, %d deletions, %d failed to parse, "
-        "%d book record(s) skipped (parse %.1fs, build %.1fs, delete %.1fs, "
+        "%d book record(s) skipped, %d unrecognized element(s) skipped "
+        "(parse %.1fs, build %.1fs, delete %.1fs, "
         "insert %.1fs, commit %.1fs; RSS %s, peak %.1f GiB)",
         source_file,
         n_articles,
         len(parsed.deleted_pmids),
         parsed.n_failed,
         parsed.n_book_records,
+        parsed.n_unrecognized,
         parse_seconds,
         timing.build,
         timing.delete,

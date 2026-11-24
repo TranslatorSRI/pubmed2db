@@ -160,7 +160,7 @@ Each file logs both memory figures, and the difference between them is the
 point (the seconds before them are the next section's):
 
 ```text
-INFO pubmed2db.load: loaded pubmed26n1201.xml.gz: 30000 articles, 0 deletions, 0 failed to parse, 0 book record(s) skipped (parse 2.1s, build 0.9s, delete 0.1s, insert 30.4s, commit 12.0s; RSS 12.4 GiB, peak 42.1 GiB)
+INFO pubmed2db.load: loaded pubmed26n1201.xml.gz: 30000 articles, 0 deletions, 0 failed to parse, 0 book record(s) skipped, 0 unrecognized element(s) skipped (parse 2.1s, build 0.9s, delete 0.1s, insert 30.4s, commit 12.0s; RSS 12.4 GiB, peak 42.1 GiB)
 ```
 
 - **`RSS`** is what the process holds *right now*. It can fall. This is the one
