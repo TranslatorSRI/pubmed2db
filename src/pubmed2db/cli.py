@@ -64,13 +64,15 @@ def _stage_local(ctx: click.Context, *, workers: int | None, force: bool) -> Non
     if not files:
         raise click.ClickException("No downloaded files found; run `pubmed2db download` first.")
     # Read-only, and only to skip files already loaded: the workers never
-    # touch the database. A database that is not there yet means stage it all.
+    # touch the database. A database that is not there yet means stage it all,
+    # and so does one that cannot be opened: another process (a running
+    # `load`) holding its lock is a duckdb.IOException, not a ClickException.
     con = None
     if Path(ctx.obj["db"]).is_file():
         try:
             con = _connect(ctx, read_only=True)
-        except click.ClickException as exc:
-            log.warning("%s; staging every file", exc)
+        except (click.ClickException, duckdb.Error) as exc:
+            log.warning("cannot read %s (%s); staging every file", ctx.obj["db"], exc)
     try:
         staged, failed = stage_files(
             files,

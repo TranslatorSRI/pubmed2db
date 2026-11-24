@@ -529,3 +529,19 @@ def test_connect_checkpoint_threshold_replaces_the_default(tmp_path):
     assert "checkpoint_threshold=1.8 GiB" in result.stderr or "checkpoint_threshold=2" in (
         result.stderr
     )
+
+
+def test_cli_stage_runs_beside_a_process_holding_the_database(staged_download):
+    """`stage` only reads the database to skip loaded files; another process
+    holding its lock (a running `load`) means staging every file, not a crash."""
+    from pubmed2db.db import connect
+
+    db_path = staged_download / "cli.duckdb"
+    holder = connect(db_path)  # this process holds the lock, as `load` would
+    try:
+        result = _run_cli("--data-dir", str(staged_download), "--db", str(db_path), "stage")
+    finally:
+        holder.close()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "staging every file" in result.stderr
+    assert "Staged 2 file(s)" in result.stdout
