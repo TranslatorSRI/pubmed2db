@@ -410,7 +410,7 @@ def test_load_logs_phase_timings(con, write_pubmed_gz, caplog):
     assert record.total <= wall
 
 
-def test_build_batches_types_every_column_from_the_schema(gz_fixture):
+def test_build_batches_types_every_column_from_the_schema(write_pubmed_gz):
     """Types come from schema.sql, never from inference: a column that is NULL
     throughout one file must still carry the table's type, or its Parquet
     shard could not be read beside the others (stage), and DATE and BOOLEAN
@@ -422,7 +422,7 @@ def test_build_batches_types_every_column_from_the_schema(gz_fixture):
     from pubmed2db.parse import ParsedFile, parse_file
 
     name = "pubmed25n0001.xml.gz"
-    parsed = parse_file(gz_fixture("pubmed25n0001"))
+    parsed = parse_file(write_pubmed_gz("pubmed25n0001"))
     batches, n_articles = build_batches(parsed, name, parse_file_name(name)[2])
 
     assert n_articles == len(parsed.articles)
@@ -440,7 +440,7 @@ def test_build_batches_types_every_column_from_the_schema(gz_fixture):
     assert empty["deleted_pmid"].schema.field("pmid").type == pa.int64()
 
 
-def test_build_batches_keeps_the_last_occurrence_of_a_repeated_pmid(gz_fixture):
+def test_build_batches_keeps_the_last_occurrence_of_a_repeated_pmid(write_pubmed_gz):
     """A PMID repeated within one file is stored once, from its last occurrence,
     so (pmid, source_file) identifies a version."""
     from pubmed2db.db import parse_file_name
@@ -448,7 +448,7 @@ def test_build_batches_keeps_the_last_occurrence_of_a_repeated_pmid(gz_fixture):
     from pubmed2db.parse import parse_file
 
     name = "pubmed25n0001.xml.gz"
-    parsed = parse_file(gz_fixture("pubmed25n0001"))
+    parsed = parse_file(write_pubmed_gz("pubmed25n0001"))
     first = parsed.articles[0]
     first.article.title = "an earlier version of the same record"
     parsed.articles.append(parsed.articles.pop(0))  # same PMID now last
@@ -467,7 +467,7 @@ def test_build_batches_keeps_the_last_occurrence_of_a_repeated_pmid(gz_fixture):
     assert titles[first.pubmed] == "an earlier version of the same record"
 
 
-def test_a_never_loaded_file_skips_the_delete(con, gz_fixture, monkeypatch):
+def test_a_never_loaded_file_skips_the_delete(con, write_pubmed_gz, monkeypatch):
     """A file with no processed_at has no rows, so its DELETEs are skipped (they
     make the inserts after them slower); a reload still deletes."""
     from pubmed2db import load as load_module
@@ -478,9 +478,9 @@ def test_a_never_loaded_file_skips_the_delete(con, gz_fixture, monkeypatch):
     monkeypatch.setattr(
         load_module, "delete_file_rows", lambda c, f: (deleted.append(f), real(c, f))
     )
-    load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
+    load_file(con, write_pubmed_gz("pubmed25n0001"), kind="baseline")
     assert deleted == []
-    load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")
+    load_file(con, write_pubmed_gz("pubmed25n0001"), kind="baseline")
     assert deleted == ["pubmed25n0001.xml.gz"]
     assert con.execute("SELECT count(*) FROM article").fetchone()[0] == 3
 
