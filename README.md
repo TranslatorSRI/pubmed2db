@@ -249,8 +249,8 @@ Three more group-level options tune DuckDB itself, which matters on a cluster:
   buffer pool. DuckDB does read the Slurm cgroup, defaulting to ~76% of `--mem`
   (measured on duckdb 1.5.4 and 1.5.5), so this is not about rescuing it from a node-sized
   default — it is about leaving room for the memory DuckDB's limit does *not*
-  cover: the lxml tree, the parsed records and the Arrow batch all live in the
-  same cgroup.
+  cover: the parsed records and the Arrow batch of the file being loaded live
+  in the same cgroup.
 - `--temp-dir PATH` (`PUBMED2DB_DUCKDB_TEMP_DIR`) sets where DuckDB spills when a
   query exceeds its memory budget.
 

@@ -120,11 +120,16 @@ buffer pool below it. Measured on two full loads, the process settles at that
 cap plus ~5–6 GiB: everything above our own working set is DuckDB's cache, and
 it fills whatever it is given.**
 
-The loader holds one file at a time (full lxml tree + that file's parsed
-records + the Arrow batch), then inserts it and moves on. *Our* footprint does
-not grow with the number of files or the size of the database.
+The loader holds one file at a time (that file's parsed records + the Arrow
+batch), then inserts it and moves on. *Our* footprint does not grow with the
+number of files or the size of the database. It used to include the file's
+whole lxml tree, which `parse_file` kept alive for nothing (#25): streaming
+the file instead took the parse of a 30,000-article baseline file from a
+3.66 GiB peak to 1.07 GiB (pubmed26n1333, measured 2026-10-21 and again
+2026-11-17), so the "~5–6 GiB on top" below, measured before that change, is
+now an overestimate. All three full-load rows in the table predate it.
 
-DuckDB's does. It runs in the same process and caches ever more of a growing
+DuckDB's footprint does grow. It runs in the same process and caches ever more of a growing
 database, so its buffer pool is what makes a long load's RSS climb run-long —
 until the pool is full, after which RSS is flat:
 
@@ -176,9 +181,10 @@ plateau is the cap binding. Two things would be worth a look:
 
 - **`RSS` still climbing after the plateau should have arrived**, or above
   `LOAD_MEMORY_LIMIT` + ~8 GiB: the growth is in the memory DuckDB's limit does
-  *not* govern (the lxml tree, the parsed records, the Arrow batch — #25 is
-  the loader holding a whole DOM per file). Lowering the limit will not touch
-  it; it only buys spilling.
+  *not* govern: one file's parsed records and its Arrow batch. Neither should
+  grow from file to file (since #25 the loader no longer holds each file's
+  whole tree), so growth there is a leak worth an issue. Lowering the limit
+  will not touch it; it only buys spilling.
 - **`s/file` collapsing** at the point `RSS` plateaus: the limit is low enough
   that DuckDB is spilling to `--temp-dir`. Neither 32GB nor 48GB did.
 

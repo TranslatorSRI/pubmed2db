@@ -100,8 +100,8 @@ def _sync_options(f):
     show_envvar=True,
     help=(
         "Cap DuckDB's buffer pool, e.g. '48GB' (default: ~76% of a Slurm "
-        "allocation, which leaves only the remaining quarter for the lxml tree, "
-        "the parsed records and the Arrow batch)."
+        "allocation, which leaves only the remaining quarter for the parsed "
+        "records and the Arrow batch)."
     ),
 )
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging.")

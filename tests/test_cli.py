@@ -272,14 +272,14 @@ def test_cli_export_json_no_gzip(staged_download):
     assert {doc["id"] for doc in docs} == {"PMID:1001", "PMID:1003"}
 
 
-def test_cli_export_warns_when_journals_missing(tmp_path, gz_fixture):
+def test_cli_export_warns_when_journals_missing(tmp_path, write_pubmed_gz):
     """`export` proceeds but warns when the journal dimension is empty."""
     from pubmed2db.db import connect
     from pubmed2db.load import load_file
 
     db_path = tmp_path / "cli.duckdb"
     con = connect(db_path)
-    load_file(con, gz_fixture("pubmed25n0001"), kind="baseline")  # articles, no journals
+    load_file(con, write_pubmed_gz("pubmed25n0001"), kind="baseline")  # articles, no journals
     con.close()
 
     out_dir = tmp_path / "out"
