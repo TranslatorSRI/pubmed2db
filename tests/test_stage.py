@@ -299,3 +299,39 @@ def test_shard_parquet_keeps_the_schema_types(two_files, tmp_path):
     assert isinstance(shard, Shard)
     for table, schema in table_schemas().items():
         assert pq.read_schema(shard.parquet(table)).equals(schema), table
+
+
+def _killed_on_the_first_file(job):
+    """A pool worker the OOM killer takes on pubmed25n0001; module-level, so a
+    spawned worker can unpickle it by name."""
+    import signal
+
+    from pubmed2db.stage import _stage_worker
+
+    if job[0].endswith("pubmed25n0001.xml.gz"):
+        os.kill(os.getpid(), signal.SIGKILL)
+    return _stage_worker(job)
+
+
+def test_a_killed_worker_fails_its_file_and_the_rest_carry_on(two_files, tmp_path, monkeypatch):
+    """`multiprocessing.Pool` waited forever for a SIGKILLed worker's task, so
+    an OOM kill hung `stage` until Slurm's time limit. Run in a daemon thread
+    so a regression fails here instead of hanging the suite."""
+    import threading
+
+    from pubmed2db import stage as stage_module
+
+    monkeypatch.setattr(stage_module, "_stage_worker", _killed_on_the_first_file)
+    result = []
+    thread = threading.Thread(
+        target=lambda: result.append(
+            stage_files(two_files, stage_dir=tmp_path / "stage", workers=1)
+        ),
+        daemon=True,
+    )
+    thread.start()
+    thread.join(timeout=120)
+    assert not thread.is_alive(), "stage_files hung on a killed worker"
+    assert result == [(1, ["pubmed25n0001.xml.gz"])]
+    assert isinstance(find_shard(tmp_path / "stage", two_files[1][0]), Shard)
+    assert find_shard(tmp_path / "stage", two_files[0][0]) == "not staged"

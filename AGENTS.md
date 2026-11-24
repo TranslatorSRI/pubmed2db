@@ -164,7 +164,9 @@ explains its part; this table is only a map.
   per-phase seconds now on every `loaded` line will name. Hence `stage`:
   `pubmed2db stage --workers N` parses in a spawn-context pool with no
   database open (spawn, not fork: pyarrow's thread pools do not survive a
-  fork) and writes per-file Parquet shards; `load` inserts them 50 files per
+  fork; a `ProcessPoolExecutor`, not `multiprocessing.Pool`, which waits
+  forever on the task of a worker the OOM killer took) and writes per-file
+  Parquet shards; `load` inserts them 50 files per
   transaction from `read_parquet`. Things that are easy to get wrong:
   - **`load.build_batches` is the one row definition**, and the two sinks
     differ only in `_insert_from`'s `FROM` clause. The batches are typed from

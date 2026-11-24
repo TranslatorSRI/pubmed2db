@@ -34,6 +34,9 @@ import multiprocessing
 import os
 import shutil
 import time
+from collections.abc import Iterator
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -291,6 +294,60 @@ def _stage_worker(
         return Path(path).name, None, f"{type(exc).__name__}: {exc}"
 
 
+def _run_jobs(
+    jobs: list[tuple[str, str, str, str]], workers: int
+) -> Iterator[tuple[str, Manifest | None, str | None]]:
+    """Run `_stage_worker` over ``jobs`` in a spawn-context pool, yielding each result.
+
+    Not `multiprocessing.Pool`: when one of its workers is SIGKILLed (the
+    cgroup's OOM killer, on a large file) it starts a replacement, but the
+    dead worker's task never returns and ``imap_unordered`` waits for it
+    until Slurm's time limit. `ProcessPoolExecutor` fails every future in
+    flight with ``BrokenProcessPool`` instead. Which of them the killed
+    worker held cannot be told, so all of them are reported failed (`load`
+    parses them itself), and the rest of the jobs go to a fresh pool. At
+    most ``workers`` jobs are submitted at once, so a broken pool costs at
+    most that many files.
+    """
+    context = multiprocessing.get_context("spawn")
+    level = logging.getLogger().getEffectiveLevel()
+    pending = list(reversed(jobs))
+    while pending:
+        with ProcessPoolExecutor(
+            workers, mp_context=context, initializer=_init_worker, initargs=(level,)
+        ) as pool:
+            in_flight: dict[Future, tuple[str, str, str, str]] = {}
+            broken = False
+            while pending or in_flight:
+                while pending and not broken and len(in_flight) < workers:
+                    try:
+                        future = pool.submit(_stage_worker, pending[-1])
+                    except BrokenProcessPool:  # broke since the last wait
+                        broken = True
+                        break
+                    in_flight[future] = pending.pop()
+                if not in_flight:
+                    break
+                done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+                for future in done:
+                    job = in_flight.pop(future)
+                    try:
+                        yield future.result()
+                    except BrokenProcessPool:
+                        broken = True
+                        yield (
+                            Path(job[0]).name,
+                            None,
+                            "a worker process died while this file was in flight "
+                            "(killed, perhaps out of memory); it or another file "
+                            "in flight with it was the cause",
+                        )
+                    except Exception as exc:  # noqa: BLE001 - e.g. a result that won't unpickle
+                        yield Path(job[0]).name, None, f"{type(exc).__name__}: {exc}"
+        if pending:
+            logger.warning("the worker pool broke; %d file(s) go to a fresh one", len(pending))
+
+
 def default_workers() -> int:
     """CPUs this process may use. ``SLURM_CPUS_PER_TASK`` first: on the cluster
     the limit is a cgroup quota, not an affinity mask, so the OS count reads the
@@ -349,43 +406,37 @@ def stage_files(
     run_start = time.monotonic()
     staged = 0
     failed: list[str] = []
-    context = multiprocessing.get_context("spawn")
-    with context.Pool(
-        workers, initializer=_init_worker, initargs=(logging.getLogger().getEffectiveLevel(),)
-    ) as pool:
-        for done, (name, manifest, error) in enumerate(
-            pool.imap_unordered(_stage_worker, jobs), start=1
-        ):
-            if manifest is None:
-                logger.error("failed to stage %s; skipping: %s", name, error)
-                failed.append(name)
-            else:
-                staged += 1
-                logger.info(
-                    "staged %s: %d articles, %d deletions, %d failed to parse, "
-                    "%d book record(s) skipped (worker peak %.1f GiB)",
-                    name,
-                    manifest.n_articles,
-                    manifest.n_deletions,
-                    manifest.n_failed,
-                    manifest.n_book_records,
-                    manifest.peak_rss_gib,
-                )
-            remaining = total - done
-            elapsed = time.monotonic() - run_start
-            current = current_rss_gib()
+    for done, (name, manifest, error) in enumerate(_run_jobs(jobs, workers), start=1):
+        if manifest is None:
+            logger.error("failed to stage %s; skipping: %s", name, error)
+            failed.append(name)
+        else:
+            staged += 1
             logger.info(
-                "progress: %d/%d files this run, %d remaining · %.1f s/file · elapsed %s · %s "
-                "(RSS %s, peak %.1f GiB)",
-                done,
-                total,
-                remaining,
-                elapsed / done,
-                fmt_duration(elapsed),
-                "done" if remaining <= 0 else f"~{eta_str(elapsed, done, remaining)} to go",
-                "n/a" if current is None else f"{current:.1f} GiB",
-                peak_rss_gib(),
+                "staged %s: %d articles, %d deletions, %d failed to parse, "
+                "%d book record(s) skipped (worker peak %.1f GiB)",
+                name,
+                manifest.n_articles,
+                manifest.n_deletions,
+                manifest.n_failed,
+                manifest.n_book_records,
+                manifest.peak_rss_gib,
             )
+        remaining = total - done
+        elapsed = time.monotonic() - run_start
+        current = current_rss_gib()
+        logger.info(
+            "progress: %d/%d files this run, %d remaining · %.1f s/file · elapsed %s · %s "
+            "(RSS %s, peak %.1f GiB)",
+            done,
+            total,
+            remaining,
+            elapsed / done,
+            fmt_duration(elapsed),
+            "done" if remaining <= 0 else f"~{eta_str(elapsed, done, remaining)} to go",
+            "n/a" if current is None else f"{current:.1f} GiB",
+            peak_rss_gib(),
+        )
 
     if failed:
         logger.error(
