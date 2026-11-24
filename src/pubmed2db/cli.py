@@ -32,11 +32,12 @@ def _load_local(
     downloaded by an earlier run aren't skipped. Shared by `load` and `update`,
     which differ only in whether an empty directory is an error. Files with a
     fresh shard under ``stage_dir`` (from `pubmed2db stage`) are inserted from
-    it; the rest are parsed here.
+    it; the rest are parsed here. Then, unless ``keep_stage``, shards nothing
+    will insert are removed (`stage.prune`).
     """
     from .download import local_files
     from .load import DEFAULT_FILES_PER_TXN, load_files
-    from .stage import find_shards
+    from .stage import find_shards, prune
 
     files = local_files()
     if require_files and not files:
@@ -50,6 +51,8 @@ def _load_local(
         files_per_txn=files_per_txn or DEFAULT_FILES_PER_TXN,
         keep_shards=keep_stage,
     )
+    if stage_dir and not keep_stage:
+        prune(stage_dir, [path for path, _ in files], con)
     click.echo(f"Loaded {loaded} file(s); {len(files)} local file(s) checked.")
     if failed:
         raise click.ClickException(f"{len(failed)} file(s) failed to load: {', '.join(failed)}")
@@ -310,7 +313,11 @@ def stage(ctx: click.Context, workers: int | None, force: bool) -> None:
     help="Staged files per transaction (default: 50).",
 )
 @click.option("--no-stage", is_flag=True, help="Ignore staged shards; parse every file here.")
-@click.option("--keep-stage", is_flag=True, help="Leave shards in place after loading them.")
+@click.option(
+    "--keep-stage",
+    is_flag=True,
+    help="Leave shards in place: those just loaded, and those for files already up to date.",
+)
 @click.option(
     "--no-preserve-insertion-order",
     is_flag=True,

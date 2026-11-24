@@ -545,3 +545,19 @@ def test_cli_stage_runs_beside_a_process_holding_the_database(staged_download):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "staging every file" in result.stderr
     assert "Staged 2 file(s)" in result.stdout
+
+
+def test_cli_load_removes_the_shards_it_leaves_unused(staged_download):
+    """`--keep-stage` keeps every shard; without it, `load` removes the ones
+    for files already up to date, which nothing would otherwise delete."""
+    db_path = staged_download / "cli.duckdb"
+    args = ("--data-dir", str(staged_download), "--db", str(db_path))
+    stage_dir = staged_download / "stage"
+    assert _run_cli(*args, "stage").returncode == 0
+    result = _run_cli(*args, "load", "--keep-stage")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert len([p for p in stage_dir.iterdir() if p.is_dir()]) == 2
+    result = _run_cli(*args, "load")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "removed 2 shard(s)" in result.stderr
+    assert not any(stage_dir.iterdir())

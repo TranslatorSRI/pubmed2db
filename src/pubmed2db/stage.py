@@ -255,24 +255,55 @@ def remove_shard(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
-def sweep(stage_dir: str | Path, keep: set[str] | None = None) -> list[str]:
-    """Delete ``.part`` directories (a transfer a kill interrupted) and, given
-    ``keep``, shards for files no longer on disk. Returns what was removed."""
+def sweep(stage_dir: str | Path) -> list[str]:
+    """Delete ``.part`` directories, which a killed `stage` left. Returns what was removed."""
     stage_dir = Path(stage_dir)
     removed = []
     if not stage_dir.is_dir():
         return removed
     for entry in stage_dir.iterdir():
-        if not entry.is_dir():
-            continue
-        if entry.name.endswith(PART):
-            remove_shard(entry)
-            removed.append(entry.name)
-        elif keep is not None and not entry.name.endswith(BAD) and entry.name not in keep:
+        if entry.is_dir() and entry.name.endswith(PART):
             remove_shard(entry)
             removed.append(entry.name)
     for name in removed:
         logger.info("removed %s from %s", name, stage_dir)
+    return removed
+
+
+def prune(stage_dir: str | Path, files: list[Path], con) -> list[str]:
+    """Delete the shards no `load` will insert; returns their directory names.
+
+    `load` deletes a shard as its transaction commits, but some are never
+    inserted: one `stage --force` or ``--keep-stage`` left for a file
+    already loaded, one gone stale (the code changed) whose file was then
+    parsed directly, one whose XML is no longer among ``files``. Without
+    this they stayed until the database was rebuilt. Run after a load,
+    which is when "up to date" (`load.needs_load`, without ``force``) means
+    the shard has nothing left to give. ``.part`` and ``.bad`` directories
+    are left alone: the first may be a `stage` still writing, the second is
+    for the operator to inspect.
+    """
+    from .load import needs_load
+
+    stage_dir = Path(stage_dir)
+    if not stage_dir.is_dir():
+        return []
+    local = {shard_dir(stage_dir, path.name).name: path.name for path in files}
+    removed = []
+    for entry in sorted(stage_dir.iterdir()):
+        if not entry.is_dir() or entry.name.endswith((PART, BAD)):
+            continue
+        file_name = local.get(entry.name)
+        if file_name is None or not needs_load(con, file_name):
+            remove_shard(entry)
+            removed.append(entry.name)
+    if removed:
+        logger.info(
+            "removed %d shard(s) under %s for files already loaded or no longer "
+            "downloaded (`load --keep-stage` keeps them)",
+            len(removed),
+            stage_dir,
+        )
     return removed
 
 

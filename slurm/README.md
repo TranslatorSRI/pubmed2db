@@ -136,6 +136,7 @@ the parse is ~7 s/file, so 16 workers take the 2026 corpus in well under an
 hour of wall time before I/O.
 
 The shards are transient: `load` deletes each one as its transaction commits,
+then any it had no use for (a file already loaded, or no longer downloaded),
 so `STAGE_DIR` holds at most the files staged and not yet loaded (budget
 roughly the size of the XML it was cut from until the first run measures it).
 `scripts/fresh_database.py` deletes the directory with the database.

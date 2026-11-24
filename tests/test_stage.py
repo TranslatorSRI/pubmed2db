@@ -24,10 +24,10 @@ from pubmed2db.stage import (
     Shard,
     find_shard,
     find_shards,
+    prune,
     shard_dir,
     stage_file,
     stage_files,
-    sweep,
 )
 
 
@@ -335,14 +335,25 @@ def test_partial_shards_are_swept_and_a_bad_parse_is_skipped(two_files, tmp_path
     assert "s/file" in progress[0] and "files this run" in progress[0]
 
 
-def test_sweep_prunes_shards_for_files_no_longer_on_disk(two_files, tmp_path):
+def test_prune_removes_the_shards_no_load_will_insert(two_files, tmp_path, con):
+    """Shards `stage --force` cut for loaded files, and shards whose XML is
+    gone, used to stay until the database was rebuilt."""
     stage_dir = tmp_path / "stage"
-    stage_files(two_files, stage_dir=stage_dir, workers=1)
-    bad = stage_dir / ("pubmed25n0002" + BAD)
-    shutil.copytree(shard_dir(stage_dir, "pubmed25n0002.xml.gz"), bad)
-    removed = sweep(stage_dir, keep={"pubmed25n0001"})
-    assert removed == ["pubmed25n0002"]
-    assert shard_dir(stage_dir, "pubmed25n0001.xml.gz").is_dir() and bad.is_dir()
+    load_file(con, two_files[0][0], kind="baseline")  # n0001 is up to date
+    stage_files(two_files, stage_dir=stage_dir, workers=1, force=True)
+    gone = tmp_path / "pubmed25n0003.xml.gz"
+    shutil.copy(two_files[1][0], gone)
+    stage_files([(gone, "update")], stage_dir=stage_dir, workers=1)
+    gone.unlink()
+    bad = stage_dir / ("pubmed25n0004" + BAD)
+    part = stage_dir / ("pubmed25n0005" + PART)
+    bad.mkdir()
+    part.mkdir()
+
+    removed = prune(stage_dir, [p for p, _ in two_files], con)
+    assert removed == ["pubmed25n0001", "pubmed25n0003"]
+    assert shard_dir(stage_dir, "pubmed25n0002.xml.gz").is_dir()  # still to load
+    assert bad.is_dir() and part.is_dir()
 
 
 def test_two_workers_really_run_in_parallel(two_files, tmp_path):

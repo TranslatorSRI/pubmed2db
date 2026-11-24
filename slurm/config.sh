@@ -64,7 +64,8 @@ unset _export_dir_given _manifest_dir_given
 
 # Where `stage` writes its per-file Parquet shards and `load` reads them from
 # (the CLI's --stage-dir). Transient: `load` deletes each shard once its
-# transaction has committed, so this never needs archiving.
+# transaction has committed, then any it had no use for (a file already
+# loaded, or no longer downloaded), so this never needs archiving.
 : "${STAGE_DIR:=$DATA_DIR/stage}"
 
 # Files `stage` parses at once. Derived from the allocation like SHARDS, with
