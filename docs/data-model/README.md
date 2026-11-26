@@ -1,4 +1,4 @@
-# The pubmed2db data model, version 1.0
+# The pubmed2db data model, version 1.1
 
 pubmed2db turns PubMed's XML distribution into a local copy of PubMed that can be
 queried and redistributed:
@@ -23,8 +23,9 @@ companions, each linked by absolute URL like everything else outside this file:
 SELECT table_name, column_name, comment FROM duckdb_columns() WHERE schema_name = 'main';
 ```
 
-**Version.** This is data model **1.0.0**, first produced by the data build after
-`2026sep26`. Earlier builds (`2026aug21`, `2026sep26`) predate the data model:
+**Version.** This is data model **1.1.0**, which adds `schema.json` beside
+the NDJSON export to 1.0.0 (first produced by the data build after
+`2026sep26`). Earlier builds (`2026aug21`, `2026sep26`) predate the data model:
 current code refuses their databases, and their tables differ in the ways
 [listed in the changelog](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/Changelog.md).
 

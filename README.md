@@ -12,7 +12,7 @@ plus four fields of our own: `id`, [`identifiers`](#identifiers-in-the-json-expo
 uses PubMed's own field names.
 
 Both outputs — the database and the NDJSON export — follow one versioned
-**data model**, currently 1.0.0, documented for consumers in
+**data model**, currently 1.1.0, documented for consumers in
 [`docs/data-model/`](./docs/data-model/README.md): what every table and field means,
 what PubMed data is left out, and how the design was decided. Each output carries
 its version, and the database documents its own columns

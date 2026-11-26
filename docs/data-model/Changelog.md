@@ -9,6 +9,15 @@ and say whether an existing database needs a reload. The version scheme, and
 how to tell whether a build carries a fix, are in
 [Versioning and stability](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/README.md#versioning-and-stability).
 
+## 1.1.0
+
+Adds `schema.json` beside the NDJSON export. Not yet in a release.
+
+| Output | What a consumer must do |
+| --- | --- |
+| NDJSON | Nothing: the records are unchanged. Each export now holds `schema.json`, a JSON Schema (draft 2020-12) for one record, with every field's type and description, which a consumer can validate records against. `metadata.json` gives its SHA-256 under a new `schema` key. `files` and `SHA256SUMS` still list only the shards, so `sha256sum -c SHA256SUMS` passes without downloading it. |
+| DuckDB | Nothing: the database is unchanged. 1.1 code stamps a 1.0 database 1.1.0 when it first opens it. |
+
 ## 1.0.0
 
 The first versioned data model, first built after `2026sep26`.
