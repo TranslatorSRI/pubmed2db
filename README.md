@@ -117,7 +117,9 @@ construction, since both build them with the same code and differ only in
 whether the rows reach DuckDB through memory or through a Parquet file; a test
 loads the fixtures both ways and compares every table. `load --no-stage`
 ignores the shards and parses every file itself, which is the pre-v1.3
-behaviour.
+behaviour. A file that fails to stage is only a warning, since `load` parses
+any file without a shard itself; `stage` exits non-zero only when no file
+stages at all.
 
 The export finishes by writing `metadata.json` into the output directory: the
 data model version, the record count, the corpus cutoff (the last file loaded,
@@ -427,6 +429,10 @@ the files that are new or changed, and it cannot introduce duplicate data.
   covers a group of files (`--files-per-txn`, default 50): a group that fails
   is rolled back and retried one file at a time, and a shard that fails on its
   own is set aside as `<name>.bad` so the next `load` parses its XML instead.
+  A failure that is the database's or the machine's (out of memory, a fatal
+  DuckDB error, every file of a group failing alone) stops `load` instead and
+  sets nothing aside; once the cause is fixed, the next `load` carries on from
+  the shards still there.
 - **Several versions of a PMID are the design, not duplication.** A row's
   identity is `(pmid, source_file)`; the `latest_article` view returns the
   version with the highest `file_order_key` per PMID, and drops the PMID if a
@@ -539,7 +545,7 @@ build. Everything the pipeline writes, and what to do with it:
 | `pubmed/baseline/`, `pubmed/updates/` | `download` | Keep. `load` parses every `*.xml.gz` here, so a superseded baseline year must *leave* these two directories before a fresh database is loaded: `scripts/fresh_database.py` moves it to `pubmed-archive/<year>/`. |
 | `pubmed-archive/<year>/` | `fresh_database.py` | The kept XML; nothing reads it. `rm -r` it if you do not want it. |
 | `pubmed.duckdb` (+ `.wal`, `.tmp/`) | every command | Months: one database per baseline year, or until a major data-model bump. Deleted by `fresh_database.py`. |
-| `stage/` | `stage` | **Transient.** One directory of Parquet shards per file awaiting `load`, which deletes each as its transaction commits (`--keep-stage` to keep them). Reproducible from the XML; never archived. Deleted by `fresh_database.py` with the database. |
+| `stage/` | `stage` | **Transient.** One directory of Parquet shards per file awaiting `load`, which deletes each as its transaction commits, then any it had no use for: a file already loaded, or no longer downloaded (`--keep-stage` to keep them all). Reproducible from the XML; never archived. Deleted by `fresh_database.py` with the database. |
 | `pubmed2db/serfile/`, `pubmed/J_Entrez.txt` | `journals` | Caches. The catalog prunes itself and `J_Entrez.txt` is refetched every run; nothing to do. |
 | `json/` | `export` | **One build.** `metadata.json` marks it finished; `scripts/archive_build.py` moves it to `builds/<build>/`, and `export` refuses to overwrite it until then (`--overwrite`, or `EXPORT_OVERWRITE=1` under Slurm). |
 | `builds/<build>/` | `archive_build.py` | Until published (and after, as long as you like). Laid out as on stars: shards, `metadata.json` and `SHA256SUMS` at the top, `manifests/`, `logs/`, `source_file.csv`. |

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_full_history_retained(loaded_con):
     # PMID 1001 exists in both the baseline and the update file.
@@ -438,6 +440,27 @@ def test_build_batches_types_every_column_from_the_schema(write_pubmed_gz):
     assert n == 0
     assert all(t.num_rows == 0 for t in empty.values())
     assert empty["deleted_pmid"].schema.field("pmid").type == pa.int64()
+
+
+def test_build_batches_refuses_a_row_longer_than_its_table(write_pubmed_gz, monkeypatch):
+    """A value appended to a row before its column reaches schema.sql must
+    fail the file, as the positional INSERT used to, not vanish silently."""
+    from pubmed2db import load as load_module
+    from pubmed2db.db import parse_file_name
+    from pubmed2db.parse import parse_file
+
+    real = load_module._article_rows
+
+    def one_too_many(*args):
+        rows = real(*args)
+        rows["article"] = [(*row, "extra") for row in rows["article"]]
+        return rows
+
+    monkeypatch.setattr(load_module, "_article_rows", one_too_many)
+    name = "pubmed25n0001.xml.gz"
+    parsed = parse_file(write_pubmed_gz("pubmed25n0001"))
+    with pytest.raises(ValueError, match="zip"):
+        load_module.build_batches(parsed, name, parse_file_name(name)[2])
 
 
 def test_build_batches_keeps_the_last_occurrence_of_a_repeated_pmid(write_pubmed_gz):

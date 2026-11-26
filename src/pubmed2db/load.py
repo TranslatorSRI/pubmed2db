@@ -201,9 +201,14 @@ def build_batches(
 
     tables = {}
     for table, schema in table_schemas().items():
-        columns = list(zip(*rows[table])) if rows[table] else [[] for _ in schema]
+        # Both zips are strict: a row tuple that disagrees with the schema in
+        # length (a value added to `_article_rows` before its column reached
+        # schema.sql) must raise, as the positional INSERT once did, rather
+        # than lose its trailing values.
+        columns = list(zip(*rows[table], strict=True)) if rows[table] else [[] for _ in schema]
         tables[table] = pa.Table.from_arrays(
-            [pa.array(column, type=f.type) for column, f in zip(columns, schema)], schema=schema
+            [pa.array(column, type=f.type) for column, f in zip(columns, schema, strict=True)],
+            schema=schema,
         )
     return tables, len(deduped)
 
@@ -514,7 +519,12 @@ def _load_group(con: duckdb.DuckDBPyConnection, group: list[Shard]) -> LoadTimin
         for table in _VERSIONED_TABLES:
             paths = [str(shard.parquet(table)) for shard in group]
             started = time.perf_counter()
-            _insert_from(con, table, "read_parquet($paths)", {"paths": paths})
+            # hive_partitioning off: DuckDB otherwise turns any `key=value`
+            # folder above the stage directory into an extra column, and the
+            # positional INSERT then fails for every shard.
+            _insert_from(
+                con, table, "read_parquet($paths, hive_partitioning = false)", {"paths": paths}
+            )
             timing.inserts[table] = time.perf_counter() - started
         started = time.perf_counter()
         for shard in group:
@@ -527,6 +537,56 @@ def _load_group(con: duckdb.DuckDBPyConnection, group: list[Shard]) -> LoadTimin
         rollback(con)
         raise
     return timing
+
+
+class StagedLoadAborted(RuntimeError):
+    """A staged load stopped because the failure was not any one shard's.
+
+    Raised with the DuckDB error chained. No shard is set aside for it, so
+    the next ``load`` picks up where this one stopped.
+    """
+
+
+#: Errors that say nothing about the shard being inserted: the database or
+#: the process is in trouble, and every later shard would fail the same way.
+_NOT_THE_SHARD = (
+    duckdb.FatalException,
+    duckdb.InternalException,
+    duckdb.OutOfMemoryException,
+    duckdb.InterruptException,
+    MemoryError,
+)
+
+
+def _stop_unless_the_shard(con: duckdb.DuckDBPyConnection, exc: Exception) -> None:
+    """Raise `StagedLoadAborted` if ``exc`` cannot be blamed on a shard.
+
+    Without this, one ``(bad allocation)`` or an invalidated database
+    condemned every remaining shard in the run to ``.bad``, and the next
+    ``load`` parsed them all serially. Besides the error classes above, a
+    connection that no longer answers ``SELECT 1`` after the rollback is
+    the database's failure, not the shard's.
+    """
+    if isinstance(exc, _NOT_THE_SHARD):
+        raise StagedLoadAborted(f"stopping the staged load: {exc}") from exc
+    try:
+        con.execute("SELECT 1").fetchone()
+    except duckdb.Error as probe:
+        raise StagedLoadAborted(
+            f"stopping the staged load: the database stopped answering ({probe})"
+        ) from exc
+
+
+def _set_aside(shard: Shard) -> Path | None:
+    """Rename a shard ``.bad``; returns where it went, or None if it could not move."""
+    bad = shard.path.with_name(shard.path.name + ".bad")
+    try:
+        shutil.rmtree(bad, ignore_errors=True)
+        shard.path.rename(bad)
+    except OSError as exc:
+        logger.warning("could not move %s aside: %s", shard.path, exc)
+        return None
+    return bad
 
 
 def load_staged(
@@ -544,6 +604,12 @@ def load_staged(
     XML instead and the operator can look at what was refused. Each shard is
     deleted once its transaction has committed, unless ``keep``: a crash
     between the two can only leave a shard whose rows are already in.
+
+    A failure that is not a shard's raises `StagedLoadAborted` and sets
+    nothing aside (`_stop_unless_the_shard`). So does a group of two or more
+    in which every file also fails alone: that is the database or the
+    machine (a full disk raises the same ``IOException`` a missing Parquet
+    file does), not a group of bad shards.
     """
     shards = sorted(shards, key=lambda s: s.manifest.file_order_key)
     total = len(shards)
@@ -563,21 +629,33 @@ def load_staged(
             loaded += len(group)
             finish(group)
             logger.info("loaded %d staged file(s): %s", len(group), timing.describe())
-        except Exception:  # noqa: BLE001 - isolate the shard at fault, keep going
+        except Exception as exc:  # noqa: BLE001 - isolate the shard at fault, keep going
+            _stop_unless_the_shard(con, exc)
             logger.exception("a group of %d staged file(s) failed; retrying one by one", len(group))
+            refused: list[tuple[Shard, Exception]] = []
             for shard in group:
                 try:
                     _load_group(con, [shard])
                     loaded += 1
                     finish([shard])
-                except Exception:  # noqa: BLE001
-                    bad = shard.path.with_name(shard.path.name + ".bad")
-                    shutil.rmtree(bad, ignore_errors=True)
-                    shard.path.rename(bad)
-                    logger.exception(
-                        "failed to load %s from its shard; moved it to %s", shard.file_name, bad
-                    )
-                    failed.append(shard.file_name)
+                except Exception as alone:  # noqa: BLE001
+                    _stop_unless_the_shard(con, alone)
+                    refused.append((shard, alone))
+            if len(group) > 1 and len(refused) == len(group):
+                raise StagedLoadAborted(
+                    f"stopping the staged load: all {len(group)} files of a group failed "
+                    "on their own as well, which is the database or the machine rather "
+                    "than that many bad shards; none was set aside"
+                ) from refused[-1][1]
+            for shard, alone in refused:
+                bad = _set_aside(shard)
+                logger.error(
+                    "failed to load %s from its shard; %s",
+                    shard.file_name,
+                    f"moved it to {bad}" if bad else "left it in place",
+                    exc_info=alone,
+                )
+                failed.append(shard.file_name)
         done = min(start + files_per_txn, total)
         remaining = total - done
         elapsed = time.monotonic() - run_start

@@ -128,17 +128,24 @@ parsing files one at a time in the same process that inserted them (#68).
 
 Memory is per worker. The parse of a 30,000-article baseline file peaks at
 ~1.1 GiB now that it streams the XML (#25; it was 3.7 GiB with the whole tree),
-plus the Arrow tables being written, so `--mem` is roughly workers × 1.5 GiB
-with headroom. Each `staged` line in the log carries its worker's peak RSS;
+plus the Arrow tables being written: budget ~1.5 GiB per worker, with
+headroom. Each `staged` line in the log carries its worker's peak RSS;
 read the next run's `--mem` off those and `--time` off the progress line's
 `s/file`, which is per *completed* file across all workers. On a laptop core
-the parse is ~7 s/file, so 16 workers take the 2026 corpus in well under an
-hour of wall time before I/O.
+the parse is ~7 s/file, so the 2026 corpus (1,636 files) is ~3 h of CPU,
+divided across however many workers the header grants, before I/O.
 
 The shards are transient: `load` deletes each one as its transaction commits,
+then any it had no use for (a file already loaded, or no longer downloaded),
 so `STAGE_DIR` holds at most the files staged and not yet loaded (budget
 roughly the size of the XML it was cut from until the first run measures it).
 `scripts/fresh_database.py` deletes the directory with the database.
+
+A file that fails to stage (a parse error, a worker the OOM killer took)
+does not fail the job: `load` parses any file without a shard itself, and
+failing here would only make `afterok` cancel it. The `stage` log names the
+files, and they cost `load` their serial parse time. The job fails only if
+no file stages at all, which means the stage itself is broken.
 
 **Run table.** Locally only so far (2026-10-21, a 12-core laptop, 20
 baseline files from `download --limit 20`, the same 20 in both rows):

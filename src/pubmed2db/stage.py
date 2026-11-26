@@ -18,7 +18,7 @@ Layout, under ``<data-dir>/stage/`` by default::
     pubmed26n0001.bad/        a shard `load` could not insert: inspect, then delete
 
 A shard is identified by the XML it came from (size and mtime) and the code
-that wrote it (`datamodel.code_version`). Anything else is not a shard and
+that wrote it (`code_identity`). Anything else is not a shard and
 is re-staged, so a changed download or a parsing change is never served from
 a stale shard -- which is what keeps ``load --force``'s promise, that it
 applies the current parse to the whole corpus, true.
@@ -26,12 +26,17 @@ applies the current parse to the whole corpus, true.
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import json
 import logging
 import multiprocessing
 import os
 import shutil
 import time
+from collections.abc import Iterator
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -105,13 +110,55 @@ class Shard:
         return self.path / f"{table}.parquet"
 
 
+@functools.cache
+def code_identity() -> str:
+    """The code a shard is cut by: `datamodel.code_version`, plus a source hash when dirty.
+
+    ``git describe --dirty`` names a commit, so two different uncommitted
+    edits of the same commit both read ``v1.3-4-gabc-dirty``, and a shard cut
+    before a parser fix would pass as fresh after it. A dirty checkout is
+    therefore told apart by a hash of what the parse runs: the package's
+    source and the files that pin its dependencies. Between two dirty
+    states, an edit anywhere else (a test, a doc) leaves the hash alone.
+
+    Cached, so a process runs ``git describe`` once rather than once or twice
+    per file: thousands of subprocesses on a cluster filesystem were slow,
+    and any one that timed out fell back to ``__version__`` and misjudged
+    that shard. `stage_files` passes the parent's value to its workers, so a
+    run's manifests and the freshness check read the same string.
+    """
+    version = code_version()
+    if not version.endswith("-dirty"):
+        return version
+    return f"{version}+{_source_digest()}"
+
+
+def _source_digest(package: Path | None = None) -> str:
+    """A short SHA-256 of the package's ``.py``/``.sql`` files and the
+    repository's ``pyproject.toml`` and ``uv.lock``, path and content alike."""
+    package = package or Path(__file__).resolve().parent
+    repo = package.parents[1]
+    paths = sorted(p for p in package.rglob("*") if p.suffix in {".py", ".sql"})
+    paths += [p for p in (repo / "pyproject.toml", repo / "uv.lock") if p.is_file()]
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(path.relative_to(repo).as_posix().encode() + b"\0")
+        digest.update(path.read_bytes() + b"\0")
+    return digest.hexdigest()[:12]
+
+
 def shard_dir(stage_dir: Path, file_name: str) -> Path:
     """Where ``file_name``'s complete shard lives."""
     return Path(stage_dir) / file_name.removesuffix(_SUFFIX)
 
 
-def stage_file(path: str | Path, kind: str, stage_dir: str | Path) -> Manifest:
+def stage_file(
+    path: str | Path, kind: str, stage_dir: str | Path, code: str | None = None
+) -> Manifest:
     """Parse one file and write its shard; returns the manifest written.
+
+    ``code`` is recorded as the shard's ``code_version``; it defaults to
+    this process's `code_identity`, and a pool worker is handed its parent's.
 
     Everything goes into a ``.part`` directory first and is renamed into
     place last, so a complete directory is the only thing a reader can find
@@ -142,7 +189,7 @@ def stage_file(path: str | Path, kind: str, stage_dir: str | Path) -> Manifest:
         rows={table: batch.num_rows for table, batch in batches.items()},
         xml_size=stat.st_size,
         xml_mtime_ns=stat.st_mtime_ns,
-        code_version=code_version(),
+        code_version=code or code_identity(),
         data_model_version=DATA_MODEL_VERSION,
         staged_at=datetime.now(UTC).isoformat(timespec="seconds"),
         peak_rss_gib=peak_rss_gib(),
@@ -177,8 +224,8 @@ def find_shard(stage_dir: str | Path, xml_path: str | Path) -> Shard | str:
     stat = xml_path.stat()
     if (stat.st_size, stat.st_mtime_ns) != (manifest.xml_size, manifest.xml_mtime_ns):
         return "XML changed since it was staged"
-    if manifest.code_version != code_version():
-        return f"staged by {manifest.code_version}, this is {code_version()}"
+    if manifest.code_version != code_identity():
+        return f"staged by {manifest.code_version}, this is {code_identity()}"
     if not all((path / f"{table}.parquet").is_file() for table in manifest.rows):
         return "a table's Parquet file is missing"
     return Shard(path, manifest)
@@ -208,24 +255,55 @@ def remove_shard(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
-def sweep(stage_dir: str | Path, keep: set[str] | None = None) -> list[str]:
-    """Delete ``.part`` directories (a transfer a kill interrupted) and, given
-    ``keep``, shards for files no longer on disk. Returns what was removed."""
+def sweep(stage_dir: str | Path) -> list[str]:
+    """Delete ``.part`` directories, which a killed `stage` left. Returns what was removed."""
     stage_dir = Path(stage_dir)
     removed = []
     if not stage_dir.is_dir():
         return removed
     for entry in stage_dir.iterdir():
-        if not entry.is_dir():
-            continue
-        if entry.name.endswith(PART):
-            remove_shard(entry)
-            removed.append(entry.name)
-        elif keep is not None and not entry.name.endswith(BAD) and entry.name not in keep:
+        if entry.is_dir() and entry.name.endswith(PART):
             remove_shard(entry)
             removed.append(entry.name)
     for name in removed:
         logger.info("removed %s from %s", name, stage_dir)
+    return removed
+
+
+def prune(stage_dir: str | Path, files: list[Path], con) -> list[str]:
+    """Delete the shards no `load` will insert; returns their directory names.
+
+    `load` deletes a shard as its transaction commits, but some are never
+    inserted: one `stage --force` or ``--keep-stage`` left for a file
+    already loaded, one gone stale (the code changed) whose file was then
+    parsed directly, one whose XML is no longer among ``files``. Without
+    this they stayed until the database was rebuilt. Run after a load,
+    which is when "up to date" (`load.needs_load`, without ``force``) means
+    the shard has nothing left to give. ``.part`` and ``.bad`` directories
+    are left alone: the first may be a `stage` still writing, the second is
+    for the operator to inspect.
+    """
+    from .load import needs_load
+
+    stage_dir = Path(stage_dir)
+    if not stage_dir.is_dir():
+        return []
+    local = {shard_dir(stage_dir, path.name).name: path.name for path in files}
+    removed = []
+    for entry in sorted(stage_dir.iterdir()):
+        if not entry.is_dir() or entry.name.endswith((PART, BAD)):
+            continue
+        file_name = local.get(entry.name)
+        if file_name is None or not needs_load(con, file_name):
+            remove_shard(entry)
+            removed.append(entry.name)
+    if removed:
+        logger.info(
+            "removed %d shard(s) under %s for files already loaded or no longer "
+            "downloaded (`load --keep-stage` keeps them)",
+            len(removed),
+            stage_dir,
+        )
     return removed
 
 
@@ -236,13 +314,69 @@ def _init_worker(level: int) -> None:
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
-def _stage_worker(job: tuple[str, str, str]) -> tuple[str, Manifest | None, str | None]:
-    """Pool entry point: ``(path, kind, stage_dir)`` -> ``(file_name, manifest, error)``."""
-    path, kind, stage_dir = job
+def _stage_worker(
+    job: tuple[str, str, str, str],
+) -> tuple[str, Manifest | None, str | None]:
+    """Pool entry point: ``(path, kind, stage_dir, code)`` -> ``(file_name, manifest, error)``."""
+    path, kind, stage_dir, code = job
     try:
-        return Path(path).name, stage_file(path, kind, stage_dir), None
+        return Path(path).name, stage_file(path, kind, stage_dir, code), None
     except Exception as exc:  # noqa: BLE001 - reported by name; the rest carry on
         return Path(path).name, None, f"{type(exc).__name__}: {exc}"
+
+
+def _run_jobs(
+    jobs: list[tuple[str, str, str, str]], workers: int
+) -> Iterator[tuple[str, Manifest | None, str | None]]:
+    """Run `_stage_worker` over ``jobs`` in a spawn-context pool, yielding each result.
+
+    Not `multiprocessing.Pool`: when one of its workers is SIGKILLed (the
+    cgroup's OOM killer, on a large file) it starts a replacement, but the
+    dead worker's task never returns and ``imap_unordered`` waits for it
+    until Slurm's time limit. `ProcessPoolExecutor` fails every future in
+    flight with ``BrokenProcessPool`` instead. Which of them the killed
+    worker held cannot be told, so all of them are reported failed (`load`
+    parses them itself), and the rest of the jobs go to a fresh pool. At
+    most ``workers`` jobs are submitted at once, so a broken pool costs at
+    most that many files.
+    """
+    context = multiprocessing.get_context("spawn")
+    level = logging.getLogger().getEffectiveLevel()
+    pending = list(reversed(jobs))
+    while pending:
+        with ProcessPoolExecutor(
+            workers, mp_context=context, initializer=_init_worker, initargs=(level,)
+        ) as pool:
+            in_flight: dict[Future, tuple[str, str, str, str]] = {}
+            broken = False
+            while pending or in_flight:
+                while pending and not broken and len(in_flight) < workers:
+                    try:
+                        future = pool.submit(_stage_worker, pending[-1])
+                    except BrokenProcessPool:  # broke since the last wait
+                        broken = True
+                        break
+                    in_flight[future] = pending.pop()
+                if not in_flight:
+                    break
+                done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+                for future in done:
+                    job = in_flight.pop(future)
+                    try:
+                        yield future.result()
+                    except BrokenProcessPool:
+                        broken = True
+                        yield (
+                            Path(job[0]).name,
+                            None,
+                            "a worker process died while this file was in flight "
+                            "(killed, perhaps out of memory); it or another file "
+                            "in flight with it was the cause",
+                        )
+                    except Exception as exc:  # noqa: BLE001 - e.g. a result that won't unpickle
+                        yield Path(job[0]).name, None, f"{type(exc).__name__}: {exc}"
+        if pending:
+            logger.warning("the worker pool broke; %d file(s) go to a fresh one", len(pending))
 
 
 def default_workers() -> int:
@@ -286,14 +420,15 @@ def stage_files(
             logger.warning("ignoring %s: not a PubMed XML filename", path.name)
     keyed.sort(key=lambda t: t[0])
 
-    jobs: list[tuple[str, str, str]] = []
+    code = code_identity()
+    jobs: list[tuple[str, str, str, str]] = []
     for _, path, kind in keyed:
         if not force:
             if con is not None and not needs_load(con, path.name):
                 continue
             if isinstance(find_shard(stage_dir, path), Shard):
                 continue
-        jobs.append((str(path), kind, str(stage_dir)))
+        jobs.append((str(path), kind, str(stage_dir), code))
     total = len(jobs)
     if total == 0:
         return 0, []
@@ -302,43 +437,37 @@ def stage_files(
     run_start = time.monotonic()
     staged = 0
     failed: list[str] = []
-    context = multiprocessing.get_context("spawn")
-    with context.Pool(
-        workers, initializer=_init_worker, initargs=(logging.getLogger().getEffectiveLevel(),)
-    ) as pool:
-        for done, (name, manifest, error) in enumerate(
-            pool.imap_unordered(_stage_worker, jobs), start=1
-        ):
-            if manifest is None:
-                logger.error("failed to stage %s; skipping: %s", name, error)
-                failed.append(name)
-            else:
-                staged += 1
-                logger.info(
-                    "staged %s: %d articles, %d deletions, %d failed to parse, "
-                    "%d book record(s) skipped (worker peak %.1f GiB)",
-                    name,
-                    manifest.n_articles,
-                    manifest.n_deletions,
-                    manifest.n_failed,
-                    manifest.n_book_records,
-                    manifest.peak_rss_gib,
-                )
-            remaining = total - done
-            elapsed = time.monotonic() - run_start
-            current = current_rss_gib()
+    for done, (name, manifest, error) in enumerate(_run_jobs(jobs, workers), start=1):
+        if manifest is None:
+            logger.error("failed to stage %s; skipping: %s", name, error)
+            failed.append(name)
+        else:
+            staged += 1
             logger.info(
-                "progress: %d/%d files this run, %d remaining · %.1f s/file · elapsed %s · %s "
-                "(RSS %s, peak %.1f GiB)",
-                done,
-                total,
-                remaining,
-                elapsed / done,
-                fmt_duration(elapsed),
-                "done" if remaining <= 0 else f"~{eta_str(elapsed, done, remaining)} to go",
-                "n/a" if current is None else f"{current:.1f} GiB",
-                peak_rss_gib(),
+                "staged %s: %d articles, %d deletions, %d failed to parse, "
+                "%d book record(s) skipped (worker peak %.1f GiB)",
+                name,
+                manifest.n_articles,
+                manifest.n_deletions,
+                manifest.n_failed,
+                manifest.n_book_records,
+                manifest.peak_rss_gib,
             )
+        remaining = total - done
+        elapsed = time.monotonic() - run_start
+        current = current_rss_gib()
+        logger.info(
+            "progress: %d/%d files this run, %d remaining · %.1f s/file · elapsed %s · %s "
+            "(RSS %s, peak %.1f GiB)",
+            done,
+            total,
+            remaining,
+            elapsed / done,
+            fmt_duration(elapsed),
+            "done" if remaining <= 0 else f"~{eta_str(elapsed, done, remaining)} to go",
+            "n/a" if current is None else f"{current:.1f} GiB",
+            peak_rss_gib(),
+        )
 
     if failed:
         logger.error(

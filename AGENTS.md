@@ -164,7 +164,9 @@ explains its part; this table is only a map.
   per-phase seconds now on every `loaded` line will name. Hence `stage`:
   `pubmed2db stage --workers N` parses in a spawn-context pool with no
   database open (spawn, not fork: pyarrow's thread pools do not survive a
-  fork) and writes per-file Parquet shards; `load` inserts them 50 files per
+  fork; a `ProcessPoolExecutor`, not `multiprocessing.Pool`, which waits
+  forever on the task of a worker the OOM killer took) and writes per-file
+  Parquet shards; `load` inserts them 50 files per
   transaction from `read_parquet`. Things that are easy to get wrong:
   - **`load.build_batches` is the one row definition**, and the two sinks
     differ only in `_insert_from`'s `FROM` clause. The batches are typed from
@@ -176,15 +178,31 @@ explains its part; this table is only a map.
   - **A shard is fresh only if the XML on disk (size and mtime) and the
     `code_version` match its manifest.** Without the code check, `load
     --force` after a parsing fix would quietly reuse shards cut by the old
-    parse; with it, `stage --force` is the way to apply the fix. A `-dirty`
-    checkout between `stage` and `load` stales every shard, loudly.
+    parse; with it, `stage --force` is the way to apply the fix. The code
+    is `stage.code_identity`, not bare `git describe --dirty`: that reads
+    the same for every uncommitted edit of a commit, so a dirty identity
+    adds a hash of the package source and `uv.lock`. Any change to either
+    between `stage` and `load` stales every shard, loudly. It is cached per
+    process and handed to the workers, because one `git describe` per
+    shard check was thousands of subprocesses, and any one that timed out
+    misjudged its shard.
   - **Groups of files per transaction, not one per table and not one for
     the corpus.** Per table breaks "no child row without its article
     version"; one for everything loses hours to one bad shard. A failed
     group is retried file by file, and a shard that fails alone is renamed
-    `.bad` so the next `load` parses its XML. Shards are deleted *after*
+    `.bad` so the next `load` parses its XML. But a failure that is not a
+    shard's (an out-of-memory or fatal DuckDB error, a connection that no
+    longer answers, every file of a group refused alone) stops the load
+    with `StagedLoadAborted` and renames nothing: before that rule, one
+    `(bad allocation)` set aside every remaining shard of the run, and the
+    next `load` parsed them all serially. Shards are deleted *after*
     their COMMIT, so a crash between the two can only leave a shard whose
     rows are already in.
+  - **A file that fails to stage is a warning; no file staging is an
+    error.** `load` parses whatever has no shard, so failing `stage` over
+    one file would only make Slurm's `afterok` cancel the `load` that
+    would have handled it. A stage that stages nothing is broken, and a
+    corpus left to the serial path is a day.
   - **`update` stages too**, so a daily run and a rebuild go through the
     same path; `load --no-stage` is the pre-v1.3 serial behaviour, kept for
     tests and one-off runs.
