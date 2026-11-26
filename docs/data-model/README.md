@@ -55,9 +55,16 @@ Every export directory also holds `metadata.json`. It records:
 - the record count (`records`: current articles);
 - the code and database it came from;
 - the corpus cutoff;
-- a SHA-256 for every file, repeated in `SHA256SUMS` for `sha256sum -c`.
+- a SHA-256 for every shard, repeated in `SHA256SUMS` for `sha256sum -c`.
 
-`pubmed2db validate` checks the directory against it and writes
+From data model 1.1, it also holds `schema.json`, a
+[JSON Schema](https://json-schema.org/draft/2020-12) for one record: each
+field's type and what it means, the same text as the
+[field table](#the-ndjson-record) below, as of the code that wrote the build.
+`metadata.json` gives its SHA-256 under `schema`, apart from the shards', so
+`SHA256SUMS` lists only the shards.
+
+`pubmed2db validate` checks the directory against `metadata.json` and writes
 `validation_report.json`, which repeats the data model version.
 
 Builds made by the Translator team are published at
@@ -66,7 +73,7 @@ for its cutoff: the UTC date NCBI posted the last file it loaded
 (`metadata.json`'s `corpus.build_name`). The two pre-1.0 builds, `2026aug21`
 and `2026sep26`, were named for the day their export finished. The directory holds the
 database, the NDJSON shards (with their `metadata.json` and `SHA256SUMS` from
-data model 1.0 on) and a `manifests/` directory with the validation report and
+data model 1.0 on, and `schema.json` from 1.1) and a `manifests/` directory with the validation report and
 a sorted list of the build's PMIDs.
 
 ### The size of a build
@@ -124,6 +131,9 @@ with the shards, then:
    directory. This fails for a shard that is missing, or that is intact but
    comes from another build, such as one left over from the previous download.
 3. Optionally, compare the records read against `metadata.json`'s `records`.
+4. Optionally, download `schema.json` too, and check records against it with
+   any JSON Schema validator. Check the file itself against `metadata.json`'s
+   `schema.sha256`; `SHA256SUMS` leaves it out, so step 2 passes without it.
 
 A truncated or corrupted shard needs none of this. DuckDB writes each shard as
 one gzip stream, so damage fails decompression, either as a premature end of
@@ -368,23 +378,31 @@ One JSON object per line, one line per row of `latest_article`. Every field is
 present on every record. Absent values are `""` or `[]`, never `null`. Records
 are not in PMID order.
 
+<!-- BEGIN GENERATED NDJSON FIELDS: python -m pubmed2db.datamodel --docs docs/data-model/README.md -->
+
 | Field | From | Notes |
 | --- | --- | --- |
-| `id` | `article.pmid` | `"PMID:<pmid>"` |
-| `identifiers` | `article_id` (`doi`, `pmc`) | `PMID:` first, then the DOI and PMC ID as CURIEs (`doi:10…`, `PMC:PMC…`), sorted. Values verbatim; match case-insensitively. `PMC:` follows Babel until Translator settles the prefix ([see below](#known-limitations)). |
-| `journal_name` | `journal.title` | `""` when the journal dimension has no row. |
-| `journal_abbrev` | `journal.abbreviation_medline` | |
-| `article_title` | `article.article_title` | |
-| `volume`, `issue` | `article` | |
-| `pub_year` | `pub_year`, else the leading year of `medline_date` | The *leading* year of a cross-year range, as NCBI's `sortpubdate` does. |
-| `pub_month` | `pub_month`, else the text after `medline_date`'s year | Month names fold to `Jan`…`Dec` (`03`, `March`, `Sept` → `Mar`, `Sep`). Seasons and ranges pass through (`Spring`, `Sep-Dec`). A cross-year range gives `Dec-1999 Jan`. |
+| `id` | `article.pmid` | The article's PMID as a CURIE, `PMID:<pmid>`. One record per PMID. |
+| `identifiers` | `article_id` (`doi`, `pmc`) | `PMID:` first, then the DOI and PMC ID as CURIEs (`doi:10…`, `PMC:PMC…`), sorted. Values verbatim; match case-insensitively. `PMC:` follows Babel until Translator settles the prefix ([Known limitations](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/README.md#known-limitations)). |
+| `journal_name` | `journal.title` | The journal's full title, as NCBI `esummary`'s `fulljournalname`. `""` when the journal dimension has no row. |
+| `journal_abbrev` | `journal.abbreviation_medline` | The journal's MEDLINE title abbreviation. `""` when the journal dimension has no row. |
+| `article_title` | `article.article_title` | The article's title, verbatim. |
+| `volume` | `article.volume` | The journal volume, verbatim: not always a number (`3 Suppl`). |
+| `issue` | `article.issue` | The journal issue, verbatim: not always a number (`Suppl`). |
+| `pub_year` | `article.pub_year`, else the leading year of `article.medline_date` | The year of publication. The *leading* year of a cross-year range, as NCBI's `sortpubdate` does. |
+| `pub_month` | `article.pub_month`, else the text after `article.medline_date`'s year | Month names fold to `Jan`…`Dec` (`03`, `March`, `Sept` → `Mar`, `Sep`). Seasons and ranges pass through (`Spring`, `Sep-Dec`). A cross-year range gives `Dec-1999 Jan`. |
 | `pub_day` | `article.pub_day` | Verbatim (`05` stays `05`). |
-| `pub_date` | `medline_date`, else year + normalized month + day | PubMed's own date string, the same as `esummary`'s `pubdate`. Render citations from this; sort on `pub_year`. |
+| `pub_date` | `article.medline_date`, else year + normalized month + day | PubMed's own date string, the same as `esummary`'s `pubdate`. Render citations from this; sort on `pub_year`. |
 | `publication_types` | `publication_type` | `[{"id": "MESH:D016454", "name": "Review"}, …]` in PubMed's order. |
 | `abstract` | `abstract_text` | Sections joined with a space, labels dropped. |
 
-The field list, and the SQL that computes each field, live in one place in the
-code (`export._JSON_FIELDS`); the data model's tests pin the list.
+<!-- END GENERATED NDJSON FIELDS -->
+
+The field list, the SQL that computes each field and the notes above live in
+one place in the code (`export._JSON_FIELDS`); the data model's tests pin the
+list. Every export from 1.1 on writes the same notes, with each field's JSON
+type, into its `schema.json`, so a build describes itself in the words of the
+code that wrote it.
 
 ## What is not in the data
 

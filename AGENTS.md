@@ -88,8 +88,11 @@ explains its part; this table is only a map.
     them.** `docs/data-model/Reference.md` is `datamodel.render_reference`;
     edit the `COMMENT ON` in `schema.sql`, then run
     `python -m pubmed2db.datamodel --docs docs/data-model/Reference.md`. A test
-    fails on a stale block, so don't hand-edit it. It and the changelog are
-    separate from the README so the contract prose stays short enough to read
+    fails on a stale block, so don't hand-edit it. The NDJSON field table in
+    the data model's README is generated the same way, from
+    `export._JSON_FIELDS` (`--docs docs/data-model/README.md`), and is the
+    same text every export writes into its `schema.json`. `Reference.md` and
+    the changelog are separate from the README so the contract prose stays short enough to read
     whole; the three link each other by absolute URL on `main`, and
     `test_links_between_the_data_model_docs_resolve` checks those links.
   - **Pre-1.0 databases are refused, not migrated.** `check_compatible` runs
@@ -115,6 +118,15 @@ explains its part; this table is only a map.
     the CRC (measured 2026-10-19). Only a hash catches an intact shard that
     isn't the one this export wrote (a leftover from another build) or damage
     to a `--no-gzip` export.
+  - **`schema.json` is in `metadata.json` under `schema`, not in `files`, so
+    `SHA256SUMS` leaves it out.** The data model's README tells consumers to
+    fetch the shards, `metadata.json` and `SHA256SUMS` and run `sha256sum -c`;
+    listing `schema.json` there would fail every consumer who never downloads
+    it, which a minor version may not do. `validate` checks it against its own
+    entry for the same reason. Its types come from DuckDB's binding of the
+    export query (`export._json_schema_type`), never written down, so they
+    cannot drift from what `COPY` writes; a field of an unmapped DuckDB type
+    raises rather than ship a wrong schema.
   - **`metadata.json` is also the "finished" mark the between-runs scripts
     key on.** `export` refuses to run while one exists in its output
     directory unless given `--overwrite` (it deletes the previous shards
@@ -300,9 +312,10 @@ explains its part; this table is only a map.
   wall time serializing on a single core while the other seven idled (17.7k
   docs/s measured, against 56.2k for the same corpus through `COPY`). Three
   consequences before you edit it:
-  - **`_JSON_FIELDS` is the record definition** — output name → SQL expression,
-    in emitted order — so the DocumentMetadataAPI names, the
-    empty-string-not-null rule and the field order live in one place, and
+  - **`_JSON_FIELDS` is the record definition** — output name, SQL
+    expression, source and description, in emitted order — so the
+    DocumentMetadataAPI names, the empty-string-not-null rule, the field order
+    and what each field means live in one place, and
     `validate` imports `JSON_FIELDS` from it rather than restating the shape.
     `pub_month` and `_year_from_medline_date` survive as Python because
     `validate` needs them for the efetch side; `_PUB_MONTH_SQL`/`_PUB_YEAR_SQL`

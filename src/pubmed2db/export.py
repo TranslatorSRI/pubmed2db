@@ -16,6 +16,7 @@ import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import duckdb
 
@@ -32,6 +33,10 @@ METADATA_FILE = "metadata.json"
 #: The same checksums in ``sha256sum``'s own format, so a consumer can verify a
 #: download with ``sha256sum -c SHA256SUMS`` and no JSON parser.
 CHECKSUMS_FILE = "SHA256SUMS"
+
+#: Written beside every export: the record's fields, their types and what each
+#: means, as a JSON Schema. See :func:`ndjson_schema`.
+SCHEMA_FILE = "schema.json"
 
 logger = logging.getLogger(__name__)
 
@@ -429,48 +434,145 @@ _PUB_YEAR_SQL = (
     f"regexp_extract(COALESCE(la.medline_date, ''), '{_MEDLINE_YEAR_PATTERN_SQL}', 1))"
 )
 
-#: The JSON record: output field name -> SQL expression, in emitted order.
+#: The data model README, which the field descriptions below link into. An
+#: absolute URL, because they ship in ``schema.json``, away from the repository.
+_DATA_MODEL_DOC = "https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/README.md"
+
+
+class JsonField(NamedTuple):
+    """One field of the NDJSON record.
+
+    ``source`` and ``description`` are Markdown, written to be read on their
+    own: they are the field's entry in each export's ``schema.json``
+    (:func:`ndjson_schema`) and its row in `docs/data-model/README.md`'s
+    field table (``datamodel.render_ndjson_fields``), so a link in either
+    must be absolute.
+    """
+
+    #: The DocumentMetadataAPI name the record carries.
+    name: str
+    #: The value, as SQL over ``_LATEST_METADATA_SQL``'s joins.
+    sql: str
+    #: The database columns the value comes from.
+    source: str
+    #: What the value means, and what it holds when PubMed has none.
+    description: str
+
+
+#: The JSON record, in emitted order.
 #:
 #: This is the **single definition** of what a document contains. The export is
 #: one ``COPY ... (FORMAT JSON)`` built from this list rather than a Python loop
 #: over rows, so there is no second place where the DocumentMetadataAPI names,
 #: the empty-string-not-null rule, or the field order is written down;
-#: ``validate`` imports :data:`JSON_FIELDS` instead of restating them.
-_JSON_FIELDS: tuple[tuple[str, str], ...] = (
-    ("id", "'PMID:' || la.pmid"),
-    # The LEFT JOIN yields NULL, not an empty list, for a PMID with neither a
-    # DOI nor a PMCID; such a record still gets its own PMID CURIE.
-    ("identifiers", "list_prepend('PMID:' || la.pmid, COALESCE(ids.identifiers, []::VARCHAR[]))"),
-    ("journal_name", "COALESCE(j.title, '')"),
-    # J_Entrez.txt's IsoAbbr equalled MedAbbr in 42,056 of 42,056 journals, so
-    # data model 1.0 keeps only the one column (#48).
-    ("journal_abbrev", "COALESCE(j.abbreviation_medline, '')"),
-    ("article_title", "COALESCE(la.article_title, '')"),
-    ("volume", "COALESCE(la.volume, '')"),
-    ("issue", "COALESCE(la.issue, '')"),
-    # Falls back to the year inside a free-text MedlineDate, which is the only
-    # place these records carry one. See _year_from_medline_date.
-    ("pub_year", _PUB_YEAR_SQL),
-    # Approximate months are passed through, not blanked: the spec's own example
-    # for PMID:8000234 emits "Sep-Dec" (issue #14). See normalize_month.
-    ("pub_month", _PUB_MONTH_SQL),
-    ("pub_day", "COALESCE(la.pub_day, '')"),
-    # PubMed's own date string, verbatim -- the three fields above are parsed
-    # conveniences and cannot represent a cross-year range. See pub_date.
-    ("pub_date", _PUB_DATE_SQL),
-    # [{"id": "MESH:D016454", "name": "Review"}, ...] in PubMed's order, which
-    # is esummary's `pubtype` order. Our own field, like `identifiers`; a
-    # record with none gets [], never null.
-    (
-        "publication_types",
-        "COALESCE(pts.publication_types, []::STRUCT(id VARCHAR, name VARCHAR)[])",
+#: ``validate`` imports :data:`JSON_FIELDS` instead of restating them. The
+#: descriptions live here too, rather than only in the data model's prose, so
+#: that ``schema.json`` and the README's field table say the same thing (#72).
+_JSON_FIELDS: tuple[JsonField, ...] = (
+    JsonField(
+        "id",
+        "'PMID:' || la.pmid",
+        "`article.pmid`",
+        "The article's PMID as a CURIE, `PMID:<pmid>`. One record per PMID.",
     ),
-    ("abstract", "COALESCE(abs.abstract, '')"),
+    JsonField(
+        "identifiers",
+        # The LEFT JOIN yields NULL, not an empty list, for a PMID with neither
+        # a DOI nor a PMCID; such a record still gets its own PMID CURIE.
+        "list_prepend('PMID:' || la.pmid, COALESCE(ids.identifiers, []::VARCHAR[]))",
+        "`article_id` (`doi`, `pmc`)",
+        "`PMID:` first, then the DOI and PMC ID as CURIEs (`doi:10…`, `PMC:PMC…`), "
+        "sorted. Values verbatim; match case-insensitively. `PMC:` follows Babel "
+        f"until Translator settles the prefix ([Known limitations]({_DATA_MODEL_DOC}#known-limitations)).",
+    ),
+    JsonField(
+        "journal_name",
+        "COALESCE(j.title, '')",
+        "`journal.title`",
+        "The journal's full title, as NCBI `esummary`'s `fulljournalname`. "
+        '`""` when the journal dimension has no row.',
+    ),
+    JsonField(
+        "journal_abbrev",
+        # J_Entrez.txt's IsoAbbr equalled MedAbbr in 42,056 of 42,056 journals,
+        # so data model 1.0 keeps only the one column (#48).
+        "COALESCE(j.abbreviation_medline, '')",
+        "`journal.abbreviation_medline`",
+        'The journal\'s MEDLINE title abbreviation. `""` when the journal dimension has no row.',
+    ),
+    JsonField(
+        "article_title",
+        "COALESCE(la.article_title, '')",
+        "`article.article_title`",
+        "The article's title, verbatim.",
+    ),
+    JsonField(
+        "volume",
+        "COALESCE(la.volume, '')",
+        "`article.volume`",
+        "The journal volume, verbatim: not always a number (`3 Suppl`).",
+    ),
+    JsonField(
+        "issue",
+        "COALESCE(la.issue, '')",
+        "`article.issue`",
+        "The journal issue, verbatim: not always a number (`Suppl`).",
+    ),
+    JsonField(
+        "pub_year",
+        # Falls back to the year inside a free-text MedlineDate, which is the
+        # only place these records carry one. See _year_from_medline_date.
+        _PUB_YEAR_SQL,
+        "`article.pub_year`, else the leading year of `article.medline_date`",
+        "The year of publication. The *leading* year of a cross-year range, "
+        "as NCBI's `sortpubdate` does.",
+    ),
+    JsonField(
+        "pub_month",
+        # Approximate months are passed through, not blanked: the spec's own
+        # example for PMID:8000234 emits "Sep-Dec" (issue #14). See
+        # normalize_month.
+        _PUB_MONTH_SQL,
+        "`article.pub_month`, else the text after `article.medline_date`'s year",
+        "Month names fold to `Jan`…`Dec` (`03`, `March`, `Sept` → `Mar`, `Sep`). "
+        "Seasons and ranges pass through (`Spring`, `Sep-Dec`). A cross-year "
+        "range gives `Dec-1999 Jan`.",
+    ),
+    JsonField(
+        "pub_day",
+        "COALESCE(la.pub_day, '')",
+        "`article.pub_day`",
+        "Verbatim (`05` stays `05`).",
+    ),
+    JsonField(
+        "pub_date",
+        # PubMed's own date string, verbatim -- the three fields above are
+        # parsed conveniences and cannot represent a cross-year range. See
+        # pub_date.
+        _PUB_DATE_SQL,
+        "`article.medline_date`, else year + normalized month + day",
+        "PubMed's own date string, the same as `esummary`'s `pubdate`. "
+        "Render citations from this; sort on `pub_year`.",
+    ),
+    JsonField(
+        "publication_types",
+        # In PubMed's order, which is esummary's `pubtype` order. Our own
+        # field, like `identifiers`; a record with none gets [], never null.
+        "COALESCE(pts.publication_types, []::STRUCT(id VARCHAR, name VARCHAR)[])",
+        "`publication_type`",
+        '`[{"id": "MESH:D016454", "name": "Review"}, …]` in PubMed\'s order.',
+    ),
+    JsonField(
+        "abstract",
+        "COALESCE(abs.abstract, '')",
+        "`abstract_text`",
+        "Sections joined with a space, labels dropped.",
+    ),
 )
 
 #: The exported field names, in order — an external contract with Node Annotator
 #: / ElasticSearch, and what ``validate`` checks every record against.
-JSON_FIELDS = tuple(name for name, _ in _JSON_FIELDS)
+JSON_FIELDS = tuple(field.name for field in _JSON_FIELDS)
 
 #: Abstract section ``label``s ("BACKGROUND", "METHODS", ...) are deliberately
 #: dropped: the consumer is a full-text search index, which wants prose, not
@@ -533,12 +635,12 @@ LEFT JOIN ids ON ids.pmid = la.pmid AND ids.source_file = la.source_file
 LEFT JOIN pts ON pts.pmid = la.pmid AND pts.source_file = la.source_file
 """.replace(
     "PROJECTION",
-    ",\n    ".join(f'{expr} AS "{name}"' for name, expr in _JSON_FIELDS),
+    ",\n    ".join(f'{field.sql} AS "{field.name}"' for field in _JSON_FIELDS),
 )
 
 
 def _remove_finished_mark(out_dir: Path, overwrite: bool) -> None:
-    """Delete a previous export's ``metadata.json`` and ``SHA256SUMS`` before writing.
+    """Delete a previous export's ``metadata.json``, ``SHA256SUMS`` and ``schema.json`` first.
 
     ``metadata.json`` is the "export finished" mark. Left in place, an export
     that dies after removing the old files would still look finished, with
@@ -557,7 +659,7 @@ def _remove_finished_mark(out_dir: Path, overwrite: bool) -> None:
             "Archive it first (scripts/archive_build.py), "
             "or pass --overwrite (EXPORT_OVERWRITE=1 under Slurm) to replace it."
         )
-    for name in (METADATA_FILE, CHECKSUMS_FILE):
+    for name in (METADATA_FILE, CHECKSUMS_FILE, SCHEMA_FILE):
         (out_dir / name).unlink(missing_ok=True)
 
 
@@ -825,7 +927,8 @@ def export_json(
         heartbeat.join()
 
     paths = _shard_paths(out_dir)
-    write_export_metadata(con, out_dir, paths, records=total)
+    schema = write_schema(con, out_dir)
+    write_export_metadata(con, out_dir, paths, records=total, schema=schema)
     logger.info(
         "exported %d documents to %d shard(s) in %s in %s (peak RSS %.1f GiB)",
         total,
@@ -843,24 +946,104 @@ def file_sha256(path: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
+#: JSON Schema's name for each DuckDB scalar type the record uses. Every field
+#: is one of these, a list or a struct of them; :func:`_json_schema_type`
+#: refuses anything else, so a field of a new type fails the export's tests
+#: before it reaches a ``schema.json`` that misdescribes it.
+_JSON_SCHEMA_SCALARS = {"varchar": "string"}
+
+
+def _json_schema_type(duckdb_type: duckdb.typing.DuckDBPyType) -> dict:
+    """The JSON Schema for a value of ``duckdb_type``, as ``COPY ... (FORMAT JSON)`` writes it."""
+    if duckdb_type.id in _JSON_SCHEMA_SCALARS:
+        return {"type": _JSON_SCHEMA_SCALARS[duckdb_type.id]}
+    if duckdb_type.id == "list":
+        return {"type": "array", "items": _json_schema_type(duckdb_type.child)}
+    if duckdb_type.id == "struct":
+        children = duckdb_type.children
+        return {
+            "type": "object",
+            "properties": {name: _json_schema_type(child) for name, child in children},
+            "required": [name for name, _ in children],
+        }
+    raise ValueError(f"no JSON Schema type for DuckDB's {duckdb_type}")
+
+
+def ndjson_schema(con: duckdb.DuckDBPyConnection) -> dict:
+    """A JSON Schema (draft 2020-12) for one record of the export, describing each field.
+
+    An export travels without its database or this repository, so it carries
+    its own field list (#72), as the database carries its ``COMMENT ON`` data
+    dictionary. The descriptions are :data:`_JSON_FIELDS`'s, the same text as
+    the field table in `docs/data-model/README.md`. The types are not written
+    down anywhere: they are the export query's own, read from DuckDB, so they
+    cannot drift from what ``COPY`` writes. That needs the ``_latest_snapshot``
+    table :func:`export_json` builds; binding the query reads no rows.
+
+    It describes one build in that build's wording: rewording a description
+    needs no version bump. Every field is ``required``, since every record has
+    every field. ``additionalProperties`` is left open, so a consumer holding
+    the schema of an earlier build of the same major version can still
+    validate a later one, which may only have added fields.
+    """
+    query = con.sql(_LATEST_METADATA_SQL)
+    types = dict(zip(query.columns, query.types, strict=True))
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": f"pubmed2db NDJSON record, data model {datamodel.DATA_MODEL_VERSION}",
+        "description": (
+            "One line of a pubmed2db NDJSON export: the latest version of one PubMed "
+            "article. Every field is present on every record; an absent value is "
+            '"" or [], never null. Each field names the tables and columns of the '
+            "pubmed2db database it comes from, which "
+            "https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/Reference.md "
+            "describes."
+        ),
+        "type": "object",
+        "properties": {
+            field.name: {
+                **_json_schema_type(types[field.name]),
+                "description": f"{field.description} From {field.source}.",
+            }
+            for field in _JSON_FIELDS
+        },
+        "required": list(JSON_FIELDS),
+    }
+
+
+def write_schema(con: duckdb.DuckDBPyConnection, out_dir: Path) -> Path:
+    """Write ``schema.json`` (:func:`ndjson_schema`) into ``out_dir``, and return its path."""
+    path = out_dir / SCHEMA_FILE
+    path.write_text(json.dumps(ndjson_schema(con), indent=2, ensure_ascii=False) + "\n")
+    return path
+
+
 def write_export_metadata(
     con: duckdb.DuckDBPyConnection,
     out_dir: Path,
     files: list[Path],
     *,
     records: int,
+    schema: Path | None = None,
 ) -> Path:
     """Write ``metadata.json`` and ``SHA256SUMS``: the export's version, provenance and checksums.
 
     An export travels without its database, so this is where a consumer learns
     which data model it follows (``data_model_version``; check the major), what
     corpus it holds (``corpus``: the cutoff file and when NCBI posted it, #57),
-    how many current articles it holds (``records``), and each file's size and
-    SHA-256. ``validate``
+    how many current articles it holds (``records``), and each shard's size and
+    SHA-256 (``files``). ``validate``
     checks the directory against it. ``SHA256SUMS`` repeats the hashes for
     ``sha256sum -c``. Both are written last, after every file they describe,
     and ``metadata.json`` after ``SHA256SUMS``, so its presence means the export
     finished.
+
+    ``schema.json`` gets its own entry (``schema``), outside ``files`` and so
+    outside ``SHA256SUMS``. The data model's README tells a consumer to fetch
+    the shards, ``metadata.json`` and ``SHA256SUMS``, then run ``sha256sum -c
+    SHA256SUMS``; a consumer doing that since 1.0 would start failing on a
+    ``schema.json`` it never downloaded, which is not what a minor version
+    may do. Its hash still makes it part of what ``metadata.json`` vouches for.
 
     The hashes are for *identity*, not damage. A gzip shard that is truncated or
     corrupted already fails to decompress: DuckDB writes each shard as one gzip
@@ -889,6 +1072,12 @@ def write_export_metadata(
             for path in sorted(files)
         ],
     }
+    if schema is not None:
+        content["schema"] = {
+            "name": schema.name,
+            "bytes": schema.stat().st_size,
+            "sha256": file_sha256(schema),
+        }
     path = out_dir / METADATA_FILE
     path.write_text(json.dumps(content, indent=2) + "\n")
     return path

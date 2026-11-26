@@ -42,7 +42,9 @@ dependencies = [
 pubmed2db = "pubmed2db.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=9"]
+# jsonschema only for the test that validates exported records against their
+# schema.json with a stock validator, which is what that file promises consumers.
+dev = ["jsonschema>=4.23", "pytest>=9"]
 
 [dependency-groups]
 # The linters CI runs (.github/workflows/lint.yml). uv.lock pins the exact

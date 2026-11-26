@@ -125,11 +125,17 @@ The export finishes by writing `metadata.json` into the output directory: the
 data model version, the record count, the corpus cutoff (the last file loaded,
 and when NCBI posted it), and a SHA-256 per file. The same hashes go into
 `SHA256SUMS`, so `sha256sum -c SHA256SUMS` checks a download with no JSON parser.
-Both files are deleted when an export starts, so a directory holding a
+Before them it writes `schema.json`, a JSON Schema for one record that
+describes every field, so the shards describe themselves the way the
+database's `COMMENT ON`s do. `metadata.json` gives its hash under `schema`,
+apart from the shards', and `SHA256SUMS` leaves it out, so a consumer that
+never downloads it still passes `sha256sum -c`.
+All three files are deleted when an export starts, so a directory holding a
 `metadata.json` is one whose export finished: `export` refuses to run over one
 until it has been archived, unless given `--overwrite` (see
 [Between runs](#between-runs-what-to-keep-archive-and-delete)). `validate`
-checks the shards against `metadata.json`, and `status` prints the same cutoff.
+checks the shards and `schema.json` against `metadata.json`, and `status`
+prints the same cutoff.
 
 ### How the JSON export is written
 
@@ -548,7 +554,7 @@ build. Everything the pipeline writes, and what to do with it:
 | `stage/` | `stage` | **Transient.** One directory of Parquet shards per file awaiting `load`, which deletes each as its transaction commits, then any it had no use for: a file already loaded, or no longer downloaded (`--keep-stage` to keep them all). Reproducible from the XML; never archived. Deleted by `fresh_database.py` with the database. |
 | `pubmed2db/serfile/`, `pubmed/J_Entrez.txt` | `journals` | Caches. The catalog prunes itself and `J_Entrez.txt` is refetched every run; nothing to do. |
 | `json/` | `export` | **One build.** `metadata.json` marks it finished; `scripts/archive_build.py` moves it to `builds/<build>/`, and `export` refuses to overwrite it until then (`--overwrite`, or `EXPORT_OVERWRITE=1` under Slurm). |
-| `builds/<build>/` | `archive_build.py` | Until published (and after, as long as you like). Laid out as on stars: shards, `metadata.json` and `SHA256SUMS` at the top, `manifests/`, `logs/`, `source_file.csv`. |
+| `builds/<build>/` | `archive_build.py` | Until published (and after, as long as you like). Laid out as on stars: shards, `metadata.json`, `SHA256SUMS` and `schema.json` at the top, `manifests/`, `logs/`, `source_file.csv`. |
 | `manifests/` | `validate` (via Slurm) | **Permanent, in place.** The dated PMID manifests and reports are the chain each `validate` diffs against. Never move or delete them; `archive_build.py` copies, not moves. |
 | `logs/` | `submit.sh` | Permanent. Step logs are copied into each build; `submit.log` is the record of every submission. |
 | `ncbi/`, `README.md` | pystow | Noise; ignore. |
