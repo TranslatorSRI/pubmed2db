@@ -112,7 +112,9 @@ unset _export_dir_given _manifest_dir_given
 # The default turns off jemalloc's time-based release of freed memory, the
 # other half of export._HOLD_ALLOCATOR: on the cluster's strict-overcommit nodes that
 # release remaps memory PROT_NONE, splitting mappings, and running out of them
-# is the suspect for the two refused exports in #42. Set it empty to pass none
+# refused the exports in #42 (confirmed in #80, where DuckDB's half of the hold
+# alone was not enough). Keep it until vm.max_map_count is raised on the
+# export's nodes. Set it empty to pass none
 # of ours: a DUCKDB_JE_MALLOC_CONF already in the environment then still
 # applies, and every step's log prints it. `=` rather than `:=` for the reason
 # above.

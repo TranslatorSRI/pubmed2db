@@ -98,8 +98,8 @@ def memory_map_count() -> tuple[int, int] | None:
     """This process's memory mappings and ``vm.max_map_count``, or ``None`` off Linux.
 
     Past ``max_map_count`` mappings, ``mmap`` fails with ENOMEM however much
-    memory is free, which DuckDB reports as ``(bad allocation)``. The suspect
-    for the 2026-11-09 export failure (#42): under ``vm.overcommit_memory=2``
+    memory is free, which DuckDB reports as ``(bad allocation)``. The cause
+    of the 2026-11-09 export failure (#42, confirmed in #80): under ``vm.overcommit_memory=2``
     jemalloc hands memory back by remapping it ``PROT_NONE``, and each remap in
     the middle of a mapping splits it. Counting ``/proc/self/maps`` takes the
     kernel's mapping lock briefly; once a minute it is negligible.
