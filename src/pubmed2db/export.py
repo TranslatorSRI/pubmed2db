@@ -630,14 +630,16 @@ _UNORDERED = {"preserve_insertion_order": False}
 #: after any single deallocation above 512 MiB, both of which the snapshot's
 #: hash tables and a spill trigger. On the cluster's nodes (vm.overcommit_memory=2)
 #: jemalloc returns memory by remapping it PROT_NONE, which splits mappings,
-#: and the suspect for two exports refused by mmap at ~68 GiB RSS is the
-#: process running out of them (vm.max_map_count). Held instead, the freed
+#: and two exports refused by mmap at ~68 GiB RSS ran out of them
+#: (vm.max_map_count, confirmed in #80). Held instead, the freed
 #: memory stays mapped for jemalloc to reuse. 05-export.sbatch turns off
 #: jemalloc's own time-based release to match (EXPORT_JE_MALLOC_CONF). With
 #: both, the 2026-11-09 export finished, but RSS plateaued ~55 GiB above
-#: memory_limit, which does not count held memory: --mem has to cover it. The
-#: suspect is still unconfirmed, and #80 plans the runs that would settle it;
-#: docs/Memory.md, "A refused allocation", has the figures.
+#: memory_limit, which does not count held memory: --mem has to cover it.
+#: These thresholds alone did not avoid the failure; jemalloc's setting is
+#: needed too. Once vm.max_map_count is raised, a run without either would
+#: show whether both can go. docs/Memory.md, "A refused allocation", has the
+#: figures.
 _HOLD_ALLOCATOR = {
     "allocator_flush_threshold": "1TB",
     "allocator_bulk_deallocation_flush_threshold": "1TB",

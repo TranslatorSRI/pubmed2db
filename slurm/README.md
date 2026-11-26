@@ -489,9 +489,11 @@ noted:**
 | 2026-10-22, `--mem=192G` | 41,271,245 | 8, gzip | 160GB | failed: 152.2 GiB, then refused at 68.1 GiB | 6m 41s (refused; see below) |
 | 2026-11-09 | 41,371,020 | 8, gzip | 160GB | failed: 154.3 GiB, then refused at 67.9 GiB | 6m 03s (same) |
 | 2026-11-09, allocator held | 41,371,020 | 8, gzip | 160GB | 205.1 GiB | 15m 00s, ≈46k documents/s |
+| 2026-11-25 (2026nov25), allocator held | 41,454,204 | 8, gzip | 160GB | 204.4 GiB | 15m 41s, ≈44k documents/s |
+| 2026-11-26, DuckDB's half of the hold only (#80) | 41,454,204 | 8, gzip | 160GB | failed: 155.6 GiB, then refused at 53.7 GiB | ~5m 10s (same) |
 
 The first three predate the `COPY`-based writer (see "What changed" below); the
-last two are it. Read the pair together: DuckDB's peak tracks the buffer-pool
+rest are it. Read the pair together: DuckDB's peak tracks the buffer-pool
 limit it is given, not what the query needs — 40 GB more limit bought 38 GiB
 more peak and a slightly *slower* run — so `config.sh` now sets `160GB`, the
 lower of the two measured values. `--mem=256G` is the allocation both ran

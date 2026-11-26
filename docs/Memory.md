@@ -114,7 +114,7 @@ coming from inside the process, not from the neighbours. That rules out
 the explanation first given (a node-wide `CommitLimit` shared with other
 jobs): job 155199's node never charged more than an eighth of it.
 
-**The suspect, not yet confirmed: the process runs out of memory mappings.**
+**The cause, confirmed in #80: the process runs out of memory mappings.**
 Past `vm.max_map_count` mappings (65,530 by default), `mmap` fails with
 ENOMEM however much memory is free. When the OS does not overcommit, jemalloc
 (which DuckDB uses on Linux) hands memory back by remapping it `PROT_NONE`
@@ -122,7 +122,9 @@ rather than leaving it mapped, and each remap inside a mapping splits it.
 Job 155199's figures fit this. As RSS fell by 85 GiB, VSZ stayed at 209 GiB
 and the node's commit charge fell by only 16 GiB, so the memory went back
 as remapped regions rather than unmapped ones. Neither failed run logged its
-mapping count; the export's heartbeat and its out-of-memory line log it now.
+mapping count; the export's heartbeat and its out-of-memory line log it now,
+and the run that confirmed it is
+[below](#confirmed-duckdbs-half-of-the-hold-alone-runs-out-of-mappings).
 
 **Holding freed memory instead of returning it avoids the failure.**
 `export._HOLD_ALLOCATOR` raises DuckDB's two allocator-flush thresholds out of
@@ -147,27 +149,57 @@ Three things follow from it:
   jemalloc kept. That makes `--mem=256G` load-bearing while the hold is on:
   under 192G this run would have been OOM-killed. Lower `EXPORT_MEMORY_LIMIT`
   before lowering `--mem`, and expect the gap to stay.
-- **The `max_map_count` suspect is still unconfirmed.** `maps` peaked at 881
-  of 65,530, but that is with the hold on; neither failed run logged `maps`,
-  so no run has shown them climbing. The run is equally consistent with any
-  cause that only bites when memory is handed back. Confirming it would take
-  one export with the hold off, watching `maps` approach 65,530 before the
-  failure; #80 plans that run, and one with each knob alone. The hold is off
-  only with **both** knobs undone: `EXPORT_JE_MALLOC_CONF=` set empty, and
-  `export._HOLD_ALLOCATOR` emptied in the code. Clearing one alone is a
-  one-knob run, not a run without the hold. That evidence is
-  what to take to the cluster admins before asking them to raise
-  `vm.max_map_count` (Elasticsearch's documented minimum, 262,144, is a
-  common setting).
-- **Which of the two knobs matters is unknown.** Both changed at once. Nothing
-  needs that answered while the export finishes.
+- **With the hold on, `maps` stays flat.** It peaked at 881 of 65,530. On
+  its own that was equally consistent with any cause that only bites when
+  memory is handed back; the run below is what told them apart.
+
+### Confirmed: DuckDB's half of the hold alone runs out of mappings
+
+Job 165849 (2026-11-26, #80) exported the 2026nov25 database on
+`largemem-6-1` with DuckDB's flush thresholds held
+(`export._HOLD_ALLOCATOR`) and jemalloc's time-based release back on
+(`EXPORT_JE_MALLOC_CONF=` set empty), with everything else as job 155264:
+
+| Elapsed | RSS | VSZ | Node commit | `maps` | Spill |
+| --- | --- | --- | --- | --- | --- |
+| 1m 17s | 46.2 GiB | 55.8 GiB | 54.5 GiB | 8,523 | 0.0 GiB |
+| 2m 17s | 78.0 GiB | 92.9 GiB | 86.8 GiB | 10,138 | 0.0 GiB |
+| 3m 17s | 141.4 GiB | 153.1 GiB | 150.2 GiB | 10,328 | 0.0 GiB |
+| 4m 17s | 152.7 GiB | 209.2 GiB | 161.3 GiB | 41,889 | 4.6 GiB |
+| ~5m 10s, refused | 53.7 GiB | 213.2 GiB | 117.8 GiB | 55,469 | 11.7 GiB |
+
+It failed with `Failed to allocate block of 263176 bytes (bad allocation)`,
+peak RSS 155.6 GiB, the same shape as jobs 145739 and 155199. The mappings
+quadrupled in the minute RSS reached the buffer limit and DuckDB began to
+spill, and were still climbing at the refusal, while every other limit was
+far off: a twelfth of the node's commit limit, RSS well under `--mem`,
+`ulimit -v` unlimited. `maps` is sampled when the error is caught, after
+RSS had fallen by ~100 GiB, so the count at the refusal itself is not
+logged; 55,469 is a floor. An earlier attempt the same day (job 165821)
+died of an unrelated read error at 2m 21s with `maps` on the same path
+(7,693, then 10,002), against 746 and 782 at the same points of the
+2026nov25 build's export, which ran with both knobs.
+
+Three things follow:
+
+- **`vm.max_map_count` is what refuses the allocation.** Raising it on the
+  export's nodes (Elasticsearch's documented minimum, 262,144, is a common
+  setting) is the fix; these figures are what to take to the cluster admins.
+  Once it is raised, an export with the hold off would show whether the hold,
+  and the ~55 GiB of `--mem` it costs, can go.
+- **DuckDB's flush thresholds alone do not avoid it; jemalloc's decay
+  setting is needed.** So `EXPORT_JE_MALLOC_CONF` keeps its default and
+  `--mem=256G` stays, since the held memory is jemalloc's. Whether
+  jemalloc's setting alone would do, without `_HOLD_ALLOCATOR`, is untested,
+  and only decides whether that code can go.
+- **The run without any hold that #80 planned was not needed.** It would have
+  confirmed the same thing from further away.
 
 If a later run fails anyway: RSS climbing past ~205 GiB until the job is
-OOM-killed means jemalloc could not reuse what it held, so set
-`EXPORT_JE_MALLOC_CONF=` empty; a `(bad allocation)` with `maps` near the
-limit confirms the suspect and makes raising `vm.max_map_count` the fix; one
-with `maps` far below it rules the suspect out. Record the figures here before
-guessing again.
+OOM-killed means jemalloc could not reuse what it held; a `(bad allocation)`
+with `maps` near the limit is the cause above, back again; one with `maps`
+far below it is something new. Record the figures here before guessing
+again.
 
 **The node did not change, so the database or the code did.** `largemem-6-1`
 ran the 2026-08-21 and 2026-09-26 exports that succeeded (jobs 119057 and
