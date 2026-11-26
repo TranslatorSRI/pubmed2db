@@ -59,7 +59,15 @@ def _load_local(
 
 
 def _stage_local(ctx: click.Context, *, workers: int | None, force: bool) -> None:
-    """Stage every downloaded file that needs it; shared by `stage` and `update`."""
+    """Stage every downloaded file that needs it, for the `stage` command.
+
+    A file that fails to stage is a warning, not a failed step: `load` parses
+    any file without a shard itself, so failing here would only cancel the
+    chained `load` (Slurm's ``afterok``) that would have handled it. If no
+    file stages at all, the step fails: that is the stage itself broken (an
+    unwritable stage directory, say), and a `load` left to parse the whole
+    corpus serially would take a day.
+    """
     from .download import local_files
     from .stage import default_workers, stage_files
 
@@ -88,8 +96,16 @@ def _stage_local(ctx: click.Context, *, workers: int | None, force: bool) -> Non
         if con is not None:
             con.close()
     click.echo(f"Staged {staged} file(s); {len(files)} local file(s) checked.")
+    if failed and not staged:
+        raise click.ClickException(
+            f"every file failed to stage ({len(failed)}): {', '.join(failed)}"
+        )
     if failed:
-        raise click.ClickException(f"{len(failed)} file(s) failed to stage: {', '.join(failed)}")
+        click.echo(
+            f"Warning: {len(failed)} file(s) failed to stage; `load` will parse them "
+            f"itself: {', '.join(failed)}",
+            err=True,
+        )
 
 
 def _sync_options(f):
@@ -743,8 +759,12 @@ def update(
                 con=con,
             )
             click.echo(f"Staged {staged} file(s).")
-            if failed:
-                click.echo(f"{len(failed)} file(s) failed to stage: {', '.join(failed)}", err=True)
+            if failed:  # the load below parses them itself
+                click.echo(
+                    f"Warning: {len(failed)} file(s) failed to stage; parsing them in the "
+                    f"load instead: {', '.join(failed)}",
+                    err=True,
+                )
         _load_local(con, force=force, require_files=False, stage_dir=ctx.obj["stage_dir"])
 
 

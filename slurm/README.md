@@ -141,6 +141,12 @@ so `STAGE_DIR` holds at most the files staged and not yet loaded (budget
 roughly the size of the XML it was cut from until the first run measures it).
 `scripts/fresh_database.py` deletes the directory with the database.
 
+A file that fails to stage (a parse error, a worker the OOM killer took)
+does not fail the job: `load` parses any file without a shard itself, and
+failing here would only make `afterok` cancel it. The `stage` log names the
+files, and they cost `load` their serial parse time. The job fails only if
+no file stages at all, which means the stage itself is broken.
+
 **Run table.** Locally only so far (2026-10-21, a 12-core laptop, 20
 baseline files from `download --limit 20`, the same 20 in both rows):
 

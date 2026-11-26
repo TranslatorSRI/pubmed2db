@@ -198,6 +198,11 @@ explains its part; this table is only a map.
     next `load` parsed them all serially. Shards are deleted *after*
     their COMMIT, so a crash between the two can only leave a shard whose
     rows are already in.
+  - **A file that fails to stage is a warning; no file staging is an
+    error.** `load` parses whatever has no shard, so failing `stage` over
+    one file would only make Slurm's `afterok` cancel the `load` that
+    would have handled it. A stage that stages nothing is broken, and a
+    corpus left to the serial path is a day.
   - **`update` stages too**, so a daily run and a rebuild go through the
     same path; `load --no-stage` is the pre-v1.3 serial behaviour, kept for
     tests and one-off runs.

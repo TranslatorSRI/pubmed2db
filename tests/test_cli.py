@@ -561,3 +561,28 @@ def test_cli_load_removes_the_shards_it_leaves_unused(staged_download):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "removed 2 shard(s)" in result.stderr
     assert not any(stage_dir.iterdir())
+
+
+def test_cli_stage_warns_on_a_partial_failure_and_fails_on_a_total_one(staged_download):
+    """`load` parses any file without a shard, so one file failing to stage
+    must not fail the step (and cancel the chained `load` with it). Every file
+    failing is the stage itself broken, and still fails."""
+    db_path = staged_download / "cli.duckdb"
+    args = ("--data-dir", str(staged_download), "--db", str(db_path))
+    broken = staged_download / "pubmed" / "updates" / "pubmed25n0003.xml.gz"
+    broken.write_bytes(b"\x1f\x8b garbage")
+
+    result = _run_cli(*args, "stage")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Staged 2 file(s)" in result.stdout
+    assert "1 file(s) failed to stage; `load` will parse them itself" in result.stderr
+
+    load = _run_cli(*args, "load")
+    assert "Loaded 2 file(s)" in load.stdout  # from the two shards
+    assert load.returncode != 0 and "pubmed25n0003.xml.gz" in load.stderr  # parsed, refused
+
+    for path in (staged_download / "pubmed").rglob("pubmed25n000[12].xml.gz"):
+        path.unlink()
+    result = _run_cli(*args, "stage", "--force")
+    assert result.returncode != 0
+    assert "every file failed to stage (1)" in result.stderr

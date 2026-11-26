@@ -117,7 +117,9 @@ construction, since both build them with the same code and differ only in
 whether the rows reach DuckDB through memory or through a Parquet file; a test
 loads the fixtures both ways and compares every table. `load --no-stage`
 ignores the shards and parses every file itself, which is the pre-v1.3
-behaviour.
+behaviour. A file that fails to stage is only a warning, since `load` parses
+any file without a shard itself; `stage` exits non-zero only when no file
+stages at all.
 
 The export finishes by writing `metadata.json` into the output directory: the
 data model version, the record count, the corpus cutoff (the last file loaded,
