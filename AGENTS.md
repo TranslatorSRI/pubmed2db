@@ -161,10 +161,11 @@ explains its part; this table is only a map.
   `scripts/benchmark_load.py --synthetic` grew a database to 26 GB on a
   laptop and DuckDB's whole per-file cost (delete, insert, commit) stayed
   under a second, so the cluster's figures are its environment. The first
-  staged load there (2026nov25) named it: DuckDB's whole cost at full corpus
-  size was 0.6 s/file, while a 30,000-article file took a parse worker
-  70–105 s, ~5x a laptop core (`slurm/README.md`, "Running `load`: how
-  long?"). Hence `stage`:
+  staged load there (2026nov25) put DuckDB's cost at full corpus size at
+  0.6 s/file in one group. What grew in the serial loader was not the
+  parse, which does not depend on the database's size; the leading candidate
+  is its transaction per file, each of which checkpointed (`slurm/README.md`,
+  "Running `load`: how long?"). Hence `stage`:
   `pubmed2db stage --workers N` parses in a spawn-context pool with no
   database open (spawn, not fork: pyarrow's thread pools do not survive a
   fork; a `ProcessPoolExecutor`, not `multiprocessing.Pool`, which waits

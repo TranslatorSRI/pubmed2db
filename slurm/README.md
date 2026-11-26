@@ -139,10 +139,13 @@ above this run's, which had at most two files per worker. Read `--time` off
 the progress line's `s/file`, which is per *completed* file across all
 workers.
 
-The parse is much slower per core on the cluster than on a laptop: ~2,150
-articles/s of CPU locally, against 290–430 articles/s per worker on the
-cluster with 16 running (a 30,000-article file in 70–105 s). That is most of
-what the serial `load` spent per file there; see "Running `load`: how long?".
+Workers on the cluster slow each other down. With 16 running, each parsed
+290–430 articles/s (a 30,000-article file in 70–105 s), against ~2,150
+articles/s of CPU on a laptop. That is not the cluster's single-stream
+speed: the serial `load` parsed *and* inserted such a file in ~30 s on an
+empty database, so 16 at once cost each worker 2–3.5x. Whether that is the
+shared filesystem the XML and shards live on, memory bandwidth or
+hyperthreaded CPUs has not been measured; fewer workers might lose little.
 At this run's rate across the job, ~4,300 articles/s including the idle tail,
 the whole corpus (48.3M article versions) is ~3 h on 16 workers; at the
 steady-state rate with every worker busy, ~2 h. Either fits the 4 h limit,
@@ -383,13 +386,14 @@ posted since, all in one group:
 loaded 26 staged file(s): delete 0.01s · insert 15.16s (abstract_text 2.89, article 2.15, mesh_qualifier 1.88) · registry 0.16s · commit 0.68s
 ```
 
-So DuckDB's whole cost on the cluster's filesystem, at full size, was
-0.6 s/file, close to the laptop's 0.4 s; the filesystem under the database is
-not where the serial load's time went. The parse is: a 30,000-article file
-took a `stage` worker 70–105 s, against ~14 s of laptop CPU (see "Running
-`stage`"). What this run cannot separate is how much of the serial loader's
-time was its per-file commit, which checkpointed on every file at DuckDB's
-default threshold; the staged load commits once a group. `delete` is near
+So DuckDB's cost on the cluster, in one group at full size, was 0.6 s/file,
+close to the laptop's 0.4 s. What grew in the serial loader, from 30 to
+~65 s/file, was not the parse, which does not depend on the database's size.
+The leading candidate is its transaction per file, which checkpointed on
+every file at DuckDB's default threshold, where the staged load commits once
+a group with a 4GB threshold. This run cannot separate the two; a
+`load --no-stage` of a few files at full size, with its per-phase `loaded`
+lines, would. `delete` is near
 zero because none of the 26 files had been loaded before. v1.2's 6.6-minute
 first file did not recur in either step: `stage`'s first file finished in
 8.6 s and `load`'s one group in 16 s.
