@@ -126,14 +126,27 @@ need loading; the workers never touch it. That is the whole reason it is a
 separate step: DuckDB has a single writer, so the serial `load` spent a day
 parsing files one at a time in the same process that inserted them (#68).
 
-Memory is per worker. The parse of a 30,000-article baseline file peaks at
-~1.1 GiB now that it streams the XML (#25; it was 3.7 GiB with the whole tree),
-plus the Arrow tables being written: budget ~1.5 GiB per worker, with
-headroom. Each `staged` line in the log carries its worker's peak RSS;
-read the next run's `--mem` off those and `--time` off the progress line's
-`s/file`, which is per *completed* file across all workers. On a laptop core
-the parse is ~7 s/file, so the 2026 corpus (1,636 files) is ~3 h of CPU,
-divided across however many workers the header grants, before I/O.
+Memory is per worker. On a laptop the parse of a 30,000-article baseline
+file peaks at ~1.1 GiB now that it streams the XML (#25; it was 3.7 GiB with
+the whole tree), and a worker at ~1.6 GiB with the Arrow tables it writes. On
+the cluster the same size of file took a worker to 1.8–2.4 GiB, the top of
+that range on a worker's *first* file, so it is not growth across files
+(2026nov25, below). Budget 3 GiB per worker: 48G for 16. Each `staged` line
+in the log carries its worker's peak RSS, a high-water mark over every file
+that worker has parsed, since workers live for the whole run; read the next
+run's `--mem` off those, and watch whether a full run's later files climb
+above this run's, which had at most two files per worker. Read `--time` off
+the progress line's `s/file`, which is per *completed* file across all
+workers.
+
+The parse is much slower per core on the cluster than on a laptop: ~2,150
+articles/s of CPU locally, against 290–430 articles/s per worker on the
+cluster with 16 running (a 30,000-article file in 70–105 s). That is most of
+what the serial `load` spent per file there; see "Running `load`: how long?".
+At this run's rate across the job, ~4,300 articles/s including the idle tail,
+the whole corpus (48.3M article versions) is ~3 h on 16 workers; at the
+steady-state rate with every worker busy, ~2 h. Either fits the 4 h limit,
+but measure it on the first full stage.
 
 The shards are transient: `load` deletes each one as its transaction commits,
 then any it had no use for (a file already loaded, or no longer downloaded),
@@ -160,7 +173,19 @@ The two loads gave identical tables, compared with `EXCEPT ALL` both ways
 over all 19.25M rows and the registry. The staged insert ran 0.2 s/file in
 groups of 10 (`loaded 10 staged file(s): delete 0.01s · insert 1.88s ...`);
 the serial run is the parse, at ~10 s/file on a machine also running a
-benchmark. The first cluster run replaces this table.
+benchmark.
+
+**On the cluster** so far only a partial run: the 2026nov25 build (v1.3,
+commit `9628791`) continued the 2026nov08 database and staged the 26 update
+files posted since (n1722–n1747, 537,325 articles), on a `compute` node with
+`--mem=32G` and 16 workers:
+
+| Run | Workers | Files | Wall | Per worker | Worker peak RSS | Parent peak RSS |
+| --- | --- | --- | --- | --- | --- | --- |
+| `stage` | 16 | 26 (537,325 articles) | 2m 04s (4.8 s/file) | 30,000 articles in 70–105 s | 0.4–2.4 GiB (1.8–2.4 for 30,000-article files) | 0.2 GiB |
+
+No file failed to stage. A from-scratch run, every worker on a
+30,000-article baseline file, is the measurement still missing (#68).
 
 ## Running `load`: how much memory? (`--mem`)
 
@@ -340,11 +365,38 @@ inserts after it slower and a fresh load has nothing to delete (which retired
 `--skip-delete`: a synthetic file now skips them without it). Groups of
 files per transaction are what the staged load does anyway. The cluster's 30 s/file on an
 empty database and ~65 s at the end of the baseline are therefore its
-environment (the filesystem under the database file, most likely), not the
-insert, and the per-phase figures in the next cluster log are what will name
-it. That is also why the parse was moved out rather than the insert tuned:
-with the insert this cheap, parallelizing the parse and committing fewer,
-larger transactions is what is left.
+environment, not the insert. That is also why the parse was moved out rather
+than the insert tuned: with the insert this cheap, parallelizing the parse and
+committing fewer, larger transactions is what is left.
+
+**On the cluster, at full corpus size (2026nov25).** The first staged load
+on the cluster bore that out. It continued the 2026nov08 database (48.3M
+article versions, 41.5M latest documents once loaded) with the 26 update files
+posted since, all in one group:
+
+| Build | Files | How | Load wall | Per file | Peak RSS |
+| --- | --- | --- | --- | --- | --- |
+| 2026nov08 (v1.2) | 31 (n1691–n1721) | serial, parse included | 41m 02s | 79 s (first file 6.6 min) | 13.1 GiB |
+| 2026nov25 (v1.3) | 26 (n1722–n1747) | staged, one group | **16 s**, after a 2m 04s `stage` | 0.6 s | 2.2 GiB |
+
+```text
+loaded 26 staged file(s): delete 0.01s · insert 15.16s (abstract_text 2.89, article 2.15, mesh_qualifier 1.88) · registry 0.16s · commit 0.68s
+```
+
+So DuckDB's whole cost on the cluster's filesystem, at full size, was
+0.6 s/file, close to the laptop's 0.4 s; the filesystem under the database is
+not where the serial load's time went. The parse is: a 30,000-article file
+took a `stage` worker 70–105 s, against ~14 s of laptop CPU (see "Running
+`stage`"). What this run cannot separate is how much of the serial loader's
+time was its per-file commit, which checkpointed on every file at DuckDB's
+default threshold; the staged load commits once a group. `delete` is near
+zero because none of the 26 files had been loaded before. v1.2's 6.6-minute
+first file did not recur in either step: `stage`'s first file finished in
+8.6 s and `load`'s one group in 16 s.
+
+`load --no-preserve-insertion-order` saved ~0.2 s/file of insert locally; at
+0.6 s/file all told, that is a few minutes of a full load, not worth a
+measured reload.
 
 Since v1.3 `load` inserts staged files `LOAD_FILES_PER_TXN` (50) per
 transaction, and its progress line counts staged files; the rate to size the

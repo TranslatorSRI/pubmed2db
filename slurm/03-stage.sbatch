@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=pubmed2db-stage
 #SBATCH --output=data/logs/%x-%j.out
-#SBATCH --mem=32G
+#SBATCH --mem=48G
 #SBATCH --cpus-per-task=16
 #SBATCH --time=04:00:00
 #
@@ -11,12 +11,12 @@
 # step use every CPU of its allocation: DuckDB has a single writer, and a
 # serial parse-and-insert of the corpus was a day (#68).
 #
-# Memory is per worker: the parse of a 30,000-article baseline file peaks at
-# ~1.1 GiB since it streams the XML (#25), plus the Arrow tables it writes,
-# so 16 workers under 32G leaves headroom; measure the first run's
-# "worker peak" figures in the log and resize. The parse is ~7 s/file on a
-# laptop core, so the whole 2026 corpus (1,636 files) is ~3 h of CPU, which
-# 16 workers cover many times over inside the limit above.
+# Memory is per worker: on the cluster a 30,000-article file took a worker
+# to 1.8-2.4 GiB (2026nov25), so 48G is 3 GiB for each of 16; 32G would not
+# have held 16 of those at once. A worker's peak is its high-water mark over
+# every file it has parsed, so check a full run's later "worker peak" figures
+# against that. The same run's rate puts the whole corpus at ~2-3 h on 16
+# workers: slurm/README.md, "Running `stage`" has both.
 #
 # The progress lines report s/file, elapsed and an ETA; each staged file's
 # line carries its worker's peak RSS. Read the next run's --time off the
