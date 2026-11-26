@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_full_history_retained(loaded_con):
     # PMID 1001 exists in both the baseline and the update file.
@@ -408,6 +410,111 @@ def test_load_logs_phase_timings(con, write_pubmed_gz, caplog):
     assert all(seconds > 0 for seconds in record.inserts.values())
     assert record.n_rows == sum(stored.values())
     assert record.total <= wall
+
+
+def test_build_batches_types_every_column_from_the_schema(write_pubmed_gz):
+    """Types come from schema.sql, never from inference: a column that is NULL
+    throughout one file must still carry the table's type, or its Parquet
+    shard could not be read beside the others (stage), and DATE and BOOLEAN
+    must be the real types, not strings."""
+    import pyarrow as pa
+
+    from pubmed2db.db import parse_file_name
+    from pubmed2db.load import _VERSIONED_TABLES, build_batches, table_schemas
+    from pubmed2db.parse import ParsedFile, parse_file
+
+    name = "pubmed25n0001.xml.gz"
+    parsed = parse_file(write_pubmed_gz("pubmed25n0001"))
+    batches, n_articles = build_batches(parsed, name, parse_file_name(name)[2])
+
+    assert n_articles == len(parsed.articles)
+    assert set(batches) == set(_VERSIONED_TABLES)
+    for table, batch in batches.items():
+        assert batch.schema == table_schemas()[table], table
+    assert batches["article"].schema.field("date_completed").type == pa.date32()
+    assert batches["author"].schema.field("valid").type == pa.bool_()
+    assert "loaded_at" not in batches["article"].schema.names
+
+    # No rows at all still gives every table, typed.
+    empty, n = build_batches(ParsedFile(), name, parse_file_name(name)[2])
+    assert n == 0
+    assert all(t.num_rows == 0 for t in empty.values())
+    assert empty["deleted_pmid"].schema.field("pmid").type == pa.int64()
+
+
+def test_build_batches_refuses_a_row_longer_than_its_table(write_pubmed_gz, monkeypatch):
+    """A value appended to a row before its column reaches schema.sql must
+    fail the file, as the positional INSERT used to, not vanish silently."""
+    from pubmed2db import load as load_module
+    from pubmed2db.db import parse_file_name
+    from pubmed2db.parse import parse_file
+
+    real = load_module._article_rows
+
+    def one_too_many(*args):
+        rows = real(*args)
+        rows["article"] = [(*row, "extra") for row in rows["article"]]
+        return rows
+
+    monkeypatch.setattr(load_module, "_article_rows", one_too_many)
+    name = "pubmed25n0001.xml.gz"
+    parsed = parse_file(write_pubmed_gz("pubmed25n0001"))
+    with pytest.raises(ValueError, match="zip"):
+        load_module.build_batches(parsed, name, parse_file_name(name)[2])
+
+
+def test_build_batches_keeps_the_last_occurrence_of_a_repeated_pmid(write_pubmed_gz):
+    """A PMID repeated within one file is stored once, from its last occurrence,
+    so (pmid, source_file) identifies a version."""
+    from pubmed2db.db import parse_file_name
+    from pubmed2db.load import build_batches
+    from pubmed2db.parse import parse_file
+
+    name = "pubmed25n0001.xml.gz"
+    parsed = parse_file(write_pubmed_gz("pubmed25n0001"))
+    first = parsed.articles[0]
+    first.article.title = "an earlier version of the same record"
+    parsed.articles.append(parsed.articles.pop(0))  # same PMID now last
+    parsed.articles.insert(0, first)
+    # The list now holds the PMID twice: the edited copy first, the original last.
+    assert [a.pubmed for a in parsed.articles].count(first.pubmed) == 2
+
+    batches, n_articles = build_batches(parsed, name, parse_file_name(name)[2])
+    titles = dict(
+        zip(
+            batches["article"].column("pmid").to_pylist(),
+            batches["article"].column("article_title").to_pylist(),
+        )
+    )
+    assert n_articles == len(titles) == len(parsed.articles) - 1
+    assert titles[first.pubmed] == "an earlier version of the same record"
+
+
+def test_a_never_loaded_file_skips_the_delete(con, write_pubmed_gz, monkeypatch):
+    """A file with no processed_at has no rows, so its DELETEs are skipped (they
+    make the inserts after them slower); a reload still deletes."""
+    from pubmed2db import load as load_module
+    from pubmed2db.load import load_file
+
+    deleted: list[str] = []
+    real = load_module.delete_file_rows
+    monkeypatch.setattr(
+        load_module, "delete_file_rows", lambda c, f: (deleted.append(f), real(c, f))
+    )
+    load_file(con, write_pubmed_gz("pubmed25n0001"), kind="baseline")
+    assert deleted == []
+    load_file(con, write_pubmed_gz("pubmed25n0001"), kind="baseline")
+    assert deleted == ["pubmed25n0001.xml.gz"]
+    assert con.execute("SELECT count(*) FROM article").fetchone()[0] == 3
+
+
+def test_timing_omits_a_build_it_did_not_measure():
+    """A staged group's rows were built by `stage`, so its `loaded` line must
+    not report a build of 0.00 s as if one had been measured."""
+    from pubmed2db.load import LoadTiming
+
+    assert "build" not in LoadTiming(delete=0.1, inserts={"article": 0.2}).describe()
+    assert "build 0.50s" in LoadTiming(build=0.5, inserts={"article": 0.2}).describe()
 
 
 def test_rollback_after_a_failed_commit_keeps_the_commit_error():

@@ -17,23 +17,95 @@ from .db import connect
 log = logging.getLogger(__name__)
 
 
-def _load_local(con, *, force: bool, require_files: bool) -> None:
+def _load_local(
+    con,
+    *,
+    force: bool,
+    require_files: bool,
+    stage_dir: str | None = None,
+    files_per_txn: int | None = None,
+    keep_stage: bool = False,
+) -> None:
     """Load every downloaded file, reporting the counts the CLI prints.
 
     Scans the download directories rather than one sync's results, so files
     downloaded by an earlier run aren't skipped. Shared by `load` and `update`,
-    which differ only in whether an empty directory is an error.
+    which differ only in whether an empty directory is an error. Files with a
+    fresh shard under ``stage_dir`` (from `pubmed2db stage`) are inserted from
+    it; the rest are parsed here. Then, unless ``keep_stage``, shards nothing
+    will insert are removed (`stage.prune`).
     """
     from .download import local_files
-    from .load import load_files
+    from .load import DEFAULT_FILES_PER_TXN, load_files
+    from .stage import find_shards, prune
 
     files = local_files()
     if require_files and not files:
         raise click.ClickException("No downloaded files found; run `pubmed2db download` first.")
-    loaded, failed = load_files(con, files, force=force)
+    shards = find_shards(stage_dir, [path for path, _ in files]) if stage_dir else {}
+    loaded, failed = load_files(
+        con,
+        files,
+        force=force,
+        shards=shards,
+        files_per_txn=files_per_txn or DEFAULT_FILES_PER_TXN,
+        keep_shards=keep_stage,
+    )
+    if stage_dir and not keep_stage:
+        prune(stage_dir, [path for path, _ in files], con)
     click.echo(f"Loaded {loaded} file(s); {len(files)} local file(s) checked.")
     if failed:
         raise click.ClickException(f"{len(failed)} file(s) failed to load: {', '.join(failed)}")
+
+
+def _stage_local(ctx: click.Context, *, workers: int | None, force: bool) -> None:
+    """Stage every downloaded file that needs it, for the `stage` command.
+
+    A file that fails to stage is a warning, not a failed step: `load` parses
+    any file without a shard itself, so failing here would only cancel the
+    chained `load` (Slurm's ``afterok``) that would have handled it. If no
+    file stages at all, the step fails: that is the stage itself broken (an
+    unwritable stage directory, say), and a `load` left to parse the whole
+    corpus serially would take a day.
+    """
+    from .download import local_files
+    from .stage import default_workers, stage_files
+
+    files = local_files()
+    if not files:
+        raise click.ClickException("No downloaded files found; run `pubmed2db download` first.")
+    # Read-only, and only to skip files already loaded: the workers never
+    # touch the database. A database that is not there yet means stage it all,
+    # and so does one that cannot be opened: another process (a running
+    # `load`) holding its lock is a duckdb.IOException, not a ClickException.
+    con = None
+    if Path(ctx.obj["db"]).is_file():
+        try:
+            con = _connect(ctx, read_only=True)
+        except (click.ClickException, duckdb.Error) as exc:
+            log.warning("cannot read %s (%s); staging every file", ctx.obj["db"], exc)
+    try:
+        staged, failed = stage_files(
+            files,
+            stage_dir=ctx.obj["stage_dir"],
+            workers=workers or default_workers(),
+            force=force,
+            con=con,
+        )
+    finally:
+        if con is not None:
+            con.close()
+    click.echo(f"Staged {staged} file(s); {len(files)} local file(s) checked.")
+    if failed and not staged:
+        raise click.ClickException(
+            f"every file failed to stage ({len(failed)}): {', '.join(failed)}"
+        )
+    if failed:
+        click.echo(
+            f"Warning: {len(failed)} file(s) failed to stage; `load` will parse them "
+            f"itself: {', '.join(failed)}",
+            err=True,
+        )
 
 
 def _sync_options(f):
@@ -104,6 +176,23 @@ def _sync_options(f):
         "records and the Arrow batch)."
     ),
 )
+@click.option(
+    "--checkpoint-threshold",
+    default=None,
+    envvar="PUBMED2DB_DUCKDB_CHECKPOINT_THRESHOLD",
+    show_envvar=True,
+    help=(
+        "WAL size at which a COMMIT also checkpoints, e.g. '4GB' (default: DuckDB's "
+        "16 MiB, which makes every file's COMMIT a checkpoint)."
+    ),
+)
+@click.option(
+    "--stage-dir",
+    default=None,
+    envvar="PUBMED2DB_STAGE_DIR",
+    show_envvar=True,
+    help="Where `stage` writes per-file Parquet shards (default: <data-dir>/stage).",
+)
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging.")
 @click.pass_context
 def main(
@@ -113,6 +202,8 @@ def main(
     threads: int | None,
     temp_dir: str | None,
     memory_limit: str | None,
+    checkpoint_threshold: str | None,
+    stage_dir: str | None,
     verbose: bool,
 ) -> None:
     """Download, store, and export PubMed abstracts."""
@@ -125,9 +216,11 @@ def main(
     os.environ["PYSTOW_HOME"] = str(Path(data_dir).resolve())
     ctx.ensure_object(dict)
     ctx.obj["db"] = db or str(Path(data_dir) / "pubmed.duckdb")
+    ctx.obj["stage_dir"] = stage_dir or str(Path(data_dir) / "stage")
     ctx.obj["threads"] = threads
     ctx.obj["temp_dir"] = temp_dir
     ctx.obj["memory_limit"] = memory_limit
+    ctx.obj["checkpoint_threshold"] = checkpoint_threshold
     ctx.obj["verbose"] = verbose
 
 
@@ -145,20 +238,22 @@ def _connect(ctx: click.Context, *, read_only: bool = False):
             threads=ctx.obj["threads"],
             temp_directory=ctx.obj["temp_dir"],
             memory_limit=ctx.obj["memory_limit"],
+            checkpoint_threshold=ctx.obj["checkpoint_threshold"],
             read_only=read_only,
         )
     except IncompatibleDatabase as exc:
         raise click.ClickException(f"{ctx.obj['db']}: {exc}") from exc
-    memory_limit, threads, temp_directory = con.execute(
+    memory_limit, threads, temp_directory, checkpoint_threshold = con.execute(
         "SELECT current_setting('memory_limit'), current_setting('threads'), "
-        "current_setting('temp_directory')"
+        "current_setting('temp_directory'), current_setting('checkpoint_threshold')"
     ).fetchone()
     log.info(
-        "DuckDB %s: memory_limit=%s, threads=%s, temp_directory=%s",
+        "DuckDB %s: memory_limit=%s, threads=%s, temp_directory=%s, checkpoint_threshold=%s",
         duckdb.__version__,
         memory_limit,
         threads,
         temp_directory,
+        checkpoint_threshold,
     )
     return con
 
@@ -200,17 +295,81 @@ def journals(ctx: click.Context) -> None:
         click.echo(f"Loaded {n} journals.")
 
 
+_WORKERS_OPTION = click.option(
+    "--workers",
+    type=click.IntRange(min=1),
+    default=None,
+    envvar="PUBMED2DB_STAGE_WORKERS",
+    show_envvar=True,
+    help="Files parsed at once (default: the Slurm allocation's --cpus-per-task, or every CPU).",
+)
+
+
+@main.command()
+@_WORKERS_OPTION
+@click.option("--force", is_flag=True, help="Re-stage files even if already loaded or staged.")
+@click.pass_context
+def stage(ctx: click.Context, workers: int | None, force: bool) -> None:
+    """Parse downloaded files in parallel into Parquet shards for `load`.
+
+    Writes one directory per file under --stage-dir, which `load` inserts in
+    bulk and deletes. Files already loaded and up to date are skipped, as are
+    files with a fresh shard. No database is written here, so this step can
+    use every CPU of an allocation while `load` keeps the single writer.
+    """
+    _stage_local(ctx, workers=workers, force=force)
+
+
 @main.command()
 @click.option("--force", is_flag=True, help="Reload files even if already up to date.")
+@click.option(
+    "--files-per-txn",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Staged files per transaction (default: 50).",
+)
+@click.option("--no-stage", is_flag=True, help="Ignore staged shards; parse every file here.")
+@click.option(
+    "--keep-stage",
+    is_flag=True,
+    help="Leave shards in place: those just loaded, and those for files already up to date.",
+)
+@click.option(
+    "--no-preserve-insertion-order",
+    is_flag=True,
+    help=(
+        "Let DuckDB reorder rows within a transaction for a parallel insert. Nothing "
+        "downstream reads insertion order, but a file's rows then stop being contiguous, "
+        "which is what keeps a reload's DELETE cheap; measure before adopting."
+    ),
+)
 @click.pass_context
-def load(ctx: click.Context, force: bool) -> None:
+def load(
+    ctx: click.Context,
+    force: bool,
+    files_per_txn: int | None,
+    no_stage: bool,
+    keep_stage: bool,
+    no_preserve_insertion_order: bool,
+) -> None:
     """Parse downloaded files into the database (full history).
 
-    Loads article data only. Run `pubmed2db journals` to (re)load the journal
-    dimension used at export time, or `pubmed2db update` to do everything.
+    Loads article data only. Files staged by `pubmed2db stage` are inserted
+    from their shards, in groups; the rest are parsed one at a time. Run
+    `pubmed2db journals` to (re)load the journal dimension used at export
+    time, or `pubmed2db update` to do everything.
     """
     with closing(_connect(ctx)) as con:
-        _load_local(con, force=force, require_files=True)
+        if no_preserve_insertion_order:
+            con.execute("SET preserve_insertion_order = false")
+        _load_local(
+            con,
+            force=force,
+            require_files=True,
+            stage_dir=None if no_stage else ctx.obj["stage_dir"],
+            files_per_txn=files_per_txn,
+            keep_stage=keep_stage,
+        )
 
 
 _PARQUET_REMOVED = (
@@ -559,6 +718,7 @@ def status(ctx: click.Context) -> None:
 
 @main.command()
 @_sync_options
+@_WORKERS_OPTION
 @click.option("--force", is_flag=True, help="Reload files even if already up to date.")
 @click.pass_context
 def update(
@@ -567,9 +727,10 @@ def update(
     updates: bool,
     limit: int | None,
     verify: bool,
+    workers: int | None,
     force: bool,
 ) -> None:
-    """Download, refresh journals, and load — for scheduled runs."""
+    """Download, refresh journals, stage, and load — for scheduled runs."""
     from .load import load_journals
 
     with closing(_connect(ctx)) as con:
@@ -583,7 +744,28 @@ def update(
             click.echo(f"Loaded {n} journals.")
         except Exception as exc:  # noqa: BLE001 - any failure here is non-fatal
             click.echo(f"Journal refresh failed ({exc}); keeping the existing journals.", err=True)
-        _load_local(con, force=force, require_files=False)
+        # Stage before loading, with this connection answering which files
+        # need it; the workers themselves never open the database.
+        from .download import local_files
+        from .stage import default_workers, stage_files
+
+        files = local_files()
+        if files:
+            staged, failed = stage_files(
+                files,
+                stage_dir=ctx.obj["stage_dir"],
+                workers=workers or default_workers(),
+                force=force,
+                con=con,
+            )
+            click.echo(f"Staged {staged} file(s).")
+            if failed:  # the load below parses them itself
+                click.echo(
+                    f"Warning: {len(failed)} file(s) failed to stage; parsing them in the "
+                    f"load instead: {', '.join(failed)}",
+                    err=True,
+                )
+        _load_local(con, force=force, require_files=False, stage_dir=ctx.obj["stage_dir"])
 
 
 if __name__ == "__main__":

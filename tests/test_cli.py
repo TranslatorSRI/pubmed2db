@@ -458,3 +458,131 @@ def test_version_is_pyprojects():
 
     pyproject = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())
     assert __version__ == pyproject["project"]["version"]
+
+
+def test_cli_stage_then_load(staged_download):
+    """`stage` then `load`, both flag-free, is the pipeline's shape from v1.3:
+    the shards are consumed and the registry reads as a direct load's would."""
+    db_path = staged_download / "cli.duckdb"
+    data = ("--data-dir", str(staged_download), "--db", str(db_path))
+    result = _run_cli(*data, "stage", "--workers", "2")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Staged 2 file(s); 2 local file(s) checked." in result.stdout
+    assert (staged_download / "stage" / "pubmed25n0001").is_dir()
+
+    result = _run_cli(*data, "load")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Loaded 2 file(s); 2 local file(s) checked." in result.stdout
+    assert "fresh shard(s) found" in result.stderr
+    assert not (staged_download / "stage" / "pubmed25n0001").exists()
+
+    # A second stage has nothing to do: the database says both are loaded.
+    result = _run_cli(*data, "stage")
+    assert "Staged 0 file(s)" in result.stdout, result.stdout + result.stderr
+
+    from pubmed2db.db import connect
+
+    con = connect(db_path)
+    try:
+        assert con.execute("SELECT count(*) FROM latest_article").fetchone()[0] == 2  # 1002 deleted
+        assert (
+            con.execute(
+                "SELECT count(*) FROM source_file WHERE processed_at IS NOT NULL"
+            ).fetchone()[0]
+            == 2
+        )
+    finally:
+        con.close()
+
+
+def test_cli_load_no_stage_ignores_shards(staged_download):
+    db_path = staged_download / "cli.duckdb"
+    data = ("--data-dir", str(staged_download), "--db", str(db_path))
+    assert _run_cli(*data, "stage", "--workers", "1").returncode == 0
+    result = _run_cli(*data, "load", "--no-stage")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Loaded 2 file(s)" in result.stdout
+    assert "fresh shard(s)" not in result.stderr
+    assert (staged_download / "stage" / "pubmed25n0001").is_dir()
+
+
+def test_connect_checkpoint_threshold_replaces_the_default(tmp_path):
+    """The setting that stops every file's COMMIT from checkpointing reaches
+    DuckDB, and the group option carries it (the load step passes it by env)."""
+    from pubmed2db.db import connect
+
+    con = connect(tmp_path / "default.duckdb")
+    try:
+        default = _as_bytes(_setting(con, "checkpoint_threshold"))
+    finally:
+        con.close()
+    con = connect(tmp_path / "big.duckdb", checkpoint_threshold="4GB")
+    try:
+        assert _as_bytes(_setting(con, "checkpoint_threshold")) > default
+    finally:
+        con.close()
+
+    result = _run_cli(
+        "--db", str(tmp_path / "cli.duckdb"), "--checkpoint-threshold", "2GB", "status"
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "checkpoint_threshold=1.8 GiB" in result.stderr or "checkpoint_threshold=2" in (
+        result.stderr
+    )
+
+
+def test_cli_stage_runs_beside_a_process_holding_the_database(staged_download):
+    """`stage` only reads the database to skip loaded files; another process
+    holding its lock (a running `load`) means staging every file, not a crash."""
+    from pubmed2db.db import connect
+
+    db_path = staged_download / "cli.duckdb"
+    holder = connect(db_path)  # this process holds the lock, as `load` would
+    try:
+        result = _run_cli("--data-dir", str(staged_download), "--db", str(db_path), "stage")
+    finally:
+        holder.close()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "staging every file" in result.stderr
+    assert "Staged 2 file(s)" in result.stdout
+
+
+def test_cli_load_removes_the_shards_it_leaves_unused(staged_download):
+    """`--keep-stage` keeps every shard; without it, `load` removes the ones
+    for files already up to date, which nothing would otherwise delete."""
+    db_path = staged_download / "cli.duckdb"
+    args = ("--data-dir", str(staged_download), "--db", str(db_path))
+    stage_dir = staged_download / "stage"
+    assert _run_cli(*args, "stage").returncode == 0
+    result = _run_cli(*args, "load", "--keep-stage")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert len([p for p in stage_dir.iterdir() if p.is_dir()]) == 2
+    result = _run_cli(*args, "load")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "removed 2 shard(s)" in result.stderr
+    assert not any(stage_dir.iterdir())
+
+
+def test_cli_stage_warns_on_a_partial_failure_and_fails_on_a_total_one(staged_download):
+    """`load` parses any file without a shard, so one file failing to stage
+    must not fail the step (and cancel the chained `load` with it). Every file
+    failing is the stage itself broken, and still fails."""
+    db_path = staged_download / "cli.duckdb"
+    args = ("--data-dir", str(staged_download), "--db", str(db_path))
+    broken = staged_download / "pubmed" / "updates" / "pubmed25n0003.xml.gz"
+    broken.write_bytes(b"\x1f\x8b garbage")
+
+    result = _run_cli(*args, "stage")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Staged 2 file(s)" in result.stdout
+    assert "1 file(s) failed to stage; `load` will parse them itself" in result.stderr
+
+    load = _run_cli(*args, "load")
+    assert "Loaded 2 file(s)" in load.stdout  # from the two shards
+    assert load.returncode != 0 and "pubmed25n0003.xml.gz" in load.stderr  # parsed, refused
+
+    for path in (staged_download / "pubmed").rglob("pubmed25n000[12].xml.gz"):
+        path.unlink()
+    result = _run_cli(*args, "stage", "--force")
+    assert result.returncode != 0
+    assert "every file failed to stage (1)" in result.stderr

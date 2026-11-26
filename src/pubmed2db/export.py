@@ -549,7 +549,7 @@ def _remove_finished_mark(out_dir: Path, overwrite: bool) -> None:
     export is about to delete that one's files, the only local copy of its
     build until ``scripts/archive_build.py`` has moved it (#24). A partial
     export, with no mark, is swept without asking. The check is here rather
-    than in ``04-export.sbatch`` so every caller gets it.
+    than in ``05-export.sbatch`` so every caller gets it.
     """
     if not overwrite and (out_dir / METADATA_FILE).exists():
         raise FileExistsError(
@@ -632,7 +632,7 @@ _UNORDERED = {"preserve_insertion_order": False}
 #: jemalloc returns memory by remapping it PROT_NONE, which splits mappings,
 #: and the suspect for two exports refused by mmap at ~68 GiB RSS is the
 #: process running out of them (vm.max_map_count). Held instead, the freed
-#: memory stays mapped for jemalloc to reuse. 04-export.sbatch turns off
+#: memory stays mapped for jemalloc to reuse. 05-export.sbatch turns off
 #: jemalloc's own time-based release to match (EXPORT_JE_MALLOC_CONF). With
 #: both, the 2026-11-09 export finished, but RSS plateaued ~55 GiB above
 #: memory_limit, which does not count held memory: --mem has to cover it. The
