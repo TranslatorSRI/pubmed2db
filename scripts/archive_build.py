@@ -42,8 +42,10 @@ validated (``--without-validation`` to override), and one whose
 ``source_file.csv`` it cannot write, say because a running ``load`` holds the
 database (``--without-source-file`` to override: once the database is wiped
 that record is gone). It never copies the
-database: at 76 GB that is published straight from ``data/pubmed.duckdb``, and
-the script prints the ``rsync`` lines for both.
+database: at 76 GB it is published with only some builds, straight from
+``data/pubmed.duckdb`` (docs/data-model/README.md, "What pubmed2db produces").
+The script prints the ``rsync`` line for the build directory and, when the
+database is there, an optional second one for it.
 """
 
 from __future__ import annotations
