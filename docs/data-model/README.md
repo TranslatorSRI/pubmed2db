@@ -47,7 +47,7 @@ current code refuses their databases, and their tables differ in the ways
 
 | Output | What it holds | Use it when |
 | --- | --- | --- |
-| `pubmed.duckdb` | Every table, with **every version** of every article, plus `latest_*` views of the current versions | You want history, joins across everything, or to run pubmed2db's own steps |
+| `pubmed.duckdb` | Every table, with **every version** of every article, plus `latest_*` views of the current versions. Published with only some builds (see below) | You want history, joins across everything, or to run pubmed2db's own steps |
 | NDJSON export (`pubmed_metadata_*.ndjson.gz`) | One JSON object per current PMID, with the [DocumentMetadataAPI](https://github.com/NCATSTranslator/DocumentMetadataAPI) field names | You need citation metadata, identifiers and abstracts, and nothing else (Babel, Node Annotator) |
 
 Every export directory also holds `metadata.json`. It records:
@@ -72,10 +72,25 @@ Builds made by the Translator team are published at
 `https://stars.renci.org/var/babel_outputs/pubmed2db/<build>/`. A build is named
 for its cutoff: the UTC date NCBI posted the last file it loaded
 (`metadata.json`'s `corpus.build_name`). The two pre-1.0 builds, `2026aug21`
-and `2026sep26`, were named for the day their export finished. The directory holds the
-database, the NDJSON shards (with their `metadata.json` and `SHA256SUMS` from
-data model 1.0 on, and `schema.json` from 1.1) and a `manifests/` directory with the validation report and
-a sorted list of the build's PMIDs.
+and `2026sep26`, were named for the day their export finished. Every build's
+directory holds the NDJSON shards (with their `metadata.json` and
+`SHA256SUMS` from data model 1.0 on, and `schema.json` from 1.1) and a
+`manifests/` directory with the validation report and a sorted list of the
+build's PMIDs. From `2026nov08` on, it normally also holds the build's Slurm
+logs (`logs/`) and a CSV of its `source_file` table: the PubMed files it
+loaded, with the MD5 NCBI published for each. A build archived without either
+can lack it, so check before relying on them.
+
+**The database is published with only some builds, and no build from data
+model 1.0 on has one yet.** At 76 GB for `2026sep26`, `pubmed.duckdb` is not
+copied to every build's directory. As of 2026-11-27, only `2026sep26` has
+one, and it predates the data model: current pubmed2db refuses to open it,
+and its tables differ from the ones described here in the ways
+[listed in the changelog](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/Changelog.md).
+DuckDB itself still opens it. List a build's directory before planning on its
+database. For a build without one, the NDJSON is all there is; a database of
+your own, built with pubmed2db from PubMed's files, holds whatever PubMed has
+published by the day you build it, not that build's cutoff.
 
 ### The size of a build
 
@@ -108,14 +123,16 @@ The per-version tables count every version, not just the current ones.
 
 ### Getting a build, and checking it
 
-**Download, don't query in place.** DuckDB can `ATTACH` a database over HTTPS
-read-only, but against this server even listing the tables of the 76 GB
-`2026sep26` database had not finished after five minutes (tried 2026-10-19).
+**Download a database, don't query it in place.** DuckDB can `ATTACH` a
+database over HTTPS read-only, but against this server even listing the
+tables of the 76 GB `2026sep26` database had not finished after five minutes
+(tried 2026-10-19).
 Download the files first.
 
 **Use HTTP/1.1, and resume.** The same day, an HTTP/2 transfer of that database
 dropped after 6 MB with `HTTP/2 stream 1 was not closed cleanly: INTERNAL_ERROR`.
-HTTP/1.1 with resume was reliable:
+HTTP/1.1 with resume was reliable. This only works for a build that publishes
+its database (above); for any other `<build>`, the server answers 404:
 
 ```bash
 BUILD=https://stars.renci.org/var/babel_outputs/pubmed2db/<build>
