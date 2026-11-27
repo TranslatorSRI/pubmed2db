@@ -287,7 +287,9 @@ def test_reexport_removes_stale_shards(loaded_con, tmp_path):
     # stem is DuckDB's business -- what matters is that exactly one shard is
     # left and it is the gzipped one this run wrote.
     survivors = sorted(
-        path.name for path in out.iterdir() if path.name not in ("metadata.json", "SHA256SUMS")
+        path.name
+        for path in out.iterdir()
+        if path.name not in ("metadata.json", "SHA256SUMS", "schema.json")
     )
     assert len(survivors) == 1, survivors
     assert survivors[0].endswith(".ndjson.gz")
@@ -362,6 +364,60 @@ def test_exports_describe_themselves_in_metadata_json(loaded_con, tmp_path):
     assert (out / "SHA256SUMS").read_text().splitlines() == [
         f"{f['sha256']}  {f['name']}" for f in meta["files"]
     ]
+
+
+def test_exports_describe_their_records_in_schema_json(loaded_con, write_pubmed_gz, tmp_path):
+    """An export carries its own field list, as the database carries its
+    comments (#72): a JSON Schema that a stock validator accepts every record
+    against, with every field described, in the record's order."""
+    from jsonschema import Draft202012Validator
+
+    from pubmed2db.export import JSON_FIELDS, export_json, file_sha256
+    from pubmed2db.load import load_file
+
+    for name in ("pubmed25n0004", "pubmed25n0005"):
+        load_file(loaded_con, write_pubmed_gz(name), kind="update")
+    out = tmp_path / "json"
+    files = export_json(loaded_con, out)
+    schema = json.loads((out / "schema.json").read_text())
+
+    Draft202012Validator.check_schema(schema)
+    assert list(schema["properties"]) == list(JSON_FIELDS) == schema["required"]
+    assert all(prop["description"] for prop in schema["properties"].values())
+    assert schema["properties"]["publication_types"]["items"]["required"] == ["id", "name"]
+
+    validator = Draft202012Validator(schema)
+    docs = _read_ndjson(files)
+    # The nested schemas are exercised, not just the strings.
+    assert any(doc["publication_types"] for doc in docs.values())
+    assert any(len(doc["identifiers"]) > 1 for doc in docs.values())
+    for doc in docs.values():
+        validator.validate(doc)
+    # And it is not a schema that accepts anything: a null where the export
+    # promises "" fails, as does a missing field.
+    sample = next(iter(docs.values()))
+    assert not validator.is_valid({**sample, "abstract": None})
+    assert not validator.is_valid({k: v for k, v in sample.items() if k != "pub_date"})
+
+    # metadata.json vouches for it under its own key, and SHA256SUMS stays
+    # shards only, so `sha256sum -c` still passes for a consumer who never
+    # downloads it (write_export_metadata says why).
+    meta = json.loads((out / "metadata.json").read_text())
+    assert meta["schema"]["name"] == "schema.json"
+    assert meta["schema"]["sha256"] == file_sha256(out / "schema.json")
+    assert "schema.json" not in {f["name"] for f in meta["files"]}
+    assert "schema.json" not in (out / "SHA256SUMS").read_text()
+
+
+def test_schema_json_refuses_a_type_it_cannot_describe():
+    """A field of a new DuckDB type fails here, not in a schema.json that
+    says the wrong thing about every record."""
+    import duckdb
+
+    from pubmed2db.export import _json_schema_type
+
+    with pytest.raises(ValueError, match="BIGINT"):
+        _json_schema_type(duckdb.sql("SELECT 1::BIGINT").types[0])
 
 
 def test_a_failed_re_export_does_not_look_finished(loaded_con, tmp_path, monkeypatch):

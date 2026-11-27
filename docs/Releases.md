@@ -24,7 +24,7 @@ once the release PR has merged.
 - **Y** for a release with substantial changes or improvements. This is the usual release, one per milestone (`v1.1.0`, `v1.2.0`).
 - **Z** for smaller improvements and fixes (`v1.1.1`). A Z release can still change output values, since a value fix never moves the data model version; its release notes say which values change and whether an existing database needs a reload, the same as a Y release's.
 
-**The data model version** (`datamodel.DATA_MODEL_VERSION`, 1.0.0 since the build after `2026sep26`) is what consumers pin. It is standard semantic versioning, defined in [`docs/data-model/README.md`](./data-model/README.md#versioning-and-stability):
+**The data model version** (`datamodel.DATA_MODEL_VERSION`, currently 1.1.0) is what consumers pin. It is standard semantic versioning, defined in [`docs/data-model/README.md`](./data-model/README.md#versioning-and-stability):
 
 - **minor:** only additions, including a guarantee that leaves every old reading correct;
 - **major:** anything renamed, removed, or changed in meaning so that an old reading is now wrong, however mildly;

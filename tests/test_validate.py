@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import pubmed2db.validate as validate
+from pubmed2db.datamodel import DATA_MODEL_VERSION
 
 # Canned efetch articles keyed by PMID, mirroring the loaded fixtures' latest
 # versions (1001 v2 and 1003). 1002 is deliberately absent — PubMed no longer
@@ -1517,6 +1518,10 @@ def test_progress_lines_and_peak_rss_are_logged(export_dir, monkeypatch, caplog)
     assert any(m.startswith("validation finished in") and "peak RSS" in m for m in caplog.messages)
 
 
+def _metadata_check(report: dict) -> dict:
+    return next(c for c in report["checks_run"] if c["name"] == "export-metadata")
+
+
 def test_export_metadata_catches_a_changed_or_missing_shard(loaded_con, tmp_path):
     """metadata.json lists every shard with its SHA-256. Damage is gzip's to
     catch (shard-readable); the hash catches a shard that is intact but not the
@@ -1529,12 +1534,33 @@ def test_export_metadata_catches_a_changed_or_missing_shard(loaded_con, tmp_path
     shards = export_json(loaded_con, out, shards=1)
     # The hashes come from the structure read; a second pass over every shard
     # would double validate's disk reads on the full corpus.
+    real_sha256 = validate.file_sha256
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(validate, "file_sha256", lambda path: 1 / 0)
+        patch.setattr(
+            validate,
+            "file_sha256",
+            lambda path: 1 / 0 if path.name.startswith("pubmed_metadata_") else real_sha256(path),
+        )
         report = validate.run_validation(out, online=False)
     check = next(c for c in report["checks_run"] if c["name"] == "export-metadata")
     assert check["status"] == "pass", check
-    assert report["data_model_version"] == "1.0.0"
+    assert report["data_model_version"] == DATA_MODEL_VERSION
+
+    # schema.json is held to its own entry, not counted as a shard.
+    schema = out / "schema.json"
+    schema_text = schema.read_text()
+    schema.write_text(schema_text.replace("pubmed2db NDJSON record", "some other record"))
+    check = _metadata_check(validate.run_validation(out, online=False))
+    assert check["status"] == "fail"
+    assert check["observed"] == "schema.json: checksum differs from metadata.json"
+    schema.unlink()
+    check = _metadata_check(validate.run_validation(out, online=False))
+    assert check["observed"] == "schema.json: listed but missing"
+    # An export from before 1.1 lists none, and is not missing one.
+    metadata = json.loads((out / "metadata.json").read_text())
+    del metadata["schema"]
+    (out / "metadata.json").write_text(json.dumps(metadata))
+    assert _metadata_check(validate.run_validation(out, online=False))["status"] == "pass"
 
     original = shards[0].read_bytes()
     lines = gzip.decompress(original).splitlines(keepends=True)

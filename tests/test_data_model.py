@@ -521,16 +521,13 @@ def test_the_doc_names_only_columns_that_exist(con):
     assert not unknown
 
 
-def test_the_doc_describes_every_ndjson_field_in_order():
-    import re
-
-    from pubmed2db.export import JSON_FIELDS
-
-    rows = [
-        line for line in _doc_section("The NDJSON record").splitlines() if line.startswith("| `")
-    ]
-    documented = [name for row in rows for name in re.findall(r"`([a-z_]+)`", row.split("|")[1])]
-    assert documented == list(JSON_FIELDS)
+def test_the_doc_describes_every_ndjson_field_from_the_code():
+    """The field table is rendered from `export._JSON_FIELDS`, the same text
+    every export writes into its schema.json, so the two cannot disagree."""
+    assert datamodel.render_ndjson_fields() in _doc_section("The NDJSON record"), (
+        "docs/data-model/README.md's NDJSON field table is stale: run "
+        "`uv run python -m pubmed2db.datamodel --docs docs/data-model/README.md`"
+    )
 
 
 def test_every_recipe_in_the_doc_runs(edge_con, tmp_path, monkeypatch):

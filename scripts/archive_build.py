@@ -4,8 +4,8 @@
 `export` writes into one fixed directory (``data/json``) and deletes the previous
 shards before it writes, so a finished export has to leave that directory before
 the next run. This script moves it to ``<data-dir>/builds/<build>/``, laid out
-the way builds are published on stars (shards, ``metadata.json`` and
-``SHA256SUMS`` at the top level), and gathers beside it what belongs to the same
+the way builds are published on stars (shards, ``metadata.json``,
+``SHA256SUMS`` and ``schema.json`` at the top level), and gathers beside it what belongs to the same
 build but is written elsewhere:
 
 - ``manifests/``: the dated ``validation_report-*.json`` for this export and

@@ -33,7 +33,7 @@ from . import __version__
 
 #: The data model this code reads and writes. See the module docstring, and
 #: `docs/data-model/README.md` for when to bump it.
-DATA_MODEL_VERSION = "1.0.0"
+DATA_MODEL_VERSION = "1.1.0"
 
 #: The table holding :data:`DATA_MODEL_VERSION` and who built the database.
 METADATA_TABLE = "pubmed2db_metadata"
@@ -399,9 +399,47 @@ def render_reference(relations: list[dict]) -> str:
 
 def replace_reference(document: str, reference: str) -> str:
     """``document`` with the text between the reference markers replaced."""
-    start = document.index(REFERENCE_BEGIN)
-    end = document.index(REFERENCE_END) + len(REFERENCE_END)
-    return document[:start] + reference + document[end:]
+    return _replace_block(document, REFERENCE_BEGIN, REFERENCE_END, reference)
+
+
+def _replace_block(document: str, begin: str, end: str, block: str) -> str:
+    start = document.index(begin)
+    stop = document.index(end) + len(end)
+    return document[:start] + block + document[stop:]
+
+
+#: The markers around the generated NDJSON field table in `docs/data-model/README.md`.
+NDJSON_FIELDS_BEGIN = "<!-- BEGIN GENERATED NDJSON FIELDS: python -m pubmed2db.datamodel --docs docs/data-model/README.md -->"
+NDJSON_FIELDS_END = "<!-- END GENERATED NDJSON FIELDS -->"
+
+
+def render_ndjson_fields() -> str:
+    """The NDJSON record's field table, rendered from ``export._JSON_FIELDS``.
+
+    The same source and description every export writes into its
+    ``schema.json``, so the contract and what a build says about itself
+    cannot disagree: a test regenerates this and compares.
+    """
+    from .export import _JSON_FIELDS
+
+    lines = [NDJSON_FIELDS_BEGIN, "", "| Field | From | Notes |", "| --- | --- | --- |"]
+    lines += [
+        f"| `{field.name}` | {_cell(field.source)} | {_cell(field.description)} |"
+        for field in _JSON_FIELDS
+    ]
+    lines += ["", NDJSON_FIELDS_END]
+    return "\n".join(lines)
+
+
+def regenerate(document: str, relations: list[dict]) -> str:
+    """``document`` with every generated block it holds rendered afresh."""
+    if REFERENCE_BEGIN in document:
+        document = replace_reference(document, render_reference(relations))
+    if NDJSON_FIELDS_BEGIN in document:
+        document = _replace_block(
+            document, NDJSON_FIELDS_BEGIN, NDJSON_FIELDS_END, render_ndjson_fields()
+        )
+    return document
 
 
 def _fresh_database() -> duckdb.DuckDBPyConnection:
@@ -417,8 +455,11 @@ def main(argv: list[str] | None = None) -> None:
     ``--golden PATH`` writes this version's :func:`shape`, which
     `tests/test_data_model.py` compares every fresh database against; run it as
     part of a deliberate version bump, never to make a failing test pass.
-    ``--docs PATH`` rewrites the generated column reference in
-    `docs/data-model/Reference.md` after a comment in ``schema.sql`` changes.
+    ``--docs PATH`` rewrites the generated blocks in a Markdown file: the
+    column reference in `docs/data-model/Reference.md` after a comment in
+    ``schema.sql`` changes, and the NDJSON field table in
+    `docs/data-model/README.md` after a field in ``export._JSON_FIELDS`` does.
+    Give it once per file.
     """
     import argparse
     import json
@@ -426,16 +467,22 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="python -m pubmed2db.datamodel", description=main.__doc__)
     parser.add_argument("--golden", type=Path, help="write the shape JSON for this version here")
     parser.add_argument(
-        "--docs", type=Path, help="regenerate the column reference in this Markdown file"
+        "--docs",
+        type=Path,
+        action="append",
+        default=[],
+        help="regenerate the generated blocks in this Markdown file (repeatable)",
     )
     args = parser.parse_args(argv)
     con = _fresh_database()
     try:
         if args.golden:
             args.golden.write_text(json.dumps(shape(con), indent=2) + "\n")
-        if args.docs:
-            reference = render_reference(describe(con))
-            args.docs.write_text(replace_reference(args.docs.read_text(), reference))
+        for path in args.docs:
+            document = path.read_text()
+            if REFERENCE_BEGIN not in document and NDJSON_FIELDS_BEGIN not in document:
+                parser.error(f"{path} holds no generated block")
+            path.write_text(regenerate(document, describe(con)))
     finally:
         con.close()
 

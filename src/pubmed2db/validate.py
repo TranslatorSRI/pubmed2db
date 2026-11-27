@@ -404,6 +404,12 @@ def check_export_metadata(
     shard fails ``shard-readable``. An export without the file (one from before
     data model 1.0) is a ``skip``: nothing to check against, not a failure.
 
+    ``schema.json`` is listed apart from the shards, under ``schema`` (from
+    data model 1.1; `export.write_export_metadata` says why), so it is
+    compared apart from them too: lumped in with ``files``, it would read as
+    a shard listed but missing. An export without the entry is not missing
+    one; it predates it.
+
     ``sha256`` is the hashes :func:`check_structure` took while it read the
     shards; a shard missing from it (one that read did not finish) is hashed here.
     """
@@ -450,6 +456,13 @@ def check_export_metadata(
         digest = sha256.get(shard.name) or file_sha256(shard)
         if digest != entry.get("sha256"):
             problems.append(f"{shard.name}: checksum differs from {METADATA_FILE}")
+    schema = metadata.get("schema")
+    if isinstance(schema, dict):
+        schema_path = export_dir / str(schema.get("name"))
+        if not schema_path.is_file():
+            problems.append(f"{schema_path.name}: listed but missing")
+        elif file_sha256(schema_path) != schema.get("sha256"):
+            problems.append(f"{schema_path.name}: checksum differs from {METADATA_FILE}")
     if records_total != expected_records:
         problems.append(f"{records_total:,} record(s) read, {expected_records:,} exported")
     report.record(
