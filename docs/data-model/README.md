@@ -68,12 +68,18 @@ and `2026sep26`, were named for the day their export finished. Every build's
 directory holds the NDJSON shards (with their `metadata.json` and
 `SHA256SUMS` from data model 1.0 on) and a `manifests/` directory with the
 validation report and a sorted list of the build's PMIDs. From `2026nov08` on,
-it also holds the build's Slurm logs (`logs/`) and a CSV of its `source_file`
-table: the PubMed files it loaded, with the MD5 NCBI published for each.
+it normally also holds the build's Slurm logs (`logs/`) and a CSV of its
+`source_file` table: the PubMed files it loaded, with the MD5 NCBI published
+for each. A build archived without either can lack it, so check before
+relying on them.
 
-**The database is published with only some builds.** At 71 GiB for `2026sep26`,
-`pubmed.duckdb` is not copied to every build's directory: as of 2026-11-27,
-only `2026sep26` has one. List a build's directory before planning on its
+**The database is published with only some builds, and no build under this
+data model has one yet.** At 76 GB for `2026sep26`, `pubmed.duckdb` is not
+copied to every build's directory. As of 2026-11-27, only `2026sep26` has
+one, and it predates the data model: current pubmed2db refuses to open it,
+and its tables differ from the ones described here in the ways
+[listed in the changelog](https://github.com/TranslatorSRI/pubmed2db/blob/main/docs/data-model/Changelog.md).
+DuckDB itself still opens it. List a build's directory before planning on its
 database. For a build without one, the NDJSON is all there is; a database of
 your own, built with pubmed2db from PubMed's files, holds whatever PubMed has
 published by the day you build it, not that build's cutoff.
@@ -117,7 +123,8 @@ Download the files first.
 
 **Use HTTP/1.1, and resume.** The same day, an HTTP/2 transfer of that database
 dropped after 6 MB with `HTTP/2 stream 1 was not closed cleanly: INTERNAL_ERROR`.
-HTTP/1.1 with resume was reliable:
+HTTP/1.1 with resume was reliable. This only works for a build that publishes
+its database (above); for any other `<build>`, the server answers 404:
 
 ```bash
 BUILD=https://stars.renci.org/var/babel_outputs/pubmed2db/<build>
