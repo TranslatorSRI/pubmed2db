@@ -375,8 +375,10 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Build {build} is in {dest}. To publish it:")
     print(f"  rsync -a {dest}/ HOST:/var/babel_outputs/pubmed2db/{build}/")
     if db_path.is_file():
+        # Only some builds publish the database (docs/data-model/README.md,
+        # "What pubmed2db produces"), so this is offered, not required.
+        print("If this build publishes the database too, before the next download/load changes it:")
         print(f"  rsync {db_path} HOST:/var/babel_outputs/pubmed2db/{build}/pubmed.duckdb")
-        print("The second line must run before the next download/load changes the database.")
 
 
 if __name__ == "__main__":
